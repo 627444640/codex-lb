@@ -414,6 +414,8 @@
   "auth.stepUp.title": "본인 확인",
   "auth.stepUp.description": "로그인 권한에 영향을 주는 변경입니다. 계속하려면 로그인 정보를 다시 입력하세요.",
   "auth.stepUp.passwordLabel": "비밀번호",
+  "auth.stepUp.provider.description": "이 계정은 아이덴티티 공급자로 로그인합니다. 계속하려면 공급자에서 본인 확인을 하세요.",
+  "auth.stepUp.provider.submit": "아이덴티티 공급자에서 계속",
   "auth.stepUp.codeLabel": "인증 앱 코드",
   "auth.stepUp.submit": "확인",
   "auth.stepUp.unavailable.title": "본인 확인을 할 수 없습니다",

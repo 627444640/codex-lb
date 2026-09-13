@@ -408,6 +408,8 @@
   "auth.stepUp.title": "确认是您本人",
   "auth.stepUp.description": "此更改会影响谁可以登录。请重新输入登录信息以继续。",
   "auth.stepUp.passwordLabel": "密码",
+  "auth.stepUp.provider.description": "此账户通过身份提供商登录。请在身份提供商处确认身份以继续。",
+  "auth.stepUp.provider.submit": "在身份提供商处继续",
   "auth.stepUp.codeLabel": "验证器代码",
   "auth.stepUp.submit": "确认",
   "auth.stepUp.unavailable.title": "无法完成确认",
