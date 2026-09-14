@@ -61,3 +61,6 @@ SUMMARY.md
 DECISIONS.md
 .superpowers/
 .agents/worktrees/
+
+# Private local deployment material
+/deployment/macos/
