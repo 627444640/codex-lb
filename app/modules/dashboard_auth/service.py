@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
+import hmac
 import json
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from io import BytesIO
 from time import time
 from typing import Protocol
 
+import anyio
 import bcrypt
 import segno
 
@@ -26,6 +32,7 @@ from app.modules.dashboard_auth.schemas import DashboardAuthSessionResponse, Tot
 DASHBOARD_SESSION_COOKIE = "codex_lb_dashboard_session"
 _TOTP_ISSUER = "codex-lb"
 _TOTP_ACCOUNT = "dashboard"
+_PASSWORD_WORK_LIMITER = anyio.CapacityLimiter(2)
 
 
 class DashboardAuthSettingsProtocol(Protocol):
@@ -100,6 +107,13 @@ class DashboardSessionState:
     totp_verified: bool
     role: DashboardRole = DashboardRole.ADMIN
     guest_verified: bool = False
+    credential_fingerprint: str | None = None
+    totp_fingerprint: str | None = None
+
+
+def credential_fingerprint(credential: str | bytes | None) -> str:
+    value = credential.encode("utf-8") if isinstance(credential, str) else credential or b""
+    return hashlib.sha256(b"codex-lb-dashboard-credential\x00" + value).hexdigest()
 
 
 class DashboardSessionStore:
@@ -119,6 +133,8 @@ class DashboardSessionStore:
         ttl_seconds: int,
         role: DashboardRole = DashboardRole.ADMIN,
         guest_verified: bool = False,
+        credential_fingerprint: str | None = None,
+        totp_fingerprint: str | None = None,
     ) -> str:
         expires_at = int(time()) + ttl_seconds
         payload = json.dumps(
@@ -128,6 +144,8 @@ class DashboardSessionStore:
                 "tv": totp_verified,
                 "role": role.value,
                 "gv": guest_verified,
+                "cf": credential_fingerprint,
+                "tf": totp_fingerprint,
             },
             separators=(",", ":"),
         )
@@ -147,14 +165,22 @@ class DashboardSessionStore:
             data = json.loads(raw)
         except Exception:
             return None
+        if not isinstance(data, dict):
+            return None
         exp = data.get("exp")
         pw = data.get("pw")
         tv = data.get("tv")
         gv = data.get("gv", False)
+        fingerprint = data.get("cf")
+        totp_fingerprint = data.get("tf")
         role_raw = data.get("role", DashboardRole.ADMIN.value)
         if not isinstance(exp, int) or not isinstance(pw, bool) or not isinstance(tv, bool):
             return None
         if not isinstance(gv, bool):
+            return None
+        if not isinstance(fingerprint, str):
+            return None
+        if totp_fingerprint is not None and not isinstance(totp_fingerprint, str):
             return None
         if not isinstance(role_raw, str):
             return None
@@ -170,19 +196,26 @@ class DashboardSessionStore:
             totp_verified=tv,
             role=role,
             guest_verified=gv,
+            credential_fingerprint=fingerprint,
+            totp_fingerprint=totp_fingerprint,
         )
 
-    def is_password_verified(self, session_id: str | None) -> bool:
+    def get_validated(
+        self, session_id: str | None, settings: DashboardAuthSettingsProtocol
+    ) -> DashboardSessionState | None:
         state = self.get(session_id)
-        if state is None:
-            return False
-        return state.role == DashboardRole.ADMIN and state.password_verified
-
-    def is_totp_verified(self, session_id: str | None) -> bool:
-        state = self.get(session_id)
-        if state is None:
-            return False
-        return state.role == DashboardRole.ADMIN and state.totp_verified
+        if state is None or state.credential_fingerprint is None:
+            return None
+        password_hash = settings.guest_password_hash if state.role == DashboardRole.GUEST else settings.password_hash
+        if not hmac.compare_digest(state.credential_fingerprint, credential_fingerprint(password_hash)):
+            return None
+        if state.totp_verified and (
+            settings.totp_secret_encrypted is None
+            or state.totp_fingerprint is None
+            or not hmac.compare_digest(state.totp_fingerprint, credential_fingerprint(settings.totp_secret_encrypted))
+        ):
+            return None
+        return state
 
     def delete(self, session_id: str | None) -> None:
         # Stateless: deletion is handled by clearing the cookie client-side.
@@ -202,7 +235,11 @@ class DashboardAuthService:
         totp_configured = settings.totp_secret_encrypted is not None
         guest_access_enabled = settings.guest_access_enabled
         guest_password_required = guest_access_enabled and settings.guest_password_hash is not None
-        state = self._session_store.get(session_id) if password_required or guest_access_enabled else None
+        state = (
+            self._session_store.get_validated(session_id, settings)
+            if password_required or guest_access_enabled
+            else None
+        )
         public_guest_authenticated = bool(
             guest_access_enabled
             and not guest_password_required
@@ -254,42 +291,45 @@ class DashboardAuthService:
             guest_password_required=guest_password_required,
         )
 
-    async def setup_password(self, password: str) -> None:
-        setup_ok = await self._repository.try_set_password_hash(_hash_password(password))
+    async def setup_password(self, password: str) -> str:
+        password_hash = await _run_password_work(_hash_password, password)
+        setup_ok = await self._repository.try_set_password_hash(password_hash)
         if not setup_ok:
             raise PasswordAlreadyConfiguredError("Password is already configured")
+        return credential_fingerprint(password_hash)
 
-    async def verify_password(self, password: str, *, actor_ip: str | None = None) -> None:
+    async def verify_password(self, password: str, *, actor_ip: str | None = None) -> str:
         current = await self._repository.get_password_hash()
         if current is None:
             raise PasswordNotConfiguredError("Password is not configured")
-        if not _check_password(password, current):
+        if not await _run_password_work(_check_password, password, current):
             AuditService.log_async("login_failed", actor_ip=actor_ip, details={"method": "password"})
             raise InvalidCredentialsError("Invalid credentials")
         settings = await self._repository.get_settings()
         if not settings.totp_required_on_login or settings.totp_secret_encrypted is None:
             AuditService.log_async("login_success", actor_ip=actor_ip, details={"method": "password"})
+        return credential_fingerprint(current)
 
-    async def verify_guest_password(self, password: str | None, *, actor_ip: str | None = None) -> bool:
+    async def verify_guest_password(self, password: str | None, *, actor_ip: str | None = None) -> str | None:
         settings = await self._repository.get_settings()
         if not settings.guest_access_enabled:
             raise GuestAccessDisabledError("Guest access is disabled")
         current = settings.guest_password_hash
         if current is None:
             AuditService.log_async("login_success", actor_ip=actor_ip, details={"method": "guest"})
-            return False
-        if password is None or not _check_password(password, current):
+            return None
+        if password is None or not await _run_password_work(_check_password, password, current):
             AuditService.log_async("login_failed", actor_ip=actor_ip, details={"method": "guest"})
             raise InvalidCredentialsError("Invalid credentials")
         AuditService.log_async("login_success", actor_ip=actor_ip, details={"method": "guest"})
-        return True
+        return credential_fingerprint(current)
 
     async def change_password(self, current_password: str, new_password: str) -> None:
         await self.verify_password(current_password)
-        await self._repository.set_password_hash(_hash_password(new_password))
+        await self._repository.set_password_hash(await _run_password_work(_hash_password, new_password))
 
     async def set_guest_password(self, password: str) -> None:
-        await self._repository.set_guest_password_hash(_hash_password(password))
+        await self._repository.set_guest_password_hash(await _run_password_work(_hash_password, password))
 
     async def clear_guest_password(self) -> None:
         await self._repository.clear_guest_password_hash()
@@ -308,15 +348,14 @@ class DashboardAuthService:
         settings = await self._repository.get_settings()
         if settings.password_hash is None:
             raise PasswordSessionRequiredError("Password-authenticated session is required")
-        session = self._session_store.get(session_id)
+        session = self._session_store.get_validated(session_id, settings)
         if session is None or session.role != DashboardRole.ADMIN or not session.password_verified:
             raise PasswordSessionRequiredError("Password-authenticated session is required")
         return settings, session
 
     async def _require_totp_verified_session(self, session_id: str | None) -> DashboardAuthSettingsProtocol:
-        settings = await self._require_active_password_session(session_id)
-        session = self._session_store.get(session_id)
-        if session is None or not session.totp_verified:
+        settings, session = await self._require_active_password_session_with_state(session_id)
+        if not session.totp_verified:
             raise PasswordSessionRequiredError("TOTP-verified session is required")
         return settings
 
@@ -399,6 +438,8 @@ class DashboardAuthService:
             password_verified=True,
             totp_verified=True,
             ttl_seconds=applied_ttl,
+            credential_fingerprint=existing_state.credential_fingerprint,
+            totp_fingerprint=credential_fingerprint(secret_encrypted),
         )
         return new_session_id, applied_ttl
 
@@ -454,6 +495,28 @@ def _qr_svg_data_uri(payload: str) -> str:
     qr.save(buffer, kind="svg", xmldecl=False, scale=6, border=2)
     raw = buffer.getvalue()
     return f"data:image/svg+xml;base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+async def _run_password_work[T](function: Callable[..., T], *args: str) -> T:
+    # Acquire before spawning: cancelled waiters never submit executor work.
+    # A cancelled caller retains its permit until the owned worker completes;
+    # cancelling an executor Future cannot stop an already running bcrypt job.
+    async with _PASSWORD_WORK_LIMITER:
+        worker = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                with suppress(Exception, asyncio.CancelledError):
+                    worker.result()
+            raise
 
 
 def _hash_password(password: str) -> str:

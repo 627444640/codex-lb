@@ -1608,6 +1608,8 @@ def _to_limit_rule_data(limit: ApiKeyLimit) -> LimitRuleData:
 def _ensure_valid_api_key_row(row: ApiKey | None) -> ApiKey:
     if row is None or not row.is_active:
         raise ApiKeyInvalidError("Invalid API key")
+    if any(limit.limit_type == LimitType.CREDITS for limit in row.limits):
+        raise ApiKeyInvalidError("API key has an unsupported credits limit; an administrator must remove or replace it")
     return row
 
 
@@ -1863,8 +1865,8 @@ def _limit_input_to_row(
     reset_at: datetime | None = None,
 ) -> ApiKeyLimit:
     window = LimitWindow(li.limit_window)
-    if li.limit_type == LimitType.CREDITS.value and li.model_filter is not None:
-        raise ApiKeyValidationError("credits limits do not support model_filter")
+    if li.limit_type == LimitType.CREDITS.value:
+        raise ApiKeyValidationError("credits limit metering is unsupported; use a token or cost limit")
     return ApiKeyLimit(
         api_key_id=key_id,
         limit_type=LimitType(li.limit_type),

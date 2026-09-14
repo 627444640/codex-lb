@@ -1132,6 +1132,9 @@ class _WebSocketRequestState:
     suppress_next_created_downstream: bool = False
     replay_downstream_response_id: str | None = None
     draining_until_terminal: bool = False
+    # Delivery overflow is a local failure; retain upstream usage ownership
+    # after the event queue is revoked, until terminal/failure cleanup settles.
+    downstream_buffer_overflowed: bool = False
     completed_delivery_scope: _HTTPBridgeCompletedDeliveryScope | None = None
     # Exactly-once reservation settlement for terminal HTTP bridge events
     # (issue #1594). "claimed" marks a request popped from pending ownership

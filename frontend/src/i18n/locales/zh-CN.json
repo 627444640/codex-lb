@@ -231,6 +231,7 @@
   "apiKeys.form.trafficClass": "流量类别",
   "apiKeys.form.usageSections": "用量分区",
   "apiKeys.limitRule.creditsGlobal": "全局 credits",
+  "apiKeys.limitRule.creditsUnsupported": "Credits 限额尚未支持，当前密钥会拒绝请求。请删除此规则或改用 token 或费用限额。",
   "apiKeys.limitRule.maxValueCredits": "最大值 (credits)",
   "apiKeys.limitRule.maxValueTokens": "最大值 (tokens)",
   "apiKeys.limitRule.maxValueUsd": "最大值 (USD)",

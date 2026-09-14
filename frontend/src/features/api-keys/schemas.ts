@@ -17,7 +17,9 @@ const LimitRuleSchema = z.object({
 });
 
 export const LimitRuleCreateSchema = z.object({
-  limitType: z.enum(LIMIT_TYPES),
+  limitType: z.enum(LIMIT_TYPES).refine((value): boolean => value !== "credits", {
+    message: "Credits limit metering is unsupported; remove or replace this rule",
+  }),
   limitWindow: z.enum(LIMIT_WINDOWS),
   maxValue: z.number().int().positive(),
   modelFilter: z.string().nullable().optional(),

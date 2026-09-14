@@ -163,6 +163,19 @@ async def test_request_decompression_supports_multiple_encodings():
     assert response_data["data"] == payload
 
 
+@pytest.mark.parametrize("declared_size", [True, False])
+@pytest.mark.parametrize("suffix", [b"trailing bytes", zstd.ZstdCompressor().compress(b"second frame")])
+@pytest.mark.asyncio
+async def test_zstd_preserves_first_frame_compatibility(declared_size, suffix):
+    payload = {"hello": "first frame"}
+    body = json.dumps(payload).encode()
+    compressed = zstd.ZstdCompressor(write_content_size=declared_size).compress(body)
+    async with AsyncClient(transport=ASGITransport(app=_build_echo_app()), base_url="http://testserver") as client:
+        response = await client.post("/echo", content=compressed + suffix, headers={"Content-Encoding": "zstd"})
+    assert response.status_code == 200
+    assert response.json()["data"] == payload
+
+
 @pytest.mark.asyncio
 async def test_request_decompression_rejects_unsupported_encoding():
     app = _build_echo_app()

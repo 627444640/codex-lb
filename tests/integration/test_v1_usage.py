@@ -515,12 +515,12 @@ async def test_v1_usage_hides_upstream_limits_for_api_key_clients_when_setting_e
 
 
 @pytest.mark.asyncio
-async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(async_client):
+async def test_v1_usage_returns_api_key_token_and_upstream_credit_limits_separately(async_client):
     key_id, plain_key = await _create_api_key(
-        name="credit-override",
+        name="token-override",
         limits=[
-            LimitRuleInput(limit_type="credits", limit_window="5h", max_value=60),
-            LimitRuleInput(limit_type="credits", limit_window="7d", max_value=1000),
+            LimitRuleInput(limit_type="total_tokens", limit_window="5h", max_value=60),
+            LimitRuleInput(limit_type="total_tokens", limit_window="7d", max_value=1000),
         ],
     )
     now = utcnow()
@@ -533,7 +533,7 @@ async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(as
             [
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.FIVE_HOURS,
                     max_value=60,
                     current_value=999,
@@ -542,7 +542,7 @@ async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(as
                 ),
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.SEVEN_DAYS,
                     max_value=1000,
                     current_value=10,
@@ -558,7 +558,7 @@ async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(as
     payload = response.json()
     assert payload["limits"] == [
         {
-            "limit_type": "credits",
+            "limit_type": "total_tokens",
             "limit_window": "5h",
             "max_value": 60,
             "current_value": 60,
@@ -568,7 +568,7 @@ async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(as
             "source": "api_key_limit",
         },
         {
-            "limit_type": "credits",
+            "limit_type": "total_tokens",
             "limit_window": "7d",
             "max_value": 1000,
             "current_value": 10,
@@ -580,6 +580,8 @@ async def test_v1_usage_returns_api_key_and_upstream_credit_limits_separately(as
     ]
     assert [limit["source"] for limit in payload["upstream_limits"]] == ["aggregate", "aggregate"]
     assert [limit["limit_window"] for limit in payload["upstream_limits"]] == ["5h", "7d"]
+
+    assert all(limit["limit_type"] == "credits" for limit in payload["upstream_limits"])
 
 
 @pytest.mark.asyncio
@@ -653,12 +655,12 @@ async def test_v1_usage_prefers_raw_limits_when_aggregate_credit_pair_is_partial
 
 
 @pytest.mark.asyncio
-async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_missing(async_client):
+async def test_v1_usage_preserves_token_limits_when_aggregate_reset_is_missing(async_client):
     key_id, plain_key = await _create_api_key(
         name="fallback-missing-reset",
         limits=[
-            LimitRuleInput(limit_type="credits", limit_window="5h", max_value=60),
-            LimitRuleInput(limit_type="credits", limit_window="7d", max_value=1000),
+            LimitRuleInput(limit_type="total_tokens", limit_window="5h", max_value=60),
+            LimitRuleInput(limit_type="total_tokens", limit_window="7d", max_value=1000),
         ],
     )
     now = utcnow()
@@ -674,7 +676,7 @@ async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_
             [
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.FIVE_HOURS,
                     max_value=60,
                     current_value=12,
@@ -683,7 +685,7 @@ async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_
                 ),
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.SEVEN_DAYS,
                     max_value=1000,
                     current_value=250,
@@ -700,7 +702,7 @@ async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_
     payload = response.json()
     assert payload["limits"] == [
         {
-            "limit_type": "credits",
+            "limit_type": "total_tokens",
             "limit_window": "5h",
             "max_value": 60,
             "current_value": 12,
@@ -710,7 +712,7 @@ async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_
             "source": "api_key_limit",
         },
         {
-            "limit_type": "credits",
+            "limit_type": "total_tokens",
             "limit_window": "7d",
             "max_value": 1000,
             "current_value": 250,
@@ -721,6 +723,9 @@ async def test_v1_usage_falls_back_to_raw_credit_limits_when_aggregate_reset_is_
         },
     ]
     assert [limit["limit_window"] for limit in payload["upstream_limits"]] == ["7d"]
+
+    assert payload["upstream_limits"][0]["limit_type"] == "credits"
+    assert payload["upstream_limits"][0]["source"] == "aggregate"
 
 
 @pytest.mark.asyncio

@@ -1306,6 +1306,7 @@ async def test_terminal_message_cancellation_is_bounded_by_shared_deadline(
 
     child_started = asyncio.Event()
     child_cancelled = asyncio.Event()
+    child_completed = asyncio.Event()
     release_child = asyncio.Event()
 
     async def blocking_terminal_work(*_args: object, **_kwargs: object) -> bool:
@@ -1315,6 +1316,7 @@ async def test_terminal_message_cancellation_is_bounded_by_shared_deadline(
         except asyncio.CancelledError:
             child_cancelled.set()
             raise
+        child_completed.set()
         return False
 
     monkeypatch.setattr(
@@ -1349,7 +1351,7 @@ async def test_terminal_message_cancellation_is_bounded_by_shared_deadline(
     started_at = loop.time()
     shutdown_state.commit_shutdown(timeout_seconds=0.05)
     release_later = asyncio.create_task(_release_after(release_child, 0.25))
-    cancelled = await proxy_service._await_cancelled_task(
+    await proxy_service._await_cancelled_task(
         relay,
         timeout_seconds=0.05,
         label="test terminal relay timeout",
@@ -1359,7 +1361,8 @@ async def test_terminal_message_cancellation_is_bounded_by_shared_deadline(
     release_later.cancel()
     with suppress(asyncio.CancelledError):
         await release_later
-    assert cancelled is False
+    # Both waiters share the deadline: either can observe its timeout first.
+    # Delivery ownership and bounded return must hold regardless of that order.
     assert elapsed < 0.15
     assert child_cancelled.is_set() is False
     assert any(
@@ -1369,6 +1372,11 @@ async def test_terminal_message_cancellation_is_bounded_by_shared_deadline(
     )
     release_child.set()
     assert await service.drain_persistence_tasks(timeout_seconds=0.1)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(relay, timeout=0.1)
+    assert child_completed.is_set()
+    assert child_cancelled.is_set() is False
+    assert service._background_cleanup_tasks == set()
 
 
 @pytest.mark.asyncio

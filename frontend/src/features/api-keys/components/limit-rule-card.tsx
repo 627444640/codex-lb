@@ -109,6 +109,12 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
         </Button>
       </div>
 
+      {isCredits && (
+        <p role="alert" className="text-xs text-destructive">
+          {t("apiKeys.limitRule.creditsUnsupported")}
+        </p>
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label htmlFor={`${fieldId}-type`} className="text-xs text-muted-foreground">{t("apiKeys.limitRule.type")}</label>
@@ -117,7 +123,8 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {LIMIT_TYPES.map((k) => (
+              {isCredits && <SelectItem value="credits" disabled>{t("apiKeys.limitTypes.credits")}</SelectItem>}
+              {LIMIT_TYPES.filter((k) => k !== "credits").map((k) => (
                 <SelectItem key={k} value={k}>
                   {t(`apiKeys.limitTypes.${k}`, { defaultValue: LIMIT_TYPE_LABELS[k] })}
                 </SelectItem>

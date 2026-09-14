@@ -231,6 +231,7 @@
   "apiKeys.form.trafficClass": "Traffic class",
   "apiKeys.form.usageSections": "Usage sections",
   "apiKeys.limitRule.creditsGlobal": "Credits Global",
+  "apiKeys.limitRule.creditsUnsupported": "Credits limits are unsupported and block this key. Remove this rule or choose a token or cost limit.",
   "apiKeys.limitRule.maxValueCredits": "Max value (credits)",
   "apiKeys.limitRule.maxValueTokens": "Max value (tokens)",
   "apiKeys.limitRule.maxValueUsd": "Max value (USD)",

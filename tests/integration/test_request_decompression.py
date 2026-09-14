@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from collections.abc import AsyncIterator
 
 import pytest
@@ -12,6 +13,53 @@ from app.core.config.settings import get_settings
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("declared_size", [True, False])
+@pytest.mark.asyncio
+async def test_zstd_ingress_rejects_expansion_without_allocating_full_output(async_client, monkeypatch, declared_size):
+    budget = 1024 * 1024
+    parameters = zstd.ZstdCompressionParameters.from_level(3, window_log=20, write_content_size=int(declared_size))
+    compressed = zstd.ZstdCompressor(compression_params=parameters).compress(b"x" * (8 * budget))
+    monkeypatch.setenv("CODEX_LB_MAX_DECOMPRESSED_BODY_BYTES", str(budget))
+    get_settings.cache_clear()
+
+    tracemalloc.start()
+    try:
+        response = await async_client.put(
+            "/api/settings",
+            content=compressed,
+            headers={"Content-Encoding": "zstd", "Content-Type": "application/json"},
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+    # Includes ASGI/HTTP allocations, but must not contain the 8 MiB output.
+    assert peak < 4 * budget
+
+
+@pytest.mark.asyncio
+async def test_zstd_ingress_bounds_decoder_window_and_accepts_small_frame(async_client, monkeypatch):
+    body = json.dumps({"stickyThreadsEnabled": True}).encode()
+    compressed = zstd.ZstdCompressor(write_content_size=False).compress(body)
+    assert zstd.get_frame_parameters(compressed).content_size == zstd.CONTENTSIZE_UNKNOWN
+    assert compressed[4] == 0  # No size or dictionary ID: byte 5 is the window descriptor.
+    large_window = compressed[:5] + bytes([(24 - 10) << 3]) + compressed[6:]
+    assert zstd.get_frame_parameters(large_window).window_size == 16 * 1024 * 1024
+    monkeypatch.setenv("CODEX_LB_MAX_DECOMPRESSED_BODY_BYTES", "1024")
+    get_settings.cache_clear()
+
+    headers = {"Content-Encoding": "zstd", "Content-Type": "application/json"}
+    rejected = await async_client.put("/api/settings", content=large_window, headers=headers)
+    assert rejected.status_code == 413
+    assert rejected.json()["error"]["code"] == "payload_too_large"
+
+    accepted = await async_client.put("/api/settings", content=compressed, headers=headers)
+    assert accepted.status_code == 200
+    assert accepted.json()["stickyThreadsEnabled"] is True
+
+
 class _ChunkedBody(AsyncByteStream):
     def __init__(self, *chunks: bytes) -> None:
         self._chunks = chunks
@@ -19,6 +67,20 @@ class _ChunkedBody(AsyncByteStream):
     async def __aiter__(self) -> AsyncIterator[bytes]:
         for chunk in self._chunks:
             yield chunk
+
+
+@pytest.mark.parametrize("budget", [2**32, 2**64])
+@pytest.mark.parametrize("declared_size", [True, False])
+async def test_zstd_small_request_accepts_large_configured_budget(async_client, monkeypatch, budget, declared_size):
+    body = json.dumps({"stickyThreadsEnabled": True}).encode()
+    compressed = zstd.ZstdCompressor(write_content_size=declared_size).compress(body)
+    monkeypatch.setenv("CODEX_LB_MAX_DECOMPRESSED_BODY_BYTES", str(budget))
+    get_settings.cache_clear()
+    accepted = await async_client.put(
+        "/api/settings", content=compressed, headers={"Content-Encoding": "zstd", "Content-Type": "application/json"}
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["stickyThreadsEnabled"] is True
 
 
 @pytest.mark.asyncio

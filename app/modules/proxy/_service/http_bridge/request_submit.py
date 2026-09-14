@@ -218,6 +218,11 @@ from app.modules.proxy.helpers import (
     _normalize_error_code,
     _parse_openai_error,
 )
+from app.modules.proxy.http_bridge_event_queue import (
+    HTTPBridgeEventQueue,
+    discard_http_bridge_event_queue,
+    make_http_bridge_event_queue,
+)
 from app.modules.proxy.load_balancer import effective_account_concurrency_caps
 from app.modules.proxy.tool_call_dedupe import (
     dedupe_replayed_side_effect_input_items,
@@ -674,7 +679,7 @@ class _HTTPBridgeRequestSubmitMixin:
             started_at=_service_time().monotonic(),
             requested_service_tier=forwarded_service_tier,
             awaiting_response_created=True,
-            event_queue=asyncio.Queue() if attach_event_queue else None,
+            event_queue=make_http_bridge_event_queue() if attach_event_queue else None,
             transport=transport,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
             api_key=api_key,
@@ -2157,7 +2162,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 requested_service_tier=request_state.requested_service_tier,
                 actual_service_tier=request_state.actual_service_tier,
                 awaiting_response_created=True,
-                event_queue=asyncio.Queue(),
+                event_queue=make_http_bridge_event_queue(),
                 transport=_REQUEST_TRANSPORT_HTTP,
                 request_text=warmup_text,
                 skip_request_log=True,
@@ -2610,6 +2615,9 @@ class _HTTPBridgeRequestSubmitMixin:
     ) -> bool:
         detached = False
         async with session.pending_lock:
+            queue = request_state.event_queue
+            if isinstance(queue, HTTPBridgeEventQueue) and queue.overflowed:
+                request_state.downstream_buffer_overflowed = True
             if request_state in session.pending_requests and not request_state.draining_until_terminal:
                 request_state.draining_until_terminal = True
                 request_state.downstream_visible = False
@@ -2620,6 +2628,7 @@ class _HTTPBridgeRequestSubmitMixin:
             # Queue revocation and pending ownership use the same lock. A
             # completed handler that wins first keeps its local queue reference;
             # a detach that wins first leaves no queue for that handler to claim.
+            discard_http_bridge_event_queue(queue)
             request_state.event_queue = None
         await _release_websocket_response_create_gate(request_state, session.response_create_gate)
         if not detached:
@@ -2643,9 +2652,10 @@ class _HTTPBridgeRequestSubmitMixin:
                 request_state.api_key_reservation = None
                 request_state.terminal_settlement_phase = None
             return False
-        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
-        await self._release_websocket_request_state_reservation(request_state)
-        request_state.api_key_reservation = None
+        if not request_state.downstream_buffer_overflowed:
+            self._cancel_request_state_api_key_reservation_heartbeat(request_state)
+            await self._release_websocket_request_state_reservation(request_state)
+            request_state.api_key_reservation = None
         await self._retire_http_bridge_after_drain_if_ready(session)
         return True
 
@@ -2777,6 +2787,9 @@ class _HTTPBridgeRequestSubmitMixin:
             )
             should_reconnect = (
                 not has_visible_pending
+                # Overflowed consumers detached locally, but their upstream
+                # terminal result still owns usage and durable settlement.
+                and not any(state.downstream_buffer_overflowed for state in session.pending_requests)
                 and session.queued_request_count == 0
                 and session.unanchored_reservation_id is None
                 and not session.upstream_close_attempted

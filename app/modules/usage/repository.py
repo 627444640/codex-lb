@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from threading import RLock
+from time import monotonic
 from typing import Any, Callable, cast
 
 from anyio import to_thread
@@ -102,16 +103,21 @@ class _BulkHistoryCacheMetadata:
     content_digest: str
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _BulkHistoryCacheEntry:
     since: datetime
     max_id: int
     metadata: _BulkHistoryCacheMetadata
     rows_by_account: dict[str, list[UsageHistorySnapshot]]
+    expires_at: float
 
 
 _BULK_HISTORY_SQLITE_CACHE: dict[tuple[str, tuple[str, ...], str], _BulkHistoryCacheEntry] = {}
 _BULK_HISTORY_SQLITE_CACHE_LOCK = RLock()
+_BULK_HISTORY_SQLITE_CACHE_GENERATION = 0
+_BULK_HISTORY_SQLITE_CACHE_TTL_SECONDS = 30.0
+_BULK_HISTORY_SQLITE_CACHE_MAX_ENTRIES = 32
+_BULK_HISTORY_SQLITE_CACHE_MAX_ROWS = 100_000
 _EMPTY_BULK_HISTORY_DIGEST = sha256().hexdigest()
 
 
@@ -156,8 +162,24 @@ class _BulkHistoryDigestAggregate:
 
 
 def _clear_bulk_history_since_sqlite_cache() -> None:
+    global _BULK_HISTORY_SQLITE_CACHE_GENERATION
     with _BULK_HISTORY_SQLITE_CACHE_LOCK:
         _BULK_HISTORY_SQLITE_CACHE.clear()
+        _BULK_HISTORY_SQLITE_CACHE_GENERATION += 1
+
+
+def _prune_bulk_history_cache(now: float) -> None:
+    # Caller holds the cache lock; no I/O or row hashing occurs here.
+    for key, entry in list(_BULK_HISTORY_SQLITE_CACHE.items()):
+        if entry.expires_at <= now:
+            del _BULK_HISTORY_SQLITE_CACHE[key]
+    total_rows = sum(entry.metadata.row_count for entry in _BULK_HISTORY_SQLITE_CACHE.values())
+    while (
+        len(_BULK_HISTORY_SQLITE_CACHE) > _BULK_HISTORY_SQLITE_CACHE_MAX_ENTRIES
+        or total_rows > _BULK_HISTORY_SQLITE_CACHE_MAX_ROWS
+    ):
+        oldest_key = next(iter(_BULK_HISTORY_SQLITE_CACHE))
+        total_rows -= _BULK_HISTORY_SQLITE_CACHE.pop(oldest_key).metadata.row_count
 
 
 def _bulk_history_cache_key(
@@ -488,48 +510,49 @@ def _bulk_history_since_sqlite(
     since: datetime,
 ) -> dict[str, list[UsageHistorySnapshot]]:
     cache_key = _bulk_history_cache_key(db_path, account_ids, window)
+    with _BULK_HISTORY_SQLITE_CACHE_LOCK:
+        _prune_bulk_history_cache(monotonic())
+        cached = _BULK_HISTORY_SQLITE_CACHE.get(cache_key)
+        generation = _BULK_HISTORY_SQLITE_CACHE_GENERATION
+
     with closing(sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)) as conn:
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=30000")
-        with _BULK_HISTORY_SQLITE_CACHE_LOCK:
-            cached = _BULK_HISTORY_SQLITE_CACHE.get(cache_key)
-            if cached is not None and cached.since <= since:
-                metadata = _query_bulk_history_metadata_sqlite(
-                    conn,
-                    account_ids,
-                    window,
-                    cached.since,
-                    max_id=cached.max_id,
-                )
-                if metadata != cached.metadata:
-                    grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, cached.since)
-                    cached.metadata = _bulk_history_metadata_from_grouped(grouped)
-                    cached.max_id = cached.metadata.max_id
-                    cached.rows_by_account = grouped
-                    return _clone_filtered_history(grouped, since)
-
-                new_rows = _query_bulk_history_since_sqlite(
-                    conn,
-                    account_ids,
-                    window,
-                    cached.since,
-                    after_id=cached.max_id,
-                )
-                if new_rows:
-                    _append_grouped_history(cached.rows_by_account, new_rows)
-                    cached.metadata = _bulk_history_metadata_from_grouped(cached.rows_by_account)
-                    cached.max_id = cached.metadata.max_id
-                return _clone_filtered_history(cached.rows_by_account, since)
-
+        # Metadata and appends must describe the same snapshot. Autocommit
+        # SELECTs could otherwise combine pre-correction rows with a newer tail.
+        conn.execute("BEGIN")
+        if cached is not None and cached.since <= since:
+            # Published entries are never mutated: other readers may own them.
+            # Advance the retained window before both verification and appends.
+            grouped = _clone_filtered_history(cached.rows_by_account, since)
+            expected = cached.metadata if cached.since == since else _bulk_history_metadata_from_grouped(grouped)
+            actual = _query_bulk_history_metadata_sqlite(conn, account_ids, window, since, max_id=cached.max_id)
+            if actual == expected:
+                new_rows = _query_bulk_history_since_sqlite(conn, account_ids, window, since, after_id=cached.max_id)
+                _append_grouped_history(grouped, new_rows)
+                metadata = _bulk_history_metadata_from_grouped(grouped) if new_rows else expected
+            else:
+                grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, since)
+                metadata = _bulk_history_metadata_from_grouped(grouped)
+        else:
             grouped = _query_bulk_history_since_sqlite(conn, account_ids, window, since)
             metadata = _bulk_history_metadata_from_grouped(grouped)
-            _BULK_HISTORY_SQLITE_CACHE[cache_key] = _BulkHistoryCacheEntry(
-                since=since,
-                max_id=metadata.max_id,
-                metadata=metadata,
-                rows_by_account=grouped,
-            )
-            return _clone_filtered_history(grouped, since)
+
+    with _BULK_HISTORY_SQLITE_CACHE_LOCK:
+        # Invalidation must win over reads that started before it. Likewise a
+        # slower concurrent reader must not overwrite a newer published entry.
+        if generation == _BULK_HISTORY_SQLITE_CACHE_GENERATION and _BULK_HISTORY_SQLITE_CACHE.get(cache_key) is cached:
+            _BULK_HISTORY_SQLITE_CACHE.pop(cache_key, None)
+            if metadata.row_count <= _BULK_HISTORY_SQLITE_CACHE_MAX_ROWS:
+                _BULK_HISTORY_SQLITE_CACHE[cache_key] = _BulkHistoryCacheEntry(
+                    since=since,
+                    max_id=metadata.max_id,
+                    metadata=metadata,
+                    rows_by_account=grouped,
+                    expires_at=monotonic() + _BULK_HISTORY_SQLITE_CACHE_TTL_SECONDS,
+                )
+            _prune_bulk_history_cache(monotonic())
+    return _clone_filtered_history(grouped, since)
 
 
 def _resolve_additional_quota_key(

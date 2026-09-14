@@ -5770,6 +5770,7 @@ class _WebSocketMixin:
                 request_state.started_at
                 for request_state in pending_requests
                 if _http_bridge_request_counts_against_queue(request_state)
+                or request_state.downstream_buffer_overflowed
             ]
         return _websocket_receive_timeout_for_pending_requests(
             started_ats,
@@ -5908,7 +5909,7 @@ class _WebSocketMixin:
         response_id = request_state.response_id or request_state.request_id
         response_service_tier = request_state.service_tier
 
-        if request_state.draining_until_terminal:
+        if request_state.draining_until_terminal and not request_state.downstream_buffer_overflowed:
             await _release_websocket_response_create_gate(request_state, response_create_gate)
             await proxy._release_websocket_request_state_reservation(request_state)
             # The reservation is settled; clear any terminal-bookkeeping

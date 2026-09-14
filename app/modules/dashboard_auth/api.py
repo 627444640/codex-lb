@@ -58,6 +58,7 @@ from app.modules.dashboard_auth.service import (
     TotpInvalidCodeError,
     TotpInvalidSetupError,
     TotpNotConfiguredError,
+    credential_fingerprint,
     get_dashboard_session_store,
     get_guest_password_rate_limiter,
     get_password_rate_limiter,
@@ -84,6 +85,7 @@ async def _create_dashboard_session(
     totp_verified: bool,
     role: DashboardRole = DashboardRole.ADMIN,
     guest_verified: bool = False,
+    fingerprint: str,
 ) -> tuple[str, int]:
     settings = await get_settings_cache().get()
     ttl_seconds = resolve_dashboard_session_ttl_seconds(request, settings.dashboard_session_ttl_seconds)
@@ -93,11 +95,12 @@ async def _create_dashboard_session(
         ttl_seconds=ttl_seconds,
         role=role,
         guest_verified=guest_verified,
+        credential_fingerprint=fingerprint,
     )
     return session_id, ttl_seconds
 
 
-def _decorate_session_response(
+async def _decorate_session_response(
     response: DashboardAuthSessionResponse,
     *,
     request: Request,
@@ -108,7 +111,8 @@ def _decorate_session_response(
     auth_mode = get_settings().dashboard_auth_mode
     store = get_dashboard_session_store()
     sid = password_session_id or request.cookies.get(DASHBOARD_SESSION_COOKIE)
-    session_state = store.get(sid) if sid else None
+    settings = await get_settings_cache().get()
+    session_state = store.get_validated(sid, settings) if sid else None
     session_role = getattr(session_state, "role", DashboardRole.ADMIN)
     has_pwd = session_state is not None and session_role == DashboardRole.ADMIN and session_state.password_verified
     totp_pending = (
@@ -178,18 +182,19 @@ async def _has_active_password_session(request: Request, context: DashboardAuthC
     if settings.password_hash is None:
         return False
     session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-    return get_dashboard_session_store().is_password_verified(session_id)
+    state = get_dashboard_session_store().get_validated(session_id, settings)
+    return state is not None and state.role == DashboardRole.ADMIN and state.password_verified
 
 
 async def _validate_password_management_session(request: Request) -> None:
     _ensure_password_management_enabled(request)
 
     session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-    session_state = get_dashboard_session_store().get(session_id)
+    settings = await get_settings_cache().get()
+    session_state = get_dashboard_session_store().get_validated(session_id, settings)
     if session_state is None or session_state.role != DashboardRole.ADMIN or not session_state.password_verified:
         raise DashboardAuthError("Authentication is required")
 
-    settings = await get_settings_cache().get()
     if settings.totp_required_on_login and not session_state.totp_verified:
         raise DashboardAuthError(
             "TOTP verification is required for dashboard access",
@@ -230,7 +235,7 @@ async def get_dashboard_auth_session(
 ) -> DashboardAuthSessionResponse:
     session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
     response = await context.service.get_session_state(session_id)
-    decorated = _decorate_session_response(response, request=request, force_authenticated=True)
+    decorated = await _decorate_session_response(response, request=request, force_authenticated=True)
     if decorated.auth_mode != DashboardAuthMode.STANDARD:
         return decorated
     if decorated.password_required or is_local_request(request):
@@ -240,7 +245,7 @@ async def get_dashboard_auth_session(
         if current_settings.guest_password_hash is None:
             return _public_guest_response(decorated)
         if decorated.authenticated and decorated.role == DashboardRole.GUEST:
-            session_state = get_dashboard_session_store().get(session_id)
+            session_state = get_dashboard_session_store().get_validated(session_id, current_settings)
             if session_state is not None and session_state.guest_verified:
                 return decorated
         return _guest_login_required_response(decorated)
@@ -293,15 +298,15 @@ async def setup_password(
     password = payload.password.strip()
     _validate_password_length(password)
     try:
-        await context.service.setup_password(password)
+        fingerprint = await context.service.setup_password(password)
     except PasswordAlreadyConfiguredError as exc:
         raise DashboardConflictError(str(exc), code="password_already_configured") from exc
 
     await get_settings_cache().invalidate()
     session_id, session_ttl_seconds = await _create_dashboard_session(
-        request, password_verified=True, totp_verified=False
+        request, password_verified=True, totp_verified=False, fingerprint=fingerprint
     )
-    response = _decorate_session_response(
+    response = await _decorate_session_response(
         await context.service.get_session_state(session_id),
         request=request,
         password_session_id=session_id,
@@ -339,7 +344,7 @@ async def login_guest(
             ) from exc
 
     try:
-        guest_verified = await context.service.verify_guest_password(
+        verified_fingerprint = await context.service.verify_guest_password(
             None if payload is None else payload.password,
             actor_ip=request.client.host if request.client else None,
         )
@@ -355,9 +360,10 @@ async def login_guest(
         password_verified=False,
         totp_verified=False,
         role=DashboardRole.GUEST,
-        guest_verified=guest_verified,
+        guest_verified=verified_fingerprint is not None,
+        fingerprint=verified_fingerprint or credential_fingerprint(None),
     )
-    response = _decorate_session_response(
+    response = await _decorate_session_response(
         await context.service.get_session_state(session_id),
         request=request,
         password_session_id=session_id,
@@ -395,7 +401,7 @@ async def login_password(
         ) from exc
 
     try:
-        await context.service.verify_password(
+        fingerprint = await context.service.verify_password(
             payload.password, actor_ip=request.client.host if request.client else None
         )
     except InvalidCredentialsError as exc:
@@ -407,9 +413,9 @@ async def login_password(
     await limiter.clear_for_key(rate_key, context.session)
 
     session_id, session_ttl_seconds = await _create_dashboard_session(
-        request, password_verified=True, totp_verified=False
+        request, password_verified=True, totp_verified=False, fingerprint=fingerprint
     )
-    response = _decorate_session_response(
+    response = await _decorate_session_response(
         await context.service.get_session_state(session_id),
         request=request,
         password_session_id=session_id,
@@ -587,7 +593,7 @@ async def verify_totp(
         raise DashboardBadRequestError(str(exc), code="invalid_totp_code") from exc
 
     await limiter.clear_for_key(rate_key, context.session)
-    response = _decorate_session_response(
+    response = await _decorate_session_response(
         await context.service.get_session_state(session_id),
         request=request,
         password_session_id=session_id,

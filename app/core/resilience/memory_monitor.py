@@ -1,22 +1,11 @@
 from __future__ import annotations
 
 import ctypes
-import importlib
 import logging
 import os
 import sys
 from ctypes import wintypes
-from types import ModuleType
-
-
-def _load_resource_module() -> ModuleType | None:
-    try:
-        return importlib.import_module("resource")
-    except ImportError:
-        return None
-
-
-_resource = _load_resource_module()
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +67,46 @@ def _get_windows_rss_bytes() -> int | None:
     return int(counters.WorkingSetSize)
 
 
-def _get_resource_rss_bytes() -> int | None:
-    if _resource is None:
+class _MachTaskBasicInfo(ctypes.Structure):
+    # mach/task_info.h: MACH_TASK_BASIC_INFO is the platform's always-64-bit
+    # layout; resident_size is current RSS, resident_size_max is the peak.
+    _fields_ = [
+        ("virtual_size", ctypes.c_uint64),
+        ("resident_size", ctypes.c_uint64),
+        ("resident_size_max", ctypes.c_uint64),
+        ("user_time", ctypes.c_int * 2),
+        ("system_time", ctypes.c_int * 2),
+        ("policy", ctypes.c_int),
+        ("suspend_count", ctypes.c_int),
+    ]
+
+
+@lru_cache(maxsize=1)
+def _macos_task_library() -> ctypes.CDLL | None:
+    try:
+        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        library.mach_task_self.argtypes = []
+        library.mach_task_self.restype = ctypes.c_uint
+        library.task_info.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+        library.task_info.restype = ctypes.c_int
+        return library
+    except (AttributeError, OSError):
         return None
-    usage = _resource.getrusage(_resource.RUSAGE_SELF)
-    if sys.platform == "darwin":
-        return int(usage.ru_maxrss)
-    return int(usage.ru_maxrss * 1024)
+
+
+def _get_macos_rss_bytes() -> int | None:
+    if sys.platform != "darwin":
+        return None
+    library = _macos_task_library()
+    if library is None:
+        return None
+    info = _MachTaskBasicInfo()
+    expected_count = ctypes.sizeof(info) // ctypes.sizeof(ctypes.c_uint)
+    count = ctypes.c_uint(expected_count)
+    result = library.task_info(library.mach_task_self(), 20, ctypes.byref(info), ctypes.byref(count))
+    if result != 0 or count.value < expected_count:
+        return None
+    return int(info.resident_size)
 
 
 def _log_rss_provider_unavailable() -> None:
@@ -114,7 +136,7 @@ def get_rss_bytes() -> int:
     if rss is not None:
         return rss
 
-    rss = _get_resource_rss_bytes()
+    rss = _get_macos_rss_bytes()
     if rss is not None:
         return rss
 

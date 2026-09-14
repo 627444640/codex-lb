@@ -4524,6 +4524,269 @@ async def test_v1_responses_http_bridge_reuses_upstream_websocket_and_preserves_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "arguments", "namespace"),
+    [
+        ("write_stdin", '{"session_id":123,"chars":"","yield_time_ms":1000}', None),
+        ("exec_command", '{"cmd":"git status --short"}', None),
+        ("spawn_agent", '{"message":"same task"}', "collaboration"),
+        (
+            "multi_tool_use.parallel",
+            '{"tool_uses":[{"recipient_name":"functions.exec_command","parameters":{"cmd":"git status --short"}}]}',
+            None,
+        ),
+        (
+            "multi_tool_use.parallel",
+            '{"tool_uses":[{"recipient_name":"functions.exec","parameters":{"code":"text(1)"}}]}',
+            None,
+        ),
+        (
+            "multi_tool_use.parallel",
+            '{"tool_uses":[{"recipient_name":"functions.exec_command",'
+            '"parameters":{"cmd":"git status --short"}},{"recipient_name":"functions.exec",'
+            '"parameters":{"code":"text(1)"}}]}',
+            None,
+        ),
+    ],
+)
+async def test_http_bridge_followup_preserves_independent_tool_call_history(
+    async_client,
+    app_instance,
+    monkeypatch,
+    name,
+    arguments,
+    namespace,
+):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_id = await _import_account(async_client, "acc_call_identity", "call-identity@example.com")
+    account = await _get_account(account_id)
+    service = get_proxy_service_for_app(app_instance)
+    upstream = _FakeBridgeUpstreamWebSocket()
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", AsyncMock(return_value=upstream))
+
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "Continue.",
+        "input": "hello",
+        "prompt_cache_key": "independent-tool-calls",
+    }
+    first = await async_client.post("/v1/responses", json=payload)
+    assert first.status_code == 200
+    history = []
+    for index, output in enumerate(("first observation", "later observation")):
+        call = {"type": "function_call", "name": name, "arguments": arguments, "call_id": f"call-{index}"}
+        if namespace is not None:
+            call["namespace"] = namespace
+        history.extend([call, {"type": "function_call_output", "call_id": f"call-{index}", "output": output}])
+
+    followup = await async_client.post(
+        "/v1/responses",
+        json={**payload, "previous_response_id": first.json()["id"], "input": history},
+    )
+    assert followup.status_code == 200
+    assert len(upstream.sent_text) == 2
+    forwarded = json.loads(upstream.sent_text[1])["input"]
+    assert forwarded == [{key: value for key, value in item.items() if key != "namespace"} for item in history]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False])
+async def test_v1_responses_reports_bridge_buffer_overflow_instead_of_success(
+    async_client,
+    app_instance,
+    monkeypatch,
+    stream,
+):
+    from app.modules.proxy import http_bridge_event_queue as queue_module
+
+    _install_bridge_settings(monkeypatch, enabled=True)
+    monkeypatch.setattr(queue_module, "_REQUEST_MAX_BYTES", 256)
+    account_id = await _import_account(async_client, "acc_overflow_route", "overflow-route@example.com")
+    account = await _get_account(account_id)
+    service = get_proxy_service_for_app(app_instance)
+    upstream = _FakeBridgeUpstreamWebSocket()
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", AsyncMock(return_value=upstream))
+    response = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "instructions": "Continue.", "input": "hello", "stream": stream},
+    )
+    if stream:
+        assert response.status_code == 200
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")]
+        assert events[0]["type"] == "response.created"
+        assert events[-1]["type"] == "response.failed"
+        assert events[-1]["response"]["error"]["code"] == "downstream_buffer_overflow"
+        assert all(event["type"] != "response.completed" for event in events)
+    else:
+        assert response.status_code >= 400
+        assert response.json()["error"]["code"] == "downstream_buffer_overflow"
+    assert len(upstream.sent_text) == 1
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_slow_consumer_fails_without_blocking_sibling_or_losing_terminal_settlement(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    from app.modules.proxy import http_bridge_event_queue as queue_module
+
+    _install_bridge_settings(monkeypatch, enabled=True)
+    budget = queue_module.EventBufferBudget(4096)
+    monkeypatch.setattr(queue_module, "_process_budget", budget)
+    monkeypatch.setattr(queue_module, "_REQUEST_MAX_BYTES", 1024)
+    account_id = await _import_account(async_client, "acc_slow_consumer", "slow-consumer@example.com")
+    account = await _get_account(account_id)
+    service = get_proxy_service_for_app(app_instance)
+    upstream = _CreatedOnlyUpstreamWebSocket()
+    monkeypatch.setattr(
+        service,
+        "_select_account_with_budget",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", AsyncMock(return_value=upstream))
+    settle = AsyncMock(return_value=True)
+    release = AsyncMock()
+    penalize = AsyncMock()
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", settle)
+    monkeypatch.setattr(service, "_release_websocket_request_state_reservation", release)
+    monkeypatch.setattr(service, "_handle_stream_error", penalize)
+
+    payload = proxy_module.ResponsesRequest(
+        model="gpt-5.1", instructions="Continue.", input="hello", previous_response_id="resp-existing"
+    )
+    key = proxy_module._HTTPBridgeSessionKey("session_header", "slow-consumer-session", None)
+    affinity = proxy_module._AffinityPolicy(
+        key="slow-consumer-session", kind=proxy_module.StickySessionKind.CODEX_SESSION
+    )
+    session = await service._get_or_create_http_bridge_session(
+        key,
+        headers={},
+        affinity=affinity,
+        api_key=None,
+        request_model=payload.model,
+        idle_ttl_seconds=120.0,
+        max_sessions=2,
+    )
+    state, text = service._prepare_http_bridge_request(payload, {}, api_key=None, api_key_reservation=None)
+    slow = service._stream_http_bridge_session_events(
+        session,
+        request_state=state,
+        text_data=text,
+        queue_limit=8,
+        propagate_http_errors=False,
+        downstream_turn_state=None,
+    )
+    first = proxy_module.parse_sse_data_json(await asyncio.wait_for(anext(slow), timeout=5))
+    assert first is not None
+    assert first["type"] == "response.created"
+    # Leave this consumer paused after response.created, while another request
+    # shares the same real upstream reader and websocket session.
+    sibling_state, sibling_text = service._prepare_http_bridge_request(
+        payload.model_copy(update={"input": "sibling"}),
+        {},
+        api_key=None,
+        api_key_reservation=None,
+    )
+    sibling = service._stream_http_bridge_session_events(
+        session,
+        request_state=sibling_state,
+        text_data=sibling_text,
+        queue_limit=8,
+        propagate_http_errors=False,
+        downstream_turn_state=None,
+    )
+    sibling_first = proxy_module.parse_sse_data_json(await asyncio.wait_for(anext(sibling), timeout=5))
+    assert sibling_first is not None
+    assert sibling_first["type"] == "response.created"
+    queue = state.event_queue
+    assert isinstance(queue, queue_module.HTTPBridgeEventQueue)
+    processed = asyncio.Event()
+    process_event = service._process_http_bridge_upstream_text
+
+    async def record_processed(target, text):
+        await process_event(target, text)
+        processed.set()
+
+    monkeypatch.setattr(service, "_process_http_bridge_upstream_text", record_processed)
+
+    async def emit(event):
+        processed.clear()
+        await upstream._messages.put(_FakeUpstreamMessage("text", text=json.dumps(event)))
+        await asyncio.wait_for(processed.wait(), timeout=5)
+
+    for _ in range(3):
+        await emit({"type": "response.output_text.delta", "response_id": state.response_id, "delta": "x" * 500})
+    assert queue.overflowed and queue.retained_bytes == 0
+
+    def completed(response_id):
+        return {
+            "type": "response.completed",
+            "response": {
+                "id": response_id,
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 24, "output_tokens": 2, "total_tokens": 26},
+            },
+        }
+
+    await emit(completed(sibling_state.response_id))
+    sibling_events = [proxy_module.parse_sse_data_json(item) async for item in sibling]
+    assert sibling_events[-1] is not None
+    assert sibling_events[-1]["type"] == "response.completed"
+
+    reservation = proxy_module.ApiKeyUsageReservationData(
+        reservation_id="slow-consumer-reservation",
+        key_id="slow-consumer-key",
+        model=payload.model,
+    )
+    state.api_key_reservation = reservation
+    failure = proxy_module.parse_sse_data_json(await anext(slow))
+    assert failure is not None
+    failure_response = failure["response"]
+    assert isinstance(failure_response, dict)
+    failure_error = failure_response["error"]
+    assert isinstance(failure_error, dict)
+    assert failure_error["code"] == "downstream_buffer_overflow"
+    await slow.aclose()
+    assert state.event_queue is None
+    assert state.api_key_reservation is reservation
+    assert state in session.pending_requests
+    release.assert_not_awaited()
+
+    await emit(completed(state.response_id))
+    assert state not in session.pending_requests
+    settlement_calls = [call for call in settle.await_args_list if call.args[1] is reservation]
+    assert len(settlement_calls) == 1
+    settlement = settlement_calls[0].args[2]
+    assert (settlement.input_tokens, settlement.output_tokens) == (24, 2)
+    assert state.api_key_reservation is None
+    penalize.assert_not_awaited()
+    assert budget.retained_bytes == 0
+    assert state.operation_id is not None
+    operation = await service._durable_bridge.get_operation(operation_id=state.operation_id)
+    assert operation is not None and operation.state == "completed"
+    assert operation.event_spool_complete
+    persisted = await service._durable_bridge.get_operation_events(operation_id=state.operation_id)
+    persisted_types = [proxy_module.parse_sse_data_json(item)["type"] for item in persisted]
+    assert persisted_types.count("response.output_text.delta") == 3
+    assert persisted_types[-1] == "response.completed"
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_http_bridge_reuses_quota_admitted_spark_then_rejects_current_plan_change(
     async_client,
     app_instance,

@@ -549,19 +549,16 @@ def replayed_side_effect_tool_call_key(item: Mapping[str, JsonValue]) -> Replaye
     namespace_value = item.get("namespace")
     namespace = namespace_value if isinstance(namespace_value, str) else None
     call_id_value = item.get("call_id")
-    identity_scoped = namespace is not None
-    if item_name == tool_call_safety.PARALLEL_TOOL_CALL_NAME:
-        # A mixed parallel wrapper remains argument-scoped for ordinary
-        # side effects; only an all-code-mode wrapper gets outer-call
-        # identity because those nested calls are independently meaningful.
-        identity_scoped = parallel_argument_has_only_code_mode_side_effects(argument_value)
-    call_id = call_id_value if identity_scoped and isinstance(call_id_value, str) and call_id_value else None
+    # History describes calls that already executed. Equal arguments alone
+    # cannot prove replay: consecutive terminal polls or shell commands can
+    # legitimately return different results. Preserve flat and parallel call
+    # identity just as we preserve namespaced calls.
+    call_id = call_id_value if isinstance(call_id_value, str) and call_id_value.strip() else None
     return (item_type, namespace, item_name, call_id, argument_key)
 
 
 def _replayed_side_effect_key_has_stable_identity(key: ReplayedSideEffectToolCallKey) -> bool:
-    _, namespace, item_name, call_id, _ = key
-    return call_id is not None and (namespace is not None or item_name == tool_call_safety.PARALLEL_TOOL_CALL_NAME)
+    return key[3] is not None
 
 
 def _clear_legacy_replayed_side_effect_keys(

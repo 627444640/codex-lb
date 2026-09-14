@@ -512,8 +512,8 @@ async def test_codex_usage_accepts_api_key_callers(async_client, db_setup):
     key_id, plain_key = await _create_api_key(
         name="codex-usage-api-key",
         limits=[
-            LimitRuleInput(limit_type="credits", limit_window="5h", max_value=60),
-            LimitRuleInput(limit_type="credits", limit_window="7d", max_value=1000),
+            LimitRuleInput(limit_type="total_tokens", limit_window="5h", max_value=60),
+            LimitRuleInput(limit_type="total_tokens", limit_window="7d", max_value=1000),
         ],
     )
     now = utcnow()
@@ -525,7 +525,7 @@ async def test_codex_usage_accepts_api_key_callers(async_client, db_setup):
             [
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.FIVE_HOURS,
                     max_value=60,
                     current_value=12,
@@ -534,7 +534,7 @@ async def test_codex_usage_accepts_api_key_callers(async_client, db_setup):
                 ),
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.SEVEN_DAYS,
                     max_value=1000,
                     current_value=250,
@@ -553,25 +553,27 @@ async def test_codex_usage_accepts_api_key_callers(async_client, db_setup):
     assert response.status_code == 200
     payload = response.json()
     assert payload["plan_type"] == "api_key"
-    assert payload["rate_limit"]["allowed"] is True
-    assert payload["rate_limit"]["limit_reached"] is False
-    assert payload["rate_limit"]["primary_window"]["used_percent"] == 20
-    assert payload["rate_limit"]["secondary_window"]["used_percent"] == 25
-    assert payload["credits"] == {
-        "has_credits": True,
-        "unlimited": False,
-        "balance": "750",
-        "approx_local_messages": None,
-        "approx_cloud_messages": None,
-    }
+    # Token counts have no defined conversion to Codex credits.
+    assert payload["rate_limit"] is None
+    assert payload["credits"] is None
+    self_usage = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+    assert self_usage.status_code == 200
+    limits = self_usage.json()["limits"]
+    assert [
+        (rule["limit_type"], rule["limit_window"], rule["current_value"], rule["remaining_value"]) for rule in limits
+    ] == [
+        ("total_tokens", "5h", 12, 48),
+        ("total_tokens", "7d", 250, 750),
+    ]
+    assert all(rule["source"] == "api_key_limit" for rule in limits)
 
 
 @pytest.mark.asyncio
-async def test_codex_usage_api_key_exposes_monthly_credit_window(async_client, db_setup):
+async def test_codex_usage_api_key_does_not_convert_monthly_cost_limits_to_credits(async_client, db_setup):
     key_id, plain_key = await _create_api_key(
         name="codex-usage-api-key-monthly",
         limits=[
-            LimitRuleInput(limit_type="credits", limit_window="monthly", max_value=1000),
+            LimitRuleInput(limit_type="cost_usd", limit_window="monthly", max_value=1000),
         ],
     )
     now = utcnow()
@@ -583,7 +585,7 @@ async def test_codex_usage_api_key_exposes_monthly_credit_window(async_client, d
             [
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.COST_USD,
                     limit_window=LimitWindow.MONTHLY,
                     max_value=1000,
                     current_value=250,
@@ -601,10 +603,21 @@ async def test_codex_usage_api_key_exposes_monthly_credit_window(async_client, d
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["rate_limit"]["primary_window"] is None
-    assert payload["rate_limit"]["secondary_window"] is None
-    assert payload["rate_limit"]["monthly_window"]["used_percent"] == 25
-    assert payload["credits"]["balance"] == "750"
+    assert payload["rate_limit"] is None
+    assert payload["credits"] is None
+    self_usage = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+    assert self_usage.status_code == 200
+    [monthly] = self_usage.json()["limits"]
+    assert monthly == {
+        "limit_type": "cost_usd",
+        "limit_window": "monthly",
+        "max_value": 1000,
+        "current_value": 250,
+        "remaining_value": 750,
+        "model_filter": None,
+        "reset_at": (now + timedelta(days=30)).isoformat() + "Z",
+        "source": "api_key_limit",
+    }
 
 
 @pytest.mark.asyncio
@@ -656,8 +669,8 @@ async def test_codex_usage_api_key_ignores_aggregate_workspace_limits(async_clie
     key_id, plain_key = await _create_api_key(
         name="codex-usage-agg-test",
         limits=[
-            LimitRuleInput(limit_type="credits", limit_window="5h", max_value=100),
-            LimitRuleInput(limit_type="credits", limit_window="7d", max_value=500),
+            LimitRuleInput(limit_type="total_tokens", limit_window="5h", max_value=100),
+            LimitRuleInput(limit_type="total_tokens", limit_window="7d", max_value=500),
         ],
     )
     async with SessionLocal() as session:
@@ -667,7 +680,7 @@ async def test_codex_usage_api_key_ignores_aggregate_workspace_limits(async_clie
             [
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.FIVE_HOURS,
                     max_value=100,
                     current_value=5,
@@ -676,7 +689,7 @@ async def test_codex_usage_api_key_ignores_aggregate_workspace_limits(async_clie
                 ),
                 ApiKeyLimit(
                     api_key_id=key_id,
-                    limit_type=LimitType.CREDITS,
+                    limit_type=LimitType.TOTAL_TOKENS,
                     limit_window=LimitWindow.SEVEN_DAYS,
                     max_value=500,
                     current_value=50,
@@ -694,9 +707,26 @@ async def test_codex_usage_api_key_ignores_aggregate_workspace_limits(async_clie
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["rate_limit"]["primary_window"]["used_percent"] == 5
-    assert payload["rate_limit"]["secondary_window"]["used_percent"] == 10
-    assert payload["credits"]["balance"] == "450"
+    assert payload["rate_limit"] is None
+    assert payload["credits"] is None
+    self_usage = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+    assert self_usage.status_code == 200
+    usage = self_usage.json()
+    assert [
+        (rule["limit_type"], rule["limit_window"], rule["current_value"], rule["remaining_value"])
+        for rule in usage["limits"]
+    ] == [
+        ("total_tokens", "5h", 5, 95),
+        ("total_tokens", "7d", 50, 450),
+    ]
+    assert all(rule["source"] == "api_key_limit" for rule in usage["limits"])
+    upstream = usage["upstream_limits"]
+    assert [(rule["limit_type"], rule["limit_window"], rule["source"]) for rule in upstream] == [
+        ("credits", "5h", "aggregate"),
+        ("credits", "7d", "aggregate"),
+    ]
+    assert upstream[0]["current_value"] / upstream[0]["max_value"] == pytest.approx(0.85, abs=0.01)
+    assert upstream[1]["current_value"] / upstream[1]["max_value"] == pytest.approx(0.65, abs=0.01)
 
 
 @pytest.mark.asyncio

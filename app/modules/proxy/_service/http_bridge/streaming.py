@@ -230,6 +230,11 @@ from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_e
 from app.modules.proxy.helpers import (
     _normalize_error_code,
 )
+from app.modules.proxy.http_bridge_event_queue import (
+    DOWNSTREAM_BUFFER_OVERFLOW,
+    DownstreamBufferOverflow,
+    discard_http_bridge_event_queue,
+)
 from app.modules.proxy.replay_safety import (
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_suffix_matches_pending_tool_calls,
@@ -4053,6 +4058,7 @@ class _HTTPBridgeStreamingMixin:
                         # share this lock. Revoking the mutable queue here
                         # prevents a later completion from claiming an
                         # orphaned downstream consumer.
+                        discard_http_bridge_event_queue(request_state.event_queue)
                         request_state.event_queue = None
 
                 if completed_delivery_owns_queue and not completed_delivery_suppression_logged:
@@ -4486,6 +4492,16 @@ class _HTTPBridgeStreamingMixin:
                     )
                 yield event_block
                 yielded_any = True
+        except DownstreamBufferOverflow:
+            logger.warning("HTTP bridge downstream buffer exhausted request_id=%s", request_state.request_id)
+            yield format_sse_event(
+                response_failed_event(
+                    DOWNSTREAM_BUFFER_OVERFLOW,
+                    "Downstream response buffer limit exceeded; upstream work may still finish. "
+                    "Resume the same logical request rather than starting duplicate work.",
+                    response_id=_websocket_downstream_response_id(request_state),
+                )
+            )
         finally:
             with anyio.CancelScope(shield=True):
                 await self._detach_http_bridge_request(session, request_state=request_state)

@@ -24068,7 +24068,6 @@ async def test_stream_via_http_bridge_fails_closed_before_file_affinity_when_pre
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
-    await service._pin_file_account("file_from_other_account", "acc-file")
     payload = proxy_service.ResponsesRequest.model_validate(
         {
             "model": "gpt-5.4",
@@ -24124,6 +24123,7 @@ async def test_stream_via_http_bridge_fails_closed_before_file_affinity_when_pre
             codex_idle_ttl_seconds=1800.0,
             max_sessions=8,
             queue_limit=4,
+            rewritten_file_account_id="acc-file",
         ):
             pass
 

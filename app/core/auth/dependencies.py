@@ -187,7 +187,7 @@ async def validate_dashboard_session(request: Request) -> DashboardPrincipal:
         and not guest_password_required
     )
     session_id = request.cookies.get(DASHBOARD_SESSION_COOKIE)
-    state = get_dashboard_session_store().get(session_id)
+    state = get_dashboard_session_store().get_validated(session_id, settings)
 
     has_admin_fallback_session = (
         state is not None and state.role == DashboardRole.ADMIN and password_required and state.password_verified

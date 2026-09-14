@@ -51,7 +51,7 @@ async def test_validate_dashboard_session_blocks_passwordless_guest_fallback_in_
     monkeypatch.setattr(
         auth_dependencies,
         "get_dashboard_session_store",
-        lambda: SimpleNamespace(get=lambda _session_id: None),
+        lambda: SimpleNamespace(get_validated=lambda _session_id, _settings: None),
     )
 
     with pytest.raises(DashboardAuthError, match="Reverse proxy authentication is required") as exc_info:

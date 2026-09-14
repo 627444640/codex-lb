@@ -43306,7 +43306,10 @@ async def test_files_finalize_pinned_initial_selection_does_not_fall_back(
     assert request_logs.calls[0]["account_id"] is None
 
 
-def test_prepare_response_bridge_request_state_dedupes_replayed_previous_response_tool_calls_before_serializing():
+@pytest.mark.parametrize("next_call_id", ["call_first", "call_next"])
+def test_prepare_response_bridge_request_state_dedupes_only_same_identity_previous_response_tool_calls(
+    next_call_id: str,
+):
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     input_items: list[JsonValue] = [
@@ -43325,11 +43328,11 @@ def test_prepare_response_bridge_request_state_dedupes_replayed_previous_respons
             "type": "function_call",
             "name": "write_stdin",
             "arguments": json.dumps({"session_id": 75180, "chars": "", "yield_time_ms": 30000}),
-            "call_id": "call_replay",
+            "call_id": next_call_id,
         },
         {
             "type": "function_call_output",
-            "call_id": "call_replay",
+            "call_id": next_call_id,
             "output": "Process exited with code 0",
         },
     ]
@@ -43350,12 +43353,13 @@ def test_prepare_response_bridge_request_state_dedupes_replayed_previous_respons
     upstream_payload = json.loads(text_data)
     upstream_input = upstream_payload["input"]
     assert request_state.input_item_count == 4
-    assert len(upstream_input) == 3
-    assert upstream_input[0]["call_id"] == "call_first"
-    assert upstream_input[1]["call_id"] == "call_first"
-    assert upstream_input[1]["output"] == "Process running with session ID 75180"
-    assert upstream_input[2]["role"] == "assistant"
-    assert upstream_input[2]["content"] == [{"type": "output_text", "text": "Process exited with code 0"}]
+    if next_call_id == "call_first":
+        assert len(upstream_input) == 3
+        assert upstream_input[:2] == input_items[:2]
+        assert upstream_input[2]["role"] == "assistant"
+        assert upstream_input[2]["content"] == [{"type": "output_text", "text": "Process exited with code 0"}]
+    else:
+        assert upstream_input == input_items
 
 
 def test_trim_websocket_previous_response_input_items_handles_apply_patch_replay():
@@ -43403,7 +43407,7 @@ def test_prepare_response_bridge_request_state_keeps_unconfirmed_missing_tool_ou
     assert upstream_input == input_items
 
 
-def test_prepare_response_bridge_request_state_rewrites_first_duplicate_when_only_replay_has_output():
+def test_prepare_response_bridge_request_state_keeps_distinct_call_with_unconfirmed_missing_output():
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
     input_items: list[JsonValue] = [
@@ -43442,12 +43446,7 @@ def test_prepare_response_bridge_request_state_rewrites_first_duplicate_when_onl
     upstream_payload = json.loads(text_data)
     upstream_input = upstream_payload["input"]
     assert request_state.input_item_count == 3
-    assert len(upstream_input) == 2
-    assert upstream_input[0]["type"] == "message"
-    assert "without matching output: exec_command" in upstream_input[0]["content"][0]["text"]
-    assert upstream_input[1]["type"] == "message"
-    assert upstream_input[1]["content"] == [{"type": "output_text", "text": "needle found"}]
-    assert "function_call" not in json.dumps(upstream_input)
+    assert upstream_input == input_items
 
 
 def test_prepare_response_bridge_request_state_keeps_repeated_first_attempt_tool_calls():

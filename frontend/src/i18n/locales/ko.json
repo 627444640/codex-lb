@@ -231,6 +231,7 @@
   "apiKeys.form.trafficClass": "Traffic class",
   "apiKeys.form.usageSections": "Usage section",
   "apiKeys.limitRule.creditsGlobal": "Credits Global",
+  "apiKeys.limitRule.creditsUnsupported": "Credits 제한은 지원되지 않아 이 키의 요청이 차단됩니다. 규칙을 삭제하거나 토큰 또는 비용 제한으로 변경하세요.",
   "apiKeys.limitRule.maxValueCredits": "최대값 (credits)",
   "apiKeys.limitRule.maxValueTokens": "최대값 (tokens)",
   "apiKeys.limitRule.maxValueUsd": "최대값 (USD)",

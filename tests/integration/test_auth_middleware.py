@@ -19,7 +19,11 @@ from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
-from app.modules.dashboard_auth.service import DASHBOARD_SESSION_COOKIE, get_dashboard_session_store
+from app.modules.dashboard_auth.service import (
+    DASHBOARD_SESSION_COOKIE,
+    credential_fingerprint,
+    get_dashboard_session_store,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -1049,7 +1053,7 @@ async def test_totp_only_mode_requires_session_even_when_password_hash_is_null(a
 
 
 @pytest.mark.asyncio
-async def test_totp_only_mode_accepts_totp_verified_session(async_client):
+async def test_totp_only_mode_rejects_unbound_legacy_totp_session(async_client):
     await _set_migration_inconsistent_totp_only_mode()
 
     session_id = get_dashboard_session_store().create(
@@ -1057,8 +1061,8 @@ async def test_totp_only_mode_accepts_totp_verified_session(async_client):
     )
     async_client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
 
-    allowed = await async_client.get("/api/settings")
-    assert allowed.status_code == 200
+    rejected = await async_client.get("/api/settings")
+    assert rejected.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -1066,7 +1070,10 @@ async def test_totp_only_mode_rejects_missing_totp_verification(async_client):
     await _set_migration_inconsistent_totp_only_mode()
 
     session_id = get_dashboard_session_store().create(
-        password_verified=True, totp_verified=False, ttl_seconds=12 * 60 * 60
+        password_verified=True,
+        totp_verified=False,
+        ttl_seconds=12 * 60 * 60,
+        credential_fingerprint=credential_fingerprint(None),
     )
     async_client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
 

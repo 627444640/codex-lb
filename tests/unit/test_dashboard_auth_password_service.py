@@ -13,6 +13,7 @@ from app.modules.dashboard_auth.service import (
     InvalidCredentialsError,
     PasswordAlreadyConfiguredError,
     PasswordNotConfiguredError,
+    credential_fingerprint,
 )
 
 pytestmark = pytest.mark.unit
@@ -208,6 +209,7 @@ async def test_verify_totp_inherits_existing_password_session_expiry(monkeypatch
     original_ttl = 12 * 60 * 60
     new_ttl_after_change = 24 * 60 * 60
     password_session_id = store.create(
+        credential_fingerprint=credential_fingerprint(repository.settings.password_hash),
         password_verified=True,
         totp_verified=False,
         ttl_seconds=original_ttl,
@@ -255,6 +257,7 @@ async def test_verify_totp_caps_inherited_password_session_to_requested_ttl(
     long_password_ttl = 365 * 24 * 60 * 60
     remote_request_ttl = 12 * 60 * 60
     password_session_id = store.create(
+        credential_fingerprint=credential_fingerprint(repository.settings.password_hash),
         password_verified=True,
         totp_verified=False,
         ttl_seconds=long_password_ttl,
@@ -308,6 +311,7 @@ async def test_verify_totp_does_not_call_session_store_get_twice(
     original_ttl = 12 * 60 * 60
     new_ttl_after_change = 24 * 60 * 60
     password_session_id = store.create(
+        credential_fingerprint=credential_fingerprint(repository.settings.password_hash),
         password_verified=True,
         totp_verified=False,
         ttl_seconds=original_ttl,
@@ -331,3 +335,47 @@ async def test_verify_totp_does_not_call_session_store_get_twice(
 
     assert applied_ttl == original_ttl
     assert get_calls == [password_session_id]
+
+
+@pytest.mark.asyncio
+async def test_totp_upgrade_cannot_rebind_to_concurrently_rotated_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pyotp
+
+    import app.core.auth.totp as totp_module
+    import app.modules.dashboard_auth.service as service_module
+    from app.core.crypto import TokenEncryptor
+
+    now = 1_700_000_000
+    monkeypatch.setattr(totp_module, "time", lambda: now)
+    monkeypatch.setattr(service_module, "time", lambda: now)
+    repository = _FakeRepository()
+    store = DashboardSessionStore()
+    service = DashboardAuthService(repository, store)
+    original_fingerprint = await service.setup_password("password123")
+    original_hash = repository.settings.password_hash
+    secret = "JBSWY3DPEHPK3PXP"
+    original_secret = TokenEncryptor().encrypt(secret)
+    repository.settings.totp_secret_encrypted = original_secret
+    password_session = store.create(
+        password_verified=True, totp_verified=False, ttl_seconds=120, credential_fingerprint=original_fingerprint
+    )
+
+    async def rotate_during_totp(step: int) -> bool:
+        repository.settings.password_hash = "rotated-hash"
+        repository.settings.totp_secret_encrypted = b"rotated-secret"
+        return True
+
+    monkeypatch.setattr(repository, "try_advance_totp_last_verified_step", rotate_during_totp)
+    upgraded, _ = await service.verify_totp(
+        session_id=password_session, code=pyotp.TOTP(secret).at(now), ttl_seconds=3600
+    )
+    state = store.get(upgraded)
+    assert state is not None
+    assert state.credential_fingerprint == original_fingerprint
+    assert state.totp_fingerprint == credential_fingerprint(original_secret)
+    assert state.expires_at == now + 120
+    assert store.get_validated(upgraded, repository.settings) is None
+    repository.settings.password_hash = original_hash
+    assert store.get_validated(upgraded, repository.settings) is None
+    repository.settings.totp_secret_encrypted = original_secret
+    assert store.get_validated(upgraded, repository.settings) is not None

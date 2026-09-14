@@ -165,6 +165,9 @@ async def test_dashboard_password_and_totp_flow(async_client, monkeypatch):
     disable = await async_client.post("/api/dashboard-auth/totp/disable", json={"code": disable_code})
     assert disable.status_code == 200
 
+    assert (await async_client.get("/api/settings")).status_code == 401
+    relogin = await async_client.post("/api/dashboard-auth/password/login", json={"password": "password123"})
+    assert relogin.status_code == 200
     settings = await async_client.get("/api/settings")
     assert settings.status_code == 200
     settings_payload = settings.json()
@@ -291,8 +294,8 @@ async def test_disable_totp_requires_existing_totp_configuration(async_client):
     async_client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
 
     disable = await async_client.post("/api/dashboard-auth/totp/disable", json={"code": "123456"})
-    assert disable.status_code == 400
-    assert disable.json()["error"]["code"] == "invalid_totp_code"
+    assert disable.status_code == 401
+    assert disable.json()["error"]["code"] == "authentication_required"
 
 
 @pytest.mark.asyncio

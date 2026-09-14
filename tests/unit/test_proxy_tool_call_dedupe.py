@@ -1439,7 +1439,7 @@ def test_mark_duplicate_tool_call_downstream_event_bounds_side_effect_history():
     assert len(upstream_control.seen_tool_call_keys) == tool_call_dedupe._TOOL_CALL_DEDUPE_CACHE_LIMIT
 
 
-def test_dedupe_replayed_side_effect_input_items_removes_duplicate_call_but_preserves_outputs():
+def test_dedupe_replayed_side_effect_input_items_preserves_independent_terminal_polls():
     input_items: list[JsonValue] = [
         {
             "type": "function_call",
@@ -1472,20 +1472,8 @@ def test_dedupe_replayed_side_effect_input_items_removes_duplicate_call_but_pres
 
     deduped_items, removed_count = tool_call_dedupe.dedupe_replayed_side_effect_input_items(input_items)
 
-    assert removed_count == 1
-    assert [item.get("type") for item in deduped_items if isinstance(item, dict)] == [
-        "function_call",
-        "function_call_output",
-        "reasoning",
-        "message",
-    ]
-    first_call = cast(dict[str, JsonValue], deduped_items[0])
-    first_output = cast(dict[str, JsonValue], deduped_items[1])
-    replay_output_message = cast(dict[str, JsonValue], deduped_items[-1])
-    assert first_call["call_id"] == "call_first"
-    assert first_output["output"] == "Process running with session ID 75180"
-    assert replay_output_message["role"] == "assistant"
-    assert replay_output_message["content"] == [{"type": "output_text", "text": "Process exited with code 0"}]
+    assert removed_count == 0
+    assert deduped_items == input_items
 
 
 def test_dedupe_replayed_side_effect_input_items_keeps_distinct_write_payloads():
@@ -1746,7 +1734,7 @@ def test_dedupe_replayed_side_effect_input_items_keeps_distinct_parallel_code_mo
     assert deduped_items == input_items
 
 
-def test_dedupe_replayed_side_effect_input_items_suppresses_ordinary_parallel_replay_with_new_outer_id():
+def test_dedupe_replayed_side_effect_input_items_preserves_ordinary_parallel_with_new_outer_id():
     arguments = json.dumps(
         {
             "tool_uses": [
@@ -1779,12 +1767,11 @@ def test_dedupe_replayed_side_effect_input_items_suppresses_ordinary_parallel_re
 
     deduped_items, removed_count = tool_call_dedupe.dedupe_replayed_side_effect_input_items(input_items)
 
-    assert removed_count == 1
-    assert deduped_items[:2] == [first_call, first_output]
-    assert not any(isinstance(item, dict) and item.get("call_id") == "call_parallel_replayed" for item in deduped_items)
+    assert removed_count == 0
+    assert deduped_items == input_items
 
 
-def test_dedupe_replayed_side_effect_input_items_scopes_mixed_parallel_by_arguments():
+def test_dedupe_replayed_side_effect_input_items_preserves_distinct_mixed_parallel_calls():
     arguments = json.dumps(
         {
             "tool_uses": [
@@ -1801,8 +1788,8 @@ def test_dedupe_replayed_side_effect_input_items_scopes_mixed_parallel_by_argume
         {"type": "function_call_output", "call_id": "second", "output": "second"},
     ]
     deduped_items, removed_count = tool_call_dedupe.dedupe_replayed_side_effect_input_items(input_items)
-    assert removed_count == 1
-    assert deduped_items[:2] == input_items[:2]
+    assert removed_count == 0
+    assert deduped_items == input_items
 
 
 @pytest.mark.parametrize(

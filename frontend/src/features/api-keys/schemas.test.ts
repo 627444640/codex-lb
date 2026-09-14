@@ -326,3 +326,9 @@ describe("LimitRuleCreateSchema", () => {
     expect(result.success).toBe(false);
   });
 });
+
+it("rejects unsupported credits limit submissions", () => {
+  const rule = { limitType: "credits", limitWindow: "daily", maxValue: 1 };
+  expect(ApiKeyCreateRequestSchema.safeParse({ name: "test", limits: [rule] }).success).toBe(false);
+  expect(ApiKeyUpdateRequestSchema.safeParse({ limits: [rule] }).success).toBe(false);
+});

@@ -142,3 +142,21 @@ describe("LimitRuleCard", () => {
     });
   });
 });
+
+it("omits unsupported credits from new choices", async () => {
+  const user = userEvent.setup();
+  renderWithProviders(<LimitRuleCard rule={tokenRule()} onChange={vi.fn()} onRemove={vi.fn()} />);
+  await user.click(screen.getByLabelText("Type"));
+  expect(screen.queryByRole("option", { name: "Credits" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Cost" })).toBeInTheDocument();
+});
+
+it("explains a legacy credits rule and allows its removal", async () => {
+  const user = userEvent.setup();
+  const onRemove = vi.fn();
+  renderWithProviders(<LimitRuleCard rule={tokenRule({ limitType: "credits" })} onChange={vi.fn()} onRemove={onRemove} />);
+  expect(screen.getByRole("alert")).toHaveTextContent("Credits limits are unsupported and block this key");
+  const remove = screen.getAllByRole("button").find((button) => button.getAttribute("data-variant") === "ghost");
+  await user.click(remove!);
+  expect(onRemove).toHaveBeenCalledOnce();
+});

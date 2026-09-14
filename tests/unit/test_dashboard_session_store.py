@@ -16,7 +16,12 @@ def test_session_store_round_trip_with_password_and_totp(monkeypatch) -> None:
     monkeypatch.setattr(dashboard_auth_service_module, "time", lambda: 1_700_000_000)
     store = DashboardSessionStore()
 
-    session_id = store.create(password_verified=True, totp_verified=False, ttl_seconds=12 * 60 * 60)
+    session_id = store.create(
+        credential_fingerprint="synthetic-fingerprint",
+        password_verified=True,
+        totp_verified=False,
+        ttl_seconds=12 * 60 * 60,
+    )
     state = store.get(session_id)
 
     assert state is not None
@@ -31,6 +36,7 @@ def test_session_store_round_trip_with_guest_role(monkeypatch) -> None:
     store = DashboardSessionStore()
 
     session_id = store.create(
+        credential_fingerprint="synthetic-fingerprint",
         password_verified=False,
         totp_verified=False,
         ttl_seconds=12 * 60 * 60,
@@ -59,7 +65,18 @@ def test_session_store_rejects_expired_session(monkeypatch) -> None:
     monkeypatch.setattr(dashboard_auth_service_module, "time", lambda: current["value"])
     store = DashboardSessionStore()
 
-    session_id = store.create(password_verified=True, totp_verified=True, ttl_seconds=12 * 60 * 60)
+    session_id = store.create(
+        credential_fingerprint="synthetic-fingerprint",
+        password_verified=True,
+        totp_verified=True,
+        ttl_seconds=12 * 60 * 60,
+    )
     current["value"] += 12 * 60 * 60 + 1
 
     assert store.get(session_id) is None
+
+
+def test_session_store_rejects_legacy_cookie_without_credential_fingerprint(monkeypatch) -> None:
+    monkeypatch.setattr(dashboard_auth_service_module, "time", lambda: 1_700_000_000)
+    legacy = TokenEncryptor().encrypt(json.dumps({"exp": 1_700_000_100, "pw": True, "tv": True})).decode("ascii")
+    assert DashboardSessionStore().get(legacy) is None

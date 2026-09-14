@@ -32,12 +32,20 @@ export function LoginForm() {
 
   const handleSubmit = async (values: { password: string }) => {
     clearError();
-    await login(values.password);
+    try {
+      await login(values.password);
+    } catch {
+      // The store exposes the failure in the form's existing error message.
+    }
   };
 
   const handleGuestSubmit = async (values: { password: string }) => {
     clearError();
-    await loginGuest(values.password.trim() || undefined);
+    try {
+      await loginGuest(values.password.trim() || undefined);
+    } catch {
+      // Keep the rejection local to this submission so the user can retry.
+    }
   };
 
   return (

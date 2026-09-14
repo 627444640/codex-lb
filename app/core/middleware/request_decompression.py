@@ -77,16 +77,30 @@ def _decompress_deflate(data: bytes, max_size: int) -> bytes:
 
 
 def _decompress_zstd(data: bytes, max_size: int) -> bytes:
-    try:
-        decompressed = zstd.ZstdDecompressor().decompress(data, max_output_size=max_size)
-        if len(decompressed) > max_size:
+    # max_output_size on the one-shot decoder is not a limit when the frame
+    # declares its content size. Bound both the output and native window before
+    # decoding; zstd requires at least a 1 KiB window even for tiny body budgets.
+    window_budget = max(max_size, 1024)
+    decoder_window = 1024
+    if data:
+        parameters = zstd.get_frame_parameters(data)
+        if (
+            parameters.content_size != zstd.CONTENTSIZE_UNKNOWN and parameters.content_size > max_size
+        ) or parameters.window_size > window_budget:
             raise _DecompressedBodyTooLarge(max_size)
-        return decompressed
-    except _DecompressedBodyTooLarge:
-        raise
-    except Exception:
-        with zstd.ZstdDecompressor().stream_reader(io.BytesIO(data)) as reader:
-            return _read_limited(reader, max_size)
+        # Use the validated frame's actual requirement: large configured body
+        # budgets can exceed the native parameter range even for tiny frames.
+        decoder_window = max(parameters.window_size, 1024)
+
+    decoder = zstd.ZstdDecompressor(max_window_size=decoder_window)
+    buffer = bytearray()
+    # read_to_iter stops at the first frame, matching the existing decoder's
+    # treatment of concatenated frames and trailing bytes.
+    for chunk in decoder.read_to_iter(data, read_size=64 * 1024, write_size=min(max_size + 1, 64 * 1024)):
+        if len(buffer) + len(chunk) > max_size:
+            raise _DecompressedBodyTooLarge(max_size)
+        buffer.extend(chunk)
+    return bytes(buffer)
 
 
 def _decompress_body(data: bytes, encodings: list[str], max_size: int) -> bytes:

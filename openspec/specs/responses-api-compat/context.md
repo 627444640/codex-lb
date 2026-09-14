@@ -257,3 +257,26 @@ OpenSpec change first.
 - Post-deploy: correlate retry-circuit `opened`, `half_open`, and `reset` events with bridge `pending` and `response_events_seen` diagnostics. An idle `pending=0` retirement must not precede an immediate two-failure cooldown.
 - Post-deploy: monitor `previous_response_not_found` on `/backend-api/codex/responses`; recurring spikes show repeated continuity failures, which may come from malformed client identifiers, server-side invalidation, or connection lifecycle. Clients should perform the documented full-context retry without `previous_response_id`. Investigate socket-lifecycle remediation only when a separate close-reason, reconnect, or transport diagnostic correlates with the failures.
 - Websocket/Codex CLI tier verification runbook: `openspec/specs/responses-api-compat/ops.md`
+# Downstream bridge event storage
+
+HTTP bridge consumers have a 32 MiB retained-event budget and share a 256 MiB
+process budget. These fixed memory safeguards allow two default maximum-size
+SSE frames for one consumer, while preventing many slow consumers from each
+holding an independently unbounded transcript. Accounting uses Python string
+storage plus queue references, so Unicode storage is covered without allocating
+an additional encoded copy on every event.
+
+The shared upstream reader does not wait for consumers. Exceeding either budget
+clears only the producing queue and causes its consumer to receive
+`downstream_buffer_overflow`. The upstream operation still runs its normal
+durable event spool and terminal usage settlement. The downstream failure is
+not an upstream-account failure. For example, a paused consumer may fail while
+another request on the same websocket completes normally; the failed consumer's
+upstream completion remains recoverable when the existing spool retained it.
+Existing spool limits still apply, so this does not promise transcript recovery
+for every oversized response. Consumers should resume the same logical request
+rather than blindly submit duplicate upstream work.
+
+Disconnect cleanup preserves an overflowed request until upstream terminal or
+request timeout cleanup runs. Such a pending request blocks premature session
+retirement and retains its existing request deadline and usage reservation.
