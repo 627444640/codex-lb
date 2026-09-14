@@ -89,11 +89,45 @@ const DashboardUserUpdatePayloadSchema = z.looseObject({
   force: z.boolean().optional(),
 });
 
+const OidcConfigPayloadSchema = z.looseObject({
+  issuer: z.string(),
+  discoveryUrl: z.string().nullable().optional(),
+  clientId: z.string(),
+  clientSecret: z.string(),
+  redirectUri: z.string(),
+  subjectClaim: z.string().nullable().optional(),
+  emailClaim: z.string().nullable().optional(),
+  nameClaim: z.string().nullable().optional(),
+  groupsClaim: z.string().nullable().optional(),
+});
+
+/** Where the mock identity provider sends the browser; never navigated to in tests. */
+const OIDC_AUTHORIZE_URL = "https://login.example.com/authorize";
+
+/** `mask_oidc_config`: everything in clear except the secret, defaults filled in. */
+function maskOidcConfig(config: z.infer<typeof OidcConfigPayloadSchema>): Record<string, string> {
+  const secret = config.clientSecret;
+  return {
+    issuer: config.issuer,
+    discoveryUrl: config.discoveryUrl ?? `${config.issuer.replace(/\/$/, "")}/.well-known/openid-configuration`,
+    clientId: config.clientId,
+    clientSecret: `****${secret.slice(-4)}`,
+    redirectUri: config.redirectUri,
+    subjectClaim: config.subjectClaim ?? "sub",
+    emailClaim: config.emailClaim ?? "email",
+    nameClaim: config.nameClaim ?? "name",
+    groupsClaim: config.groupsClaim ?? "groups",
+  };
+}
+
 const AuthProviderUpdatePayloadSchema = z.looseObject({
+  label: z.string().optional(),
+  enabled: z.boolean().optional(),
   unknownIdentityRoleId: z.string().nullable().optional(),
   noMatchRoleId: z.string().nullable().optional(),
   linkByEmail: z.boolean().optional(),
   skipRoleSync: z.boolean().optional(),
+  config: OidcConfigPayloadSchema.optional(),
 });
 
 const RoleMappingCreatePayloadSchema = z.looseObject({
@@ -2293,6 +2327,7 @@ export const handlers = [
         providers: [{ kind: "password", providerKey: "default", label: "Password", loginUrl: null }],
         localLogin: "enabled",
         pendingIdentity: false,
+        pendingArrival: null,
       },
     });
     return HttpResponse.json(state.authSession);
@@ -2510,8 +2545,15 @@ export const handlers = [
         { status: 404 },
       );
     }
+    // Writing the connection replaces it whole, masks the secret on the way
+    // out and clears the test-login proof, exactly as the service does: a proof
+    // earned against one identity provider may not enable a different one.
+    const connection = payload.config;
     const updated: AuthProvider = {
       ...provider,
+      label: payload.label ?? provider.label,
+      enabled: payload.enabled ?? provider.enabled,
+      active: payload.enabled ?? provider.active,
       unknownIdentityRoleId:
         payload.unknownIdentityRoleId === undefined
           ? provider.unknownIdentityRoleId
@@ -2519,11 +2561,19 @@ export const handlers = [
       noMatchRoleId: payload.noMatchRoleId === undefined ? provider.noMatchRoleId : payload.noMatchRoleId,
       linkByEmail: payload.linkByEmail ?? provider.linkByEmail,
       skipRoleSync: payload.skipRoleSync ?? provider.skipRoleSync,
+      config: connection ? maskOidcConfig(connection) : provider.config,
+      testLoginVerifiedAt: connection ? null : provider.testLoginVerifiedAt,
     };
     state.authProviders = state.authProviders.map((candidate) =>
       candidate.id === provider.id ? updated : candidate,
     );
     return HttpResponse.json(updated);
+  }),
+
+  // The pre-flight only says where to send the window; its verdict arrives as
+  // `testLoginVerifiedAt` on the row, which a test advances for itself.
+  http.post("/api/dashboard-auth/oidc/test-login/start", () => {
+    return HttpResponse.json({ authorizationUrl: `${OIDC_AUTHORIZE_URL}?state=mock` });
   }),
 
   http.get("/api/role-mappings", () => {
