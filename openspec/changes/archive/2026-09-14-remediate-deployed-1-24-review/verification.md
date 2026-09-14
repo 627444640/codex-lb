@@ -42,3 +42,7 @@ A synthetic SQLite benchmark with 100,000 stored rows and a 1,000-row active win
 The 71 unit skips comprise 68 tests requiring absent Helm tooling and 3 upstream tests marked inapplicable. PostgreSQL-specific SQLite skips were supplemented by an independent PostgreSQL run. Docker/Kubernetes deployment and real-account model traffic were not exercised; those deployment implementations are outside this public change. There was no long-running production load test.
 
 Full-repository OpenSpec strict validation still reports 22 pre-existing Purpose placeholders; normal full-spec and all changed-scope strict validations pass. Cross-replica credential revocation follows existing settings-cache propagation; logout still clears the client cookie without claiming per-cookie server-side revocation. Local tests do not substitute for GitHub merge gates. The package retains the upstream version 1.24.0 and must be identified by this branch and its checksum, not confused with the unmodified official package.
+
+## Public artifact identity
+
+The clean public build produces `codex_lb-1.24.0-py3-none-any.whl` with SHA-256 `b49e9cdd663cc053c35d3009e0df898b2221353da075dbe6c952f50025c23b3f`, identical to the independently installed and tested candidate wheel. Its 587 application source files and 90 frontend assets match exactly. The public source distribution contains no private deployment directory. Implementation commit: `a5ef5458`; subsequent archive records do not modify application code.
