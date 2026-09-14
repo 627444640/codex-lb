@@ -1,0 +1,6 @@
+# Standalone Python 3.12+ operations tooling: independent of application typing.
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = ["F"]

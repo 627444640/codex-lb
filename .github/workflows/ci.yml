@@ -330,6 +330,9 @@ jobs:
       - name: Ruff check
         run: make lint
 
+      - name: Standalone deployment regressions
+        run: make test-deployment-macos
+
   typecheck:
     name: Type check (ty)
     runs-on: ubuntu-24.04

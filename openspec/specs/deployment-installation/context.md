@@ -283,3 +283,21 @@ removed setting(s) ignored: CODEX_LB_LOG_UPSTREAM_REQUEST_PAYLOAD — values are
 and the equivalent incident-debugging behavior is re-enabled interactively
 with `CODEX_LB_TRACE=upstream_payload`. Startup never fails because of a
 removed setting, and the fixed built-in value is used.
+
+## Portable macOS maintenance repairs
+
+`deploy/macos/` publishes the standalone complete-stop, damaged-state restore
+and final-log-drain repairs. See [the operator guide](../../../docs/macos-maintenance.md)
+for the local runtime layout and [the eleven-item repair map](../../../docs/review-remediation-1.24.0.md).
+
+The source carries synthetic examples and a strict file allowlist. Rendered
+configuration and all runtime material belong to the operator's private
+runtime directory. Personal account/client helpers are not dependencies;
+legacy archives can still carry those optional files. An incomplete shutdown
+blocks maintenance, and a pre-restore raw snapshot remains explicitly
+unverified even when its checksum is valid.
+
+For example, restoring a healthy backup over a corrupted store saves the
+corrupted bytes separately before replacement; it does not require those
+bytes to pass the normal database-integrity check. A failed raw snapshot
+prevents replacement and attempts to recover the prior service set.

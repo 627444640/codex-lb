@@ -1,5 +1,9 @@
 # 1.24.0 review remediation verification
 
+The later `publish-portable-macos-review-fixes` change adds public portable
+implementations of R02/R03/R10. See the [complete eleven-item repair map](../../../../docs/review-remediation-1.24.0.md).
+The scope and results below describe the original application publication.
+
 ## Publication scope
 
 This public branch starts at clean upstream v1.24.0 (`84fde5a1`). It contains R01, R04, R05, R06, R07, R08, R09, R11 and the verified admin/guest login error-handling fix. Private macOS deployment changes R02/R03/R10 and their deployment files remain local. No withdrawn deployment history is merged or force-pushed. No production rollout is included.

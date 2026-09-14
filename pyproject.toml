@@ -118,7 +118,9 @@ extend-exclude = ["*.md"]
 select = ["E", "F", "I"]
 
 [tool.ty.src]
-exclude = [".agents/hooks/"]
+# Standalone macOS maintenance tools retain their Python 3.12 contract and
+# have dedicated lint and executable regression coverage.
+exclude = [".agents/hooks/", "deploy/macos/"]
 
 [tool.ty.environment]
 python-version = "3.13"

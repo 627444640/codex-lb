@@ -1,0 +1,22 @@
+# Publish only reviewed source, hermetic tests, and synthetic examples.
+# Runtime configuration, credentials, databases, certificates, logs, backups,
+# audit output, and local environment files are private by default.
+/*
+!/.gitignore
+!/.ruff.toml
+!/bin/
+!/tests/
+!/examples/
+/bin/*
+!/bin/common.py
+!/bin/manage.py
+!/bin/supervise.py
+!/bin/codex-lbctl
+/tests/*
+!/tests/test_core.py
+!/tests/test_manage.py
+!/tests/integration_launchagent.py
+/examples/*
+!/examples/deployment.example.json
+!/examples/versions.example.json
+!/examples/Caddyfile.example

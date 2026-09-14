@@ -59,6 +59,7 @@ help:
 	  '  make frontend-test           vitest coverage, same as CI' \
 	  '  make test-dashboard-browser-smoke  built dashboard against the real local API' \
 	  '  make test-unit               unit pytest slice, same as CI' \
+	  '  make test-deployment-macos   isolated maintenance and supervisor regressions' \
 	  '  make test-integration-core   integration-core pytest slice' \
 	  '  make package                 build and verify sdist/wheel' \
 	  '  make ci-fast                 lint/type/frontend/unit/package' \
@@ -102,6 +103,11 @@ architecture-check:
 typecheck:
 	uv sync --dev --frozen
 	uv run ty check
+
+.PHONY: test-deployment-macos
+test-deployment-macos:
+	uv run ruff check deploy/macos
+	uv run python -m unittest discover -s deploy/macos/tests -p 'test_*.py' -v
 
 .PHONY: test-unit test-integration-core test-integration-core-shard \
 	test-integration-core-1 test-integration-core-2 test-integration-core-3 \
@@ -228,8 +234,8 @@ helm-smoke-kind:
 	KUBE_CONTEXT=kind-codex-lb-smoke IMAGE_REGISTRY=ghcr.io IMAGE_REPOSITORY=soju06/codex-lb IMAGE_TAG=ci ./scripts/helm-kind-smoke.sh external-db
 
 .PHONY: ci-fast ci
-ci-fast: lint typecheck frontend-test test-unit package
+ci-fast: lint typecheck frontend-test test-unit test-deployment-macos package
 
 ci: frontend-lint frontend-typecheck frontend-test frontend-build lint typecheck \
-	test-unit test-integration-core test-integration-bridge test-e2e test-postgres \
+	test-unit test-deployment-macos test-integration-core test-integration-bridge test-e2e test-postgres \
 	migration-check migration-check-postgres package docker helm-check helm-smoke-kind
