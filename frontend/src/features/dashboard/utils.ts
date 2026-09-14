@@ -774,7 +774,7 @@ export function buildDashboardView(
     timeframeHours <= 24
       ? t("dashboard.stats.avgPerHour", { value: formatCurrency(avgPerUnit(cost, timeframeHours)) })
       : t("dashboard.stats.avgPerDay", { value: formatCurrency(avgPerUnit(cost, timeframeDays)) });
-  const costMeta = costAverage;
+  const costMeta = `${costAverage} · ${t("dashboard.requestCost.knownEstimatesOnly")}`;
   const trends = overview.trends;
   const primaryBurnLabel = formatBurnWindowLabel("primary", overview.summary.primaryWindow.windowMinutes);
   const secondaryBurnLabel = formatBurnWindowLabel("secondary", overview.summary.secondaryWindow?.windowMinutes);

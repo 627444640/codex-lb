@@ -513,7 +513,6 @@ class _StreamingMixin(_StreamingRetryMixin):
         status, error_code, error_message = "success", None, None
         failure_metadata = _RequestLogFailureMetadata()
         response_id = request_id
-        usage = None
         route: ResolvedUpstreamRoute | None = None
         route_trace = UpstreamProxyRouteTrace()
         route_fail_closed_reason: str | None = None
@@ -624,6 +623,7 @@ class _StreamingMixin(_StreamingRetryMixin):
             first_payload = parse_sse_data_json(first)
             event_type = classify_event_type(first_payload)
             event = parse_sse_event_payload(first_payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
+            settlement.capture_response_usage(event)
             terminal_event_seen = False
             preserve_raw_sse_line = not enforce_openai_sdk_contract and event_type == "error"
             malformed_error_rewrite = _rewrite_malformed_stream_error_event(
@@ -742,7 +742,6 @@ class _StreamingMixin(_StreamingRetryMixin):
                 settlement.account_health_error = False
 
             if event and event.type in ("response.completed", "response.incomplete"):
-                usage = event.response.usage if event.response else None
                 if event.response and event.response.id:
                     response_id = event.response.id
                 if event.type == "response.incomplete":
@@ -790,6 +789,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 event_payload = parse_sse_data_json(line)
                 event_type = classify_event_type(event_payload)
                 event = parse_sse_event_payload(event_payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
+                settlement.capture_response_usage(event)
                 preserve_raw_sse_line = not enforce_openai_sdk_contract and event_type == "error"
                 malformed_error_rewrite = _rewrite_malformed_stream_error_event(
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
@@ -907,7 +907,6 @@ class _StreamingMixin(_StreamingRetryMixin):
                     settlement.account_health_error = not saw_text_delta
                 if event_type in ("response.completed", "response.incomplete"):
                     response = event.response if event is not None else None
-                    usage = response.usage if response else None
                     if response and response.id:
                         response_id = response.id
                         settlement.response_id = response_id
@@ -1032,22 +1031,11 @@ class _StreamingMixin(_StreamingRetryMixin):
                 proxy._cancel_api_key_reservation_heartbeat_task(api_key_reservation_heartbeat_task)
             response_create_lease.release()
             await proxy._load_balancer.release_account_lease(account_response_create_lease)
-            input_tokens = usage.input_tokens if usage else None
-            output_tokens = usage.output_tokens if usage else None
-            cached_input_tokens = (
-                usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
-            )
-            reasoning_tokens = (
-                usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
-            )
             if latency_first_token_ms is None:
                 latency_first_token_ms = _finalize_ttft_latency_ms(ttft_reasoning_deltas, attempt_started_at)
             settlement.status = status
             settlement.model = model
             settlement.service_tier = service_tier
-            settlement.input_tokens = input_tokens
-            settlement.output_tokens = output_tokens
-            settlement.cached_input_tokens = cached_input_tokens
             settlement.error_code = error_code
             settlement.error_message = error_message
             await proxy._write_request_log(
@@ -1060,10 +1048,12 @@ class _StreamingMixin(_StreamingRetryMixin):
                 status=status,
                 error_code=error_code,
                 error_message=error_message,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=cached_input_tokens,
-                reasoning_tokens=reasoning_tokens,
+                input_tokens=settlement.input_tokens,
+                output_tokens=settlement.output_tokens,
+                cached_input_tokens=settlement.cached_input_tokens,
+                cache_write_tokens=settlement.cache_write_tokens,
+                actual_model=settlement.actual_model,
+                reasoning_tokens=settlement.reasoning_tokens,
                 reasoning_effort=reasoning_effort,
                 transport=request_transport,
                 upstream_transport=upstream_stream_transport,

@@ -166,6 +166,7 @@ const RequestLogCostBreakdownSchema = z.object({
   cachedInputUsd: z.number().nullable().optional().default(null),
   outputUsd: z.number().nullable().optional().default(null),
   totalUsd: z.number().nullable().optional().default(null),
+  cacheWriteUsd: z.number().nullable().optional(),
 });
 
 export const RequestLogSchema = z.object({
@@ -179,6 +180,7 @@ export const RequestLogSchema = z.object({
   requestKind: z.enum(["normal", "warmup", "limit_warmup", "prewarm", "compaction", "realtime_live"]).optional().default("normal"),
   connectionRequestKind: z.enum(["normal", "prewarm"]).nullable().optional(),
   model: z.string(),
+  actualModel: z.string().nullable().optional(),
   source: z.string().nullable().optional().default(null),
   modelSourceId: z.string().nullable().optional(),
   modelSourceKind: z.string().nullable().optional(),
@@ -211,8 +213,11 @@ export const RequestLogSchema = z.object({
   outputTokensRaw: z.number().nullable().optional().default(null),
   reasoningTokens: z.number().nullable().optional(),
   cachedInputTokens: z.number().nullable(),
+  cacheWriteTokens: z.number().nullable().optional(),
   reasoningEffort: z.string().nullable(),
   costUsd: z.number().nullable(),
+  pricingVersion: z.string().nullable().optional(),
+  costStatus: z.enum(["estimated", "incomplete_usage", "unknown_model", "missing_usage", "historical"]).optional(),
   costBreakdown: RequestLogCostBreakdownSchema.nullable().optional().default(null),
   latencyMs: z.number().nullable(),
   latencyFirstTokenMs: z.number().nullable().optional().default(null),

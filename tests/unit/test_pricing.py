@@ -13,6 +13,7 @@ from app.core.usage.pricing import (
     calculate_cost_from_usage,
     calculate_costs,
     get_pricing_for_model,
+    image_usage_tokens,
     resolve_model_alias,
 )
 
@@ -230,10 +231,10 @@ def test_calculate_cost_from_usage_flex_service_tier():
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
-        ("gpt-5.6-sol", None, 30.55),
-        ("gpt-5.6-sol", "flex", 15.275),
-        ("gpt-5.6-sol", "priority", 61.1),
-        ("gpt-5.6-sol", "fast", 61.1),
+        ("gpt-5.6-sol", None, 20.44),
+        ("gpt-5.6-sol", "flex", 10.22),
+        ("gpt-5.6-sol", "priority", 40.88),
+        ("gpt-5.6-sol", "fast", 40.88),
         ("gpt-5.6-terra", None, 12.22),
         ("gpt-5.6-terra", "flex", 6.11),
         ("gpt-5.6-terra", "priority", 24.44),
@@ -263,12 +264,15 @@ def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
-        ("gpt-5.6-sol", None, 7.05),
-        ("gpt-5.6-sol", "flex", 3.525),
+        ("gpt-5.6-sol", None, 5.04),
+        ("gpt-5.6-sol", "flex", 2.52),
+        ("gpt-5.6-sol", "priority", 10.08),
         ("gpt-5.6-terra", None, 2.82),
         ("gpt-5.6-terra", "flex", 1.41),
+        ("gpt-5.6-terra", "priority", 5.64),
         ("gpt-5.6-luna", None, 0.282),
         ("gpt-5.6-luna", "flex", 0.141),
+        ("gpt-5.6-luna", "priority", 0.564),
     ],
 )
 def test_calculate_cost_from_usage_gpt_5_6_long_context(
@@ -290,7 +294,7 @@ def test_calculate_cost_from_usage_gpt_5_6_long_context(
 @pytest.mark.parametrize(
     ("model", "standard_input_rate", "long_context_input_rate"),
     [
-        ("gpt-5.6-sol", 5.0, 10.0),
+        ("gpt-5.6-sol", 4.0, 8.0),
         ("gpt-5.6-terra", 2.0, 4.0),
         ("gpt-5.6-luna", 0.2, 0.4),
     ],
@@ -452,3 +456,160 @@ def test_calculate_costs_uses_service_tier():
     result = calculate_costs(items, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
 
     assert result.total_usd_7d == pytest.approx(35.0)
+
+
+@pytest.mark.parametrize("model", ["gpt-6-astra", "GPT-6-ASTRA", "gpt-6-astra-2026-09-14"])
+def test_astra_pricing_and_snapshot_aliases(model: str) -> None:
+    resolved = get_pricing_for_model(model)
+    assert resolved is not None
+    assert resolved[0] == "gpt-6-astra"
+    assert calculate_cost_from_usage(UsageTokens(100_000, 1_000, 50_000), resolved[1]) == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6-astra-unknown-variant", "gpt-6-unknown"])
+def test_unpublished_model_prices_remain_unknown(model: str) -> None:
+    assert get_pricing_for_model(model) is None
+
+
+@pytest.mark.parametrize(
+    ("model", "tier", "expected"),
+    [
+        ("gpt-5.5", "default", 3.045),
+        ("gpt-5.5", "flex", 1.5225),
+        ("gpt-5.5-pro", "default", 18.27),
+        ("gpt-5.4-mini", "priority", 0.459),
+        ("gpt-5.4-mini", "fast", 0.459),
+        ("gpt-6-astra", "default", 6.075),
+        ("gpt-6-astra", "flex", 3.0375),
+        ("gpt-6-astra", "priority", 12.15),
+        ("gpt-6-astra", "fast", 12.15),
+    ],
+)
+def test_current_model_tier_and_long_context_rates(model: str, tier: str, expected: float) -> None:
+    cost = calculate_cost_from_usage(UsageTokens(300_000, 1_000), DEFAULT_PRICING_MODELS[model], service_tier=tier)
+    assert cost == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(("tier", "expected"), [("default", 0.0342), ("priority", 0.0684), ("flex", 0.0171)])
+def test_cache_writes_are_disjoint_input_partition_with_tier_pricing(tier: str, expected: float) -> None:
+    usage = ResponseUsage(
+        input_tokens=100_000,
+        output_tokens=10_000,
+        input_tokens_details=ResponseUsageDetails(cached_tokens=10_000, cache_write_tokens=80_000),
+        output_tokens_details=ResponseUsageDetails(reasoning_tokens=8_000),
+    )
+    result = calculate_cost_breakdown_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-5.6-luna"], service_tier=tier)
+    assert result is not None
+    # Standard: 10K ordinary * .2 + 10K cached * .02 + 80K written * .25
+    # + 10K output * 1.2. Reasoning is already included in output.
+    assert result.total_usd == pytest.approx(expected)
+    assert result.input_usd is not None
+    assert result.cached_input_usd is not None
+    assert result.cache_write_usd is not None
+    assert result.output_usd is not None
+    assert result.total_usd == pytest.approx(
+        result.input_usd + result.cached_input_usd + result.cache_write_usd + result.output_usd
+    )
+
+
+def test_cache_write_premium_uses_long_context_rate() -> None:
+    usage = UsageTokens(300_000, 1_000, 100_000, 100_000)
+    result = calculate_cost_breakdown_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-6-astra"], service_tier="priority")
+    assert result is not None
+    assert result.input_usd == pytest.approx(4.0)
+    assert result.cached_input_usd == pytest.approx(0.4)
+    assert result.cache_write_usd == pytest.approx(5.0)
+    assert result.output_usd == pytest.approx(0.15)
+    assert result.total_usd == pytest.approx(9.55)
+
+
+@pytest.mark.parametrize(
+    ("cached", "writes", "expected"), [(80, 80, 0.0000066), (200, 200, 0.000002), (-20, -20, 0.00002)]
+)
+def test_cache_partitions_never_exceed_input(cached: int, writes: int, expected: float) -> None:
+    result = calculate_cost_from_usage(UsageTokens(100, 0, cached, writes), DEFAULT_PRICING_MODELS["gpt-5.6-luna"])
+    assert result == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_nonfinite_token_totals_do_not_produce_nonfinite_cost(value: float) -> None:
+    assert calculate_cost_from_usage(UsageTokens(value, 1), DEFAULT_PRICING_MODELS["gpt-6-astra"]) is None
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("gpt-image-2", 0.02145), ("gpt-image-1.5", 0.02141), ("gpt-image-1", 0.02625), ("gpt-image-1-mini", 0.00644)],
+)
+def test_image_model_prices_preserve_text_image_and_cache_partitions(model: str, expected: float) -> None:
+    usage = image_usage_tokens(
+        input_tokens=3_000,
+        output_tokens=200,
+        input_tokens_details={
+            "text_tokens": 1_000,
+            "image_tokens": 2_000,
+            "cached_tokens": 1_000,
+            "cached_tokens_details": {"text_tokens": 200, "image_tokens": 800},
+        },
+        output_tokens_details={"text_tokens": 20} if model == "gpt-image-1.5" else None,
+    )
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS[model]) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("model", ["gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"])
+def test_image_cost_is_unknown_without_input_modality_counts(model: str) -> None:
+    assert calculate_cost_from_usage(UsageTokens(1_000, 100), DEFAULT_PRICING_MODELS[model]) is None
+
+
+def test_mixed_image_input_with_missing_cached_partition_is_unknown() -> None:
+    usage = image_usage_tokens(
+        input_tokens=1_000,
+        output_tokens=100,
+        input_tokens_details={"image_tokens": 500, "cached_tokens": 100},
+    )
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-image-2"]) is None
+
+
+def test_text_only_image_prompt_deduces_cached_modality() -> None:
+    usage = image_usage_tokens(
+        input_tokens=1_000,
+        output_tokens=100,
+        input_tokens_details={"text_tokens": 1_000, "cached_tokens": 200},
+    )
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-image-2"]) == pytest.approx(0.00725)
+
+
+def test_image_model_with_text_output_requires_output_partition() -> None:
+    usage = image_usage_tokens(input_tokens=0, output_tokens=100)
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-image-1.5"]) is None
+
+
+def test_inconsistent_image_input_partitions_are_unknown() -> None:
+    assert (
+        image_usage_tokens(
+            input_tokens=100,
+            output_tokens=10,
+            input_tokens_details={"image_tokens": 90, "text_tokens": 90},
+        )
+        is None
+    )
+
+
+def test_inconsistent_image_cache_partitions_are_unknown() -> None:
+    assert (
+        image_usage_tokens(
+            input_tokens=100,
+            output_tokens=10,
+            input_tokens_details={
+                "image_tokens": 50,
+                "text_tokens": 50,
+                "cached_tokens": 30,
+                "cached_tokens_details": {"image_tokens": 25, "text_tokens": 25},
+            },
+        )
+        is None
+    )
+
+
+def test_cached_image_partition_cannot_exceed_image_input() -> None:
+    usage = UsageTokens(100, 10, 80, image_input_tokens=20, cached_image_input_tokens=40)
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS["gpt-image-2"]) is None

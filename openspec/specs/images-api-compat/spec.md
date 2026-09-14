@@ -4,7 +4,9 @@
 Define the OpenAI-compatible Images API adapter that exposes public `gpt-image-*`
 requests while routing through the existing Responses `image_generation` tool
 pipeline.
+
 ## Requirements
+
 ### Requirement: OpenAI-compatible image generation endpoint
 
 The system SHALL expose `POST /v1/images/generations` and accept the OpenAI Images API request shape (`model`, `prompt`, `n`, `size`, `quality`, `background`, `output_format`, `output_compression`, `moderation`, `partial_images`, `stream`, `user`). The endpoint MUST require `model` to start with `gpt-image-` and MUST treat `gpt-image-2` as the default if unspecified. The endpoint MUST NOT expose the internal "host" Responses model used to invoke the built-in `image_generation` tool.
@@ -242,3 +244,13 @@ Byte-limit failures MUST return HTTP 413 with OpenAI error `code = payload_too_l
 - **THEN** every created multipart spool is closed
 - **AND** disconnect and cancellation are not converted to HTTP 413
 
+### Requirement: Image request accounting uses public image usage
+Image request logs and successful API-key settlements MUST use the image tool usage and effective image model. They MUST NOT reuse host Responses token counts. Log model, usage, and cost correction MUST be atomic and serialized with rollup folding. Missing modality evidence required for image pricing MUST produce an unknown cost.
+
+#### Scenario: Host and image tool usage differ
+- **WHEN** a host response reports different tokens from its image tool result
+- **THEN** the image request log and successful settlement use the image tool tokens
+
+#### Scenario: Image usage lacks modality details
+- **WHEN** image usage omits details required to distinguish text from image pricing
+- **THEN** the log retains reported totals and does not assign a fabricated cost

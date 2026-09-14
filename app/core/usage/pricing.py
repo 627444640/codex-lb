@@ -3,10 +3,20 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from math import isfinite
 from typing import Iterable, Mapping
 
 from app.core.openai.models import ResponseUsage
+from app.core.types import JsonValue
 from app.core.usage.types import UsageCostByModel, UsageCostSummary
+
+# Retail API token estimates, not ChatGPT subscription charges. Keep the
+# version on persisted estimates so a later table update cannot rewrite history.
+# GPT-5.6 Sol's promotional rates apply through at least 2026-11-21.
+PRICING_VERSION = "openai-api-2026-09-14-v1"
+MODEL_SOURCE_PRICING_VERSION = "model-source-config-v1"
+PRICING_SOURCE_URL = "https://developers.openai.com/api/docs/pricing"
+PRICING_AS_OF = "2026-09-14"
 
 
 @dataclass(frozen=True)
@@ -25,6 +35,11 @@ class ModelPrice:
     long_context_input_per_1m: float | None = None
     long_context_output_per_1m: float | None = None
     long_context_cached_input_per_1m: float | None = None
+    cache_write_multiplier: float | None = None
+    priority_long_context: bool = False
+    image_input_per_1m: float | None = None
+    image_cached_input_per_1m: float | None = None
+    text_output_per_1m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +47,10 @@ class UsageTokens:
     input_tokens: float
     output_tokens: float
     cached_input_tokens: float = 0.0
+    cache_write_tokens: float = 0.0
+    image_input_tokens: float | None = None
+    cached_image_input_tokens: float | None = None
+    text_output_tokens: float | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +59,7 @@ class UsageCostBreakdown:
     cached_input_usd: float | None
     output_usd: float | None
     total_usd: float | None
+    cache_write_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -49,9 +69,57 @@ class CostItem:
     service_tier: str | None = None
 
 
+def _detail_number(details: Mapping[str, JsonValue] | None, name: str) -> float | None:
+    value = details.get(name) if details else None
+    return _as_number(value) if isinstance(value, (int, float)) else None
+
+
+def image_usage_tokens(
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    input_tokens_details: Mapping[str, JsonValue] | None = None,
+    output_tokens_details: Mapping[str, JsonValue] | None = None,
+) -> UsageTokens | None:
+    """Preserve image usage partitions without guessing missing modality counts."""
+    if input_tokens is None or output_tokens is None or input_tokens < 0 or output_tokens < 0:
+        return None
+    image_input = _detail_number(input_tokens_details, "image_tokens")
+    text_input = _detail_number(input_tokens_details, "text_tokens")
+    if image_input is not None and text_input is not None and image_input + text_input != input_tokens:
+        return None
+    if image_input is None and text_input is not None:
+        image_input = input_tokens - text_input
+    cached = _detail_number(input_tokens_details, "cached_tokens") or 0.0
+    cached_details = input_tokens_details.get("cached_tokens_details") if input_tokens_details else None
+    cached_image = None
+    if isinstance(cached_details, dict):
+        cached_image = _detail_number(cached_details, "image_tokens")
+        cached_text = _detail_number(cached_details, "text_tokens")
+        if cached_image is not None and cached_text is not None and cached_image + cached_text != cached:
+            return None
+        if cached_image is None and cached_text is not None:
+            cached_image = cached - cached_text
+    text_output = _detail_number(output_tokens_details, "text_tokens")
+    image_output = _detail_number(output_tokens_details, "image_tokens")
+    if text_output is not None and image_output is not None and text_output + image_output != output_tokens:
+        return None
+    if text_output is None and image_output is not None:
+        text_output = output_tokens - image_output
+    return UsageTokens(
+        input_tokens=float(input_tokens),
+        output_tokens=float(output_tokens),
+        cached_input_tokens=cached,
+        image_input_tokens=image_input,
+        cached_image_input_tokens=cached_image,
+        text_output_tokens=text_output,
+    )
+
+
 def _as_number(value: int | float | None) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return number if isfinite(number) else None
     return None
 
 
@@ -62,11 +130,18 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
         cached_tokens = _as_number(usage.cached_input_tokens)
         if input_tokens is None or output_tokens is None:
             return None
+        input_tokens = max(0.0, input_tokens)
+        output_tokens = max(0.0, output_tokens)
         cached_tokens = max(0.0, min(cached_tokens or 0.0, input_tokens))
+        write_tokens = max(0.0, min(_as_number(usage.cache_write_tokens) or 0.0, input_tokens - cached_tokens))
         return UsageTokens(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
+            cache_write_tokens=write_tokens,
+            image_input_tokens=usage.image_input_tokens,
+            cached_image_input_tokens=usage.cached_image_input_tokens,
+            text_output_tokens=usage.text_output_tokens,
         )
     if not usage:
         return None
@@ -76,32 +151,57 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
         output_tokens = _as_number(usage.output_tokens_details.reasoning_tokens)
     if input_tokens is None or output_tokens is None:
         return None
+    input_tokens = max(0.0, input_tokens)
+    output_tokens = max(0.0, output_tokens)
     cached_tokens = 0.0
+    write_tokens = 0.0
     if usage.input_tokens_details is not None:
         cached_tokens = _as_number(usage.input_tokens_details.cached_tokens) or 0.0
+        write_tokens = _as_number(usage.input_tokens_details.cache_write_tokens) or 0.0
     cached_tokens = max(0.0, min(cached_tokens, input_tokens))
+    write_tokens = max(0.0, min(write_tokens, input_tokens - cached_tokens))
     return UsageTokens(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
+        cache_write_tokens=write_tokens,
     )
 
 
 DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
-    "gpt-5.6-sol": ModelPrice(
-        input_per_1m=5.0,
-        cached_input_per_1m=0.5,
-        output_per_1m=30.0,
-        priority_input_per_1m=10.0,
-        priority_cached_input_per_1m=1.0,
-        priority_output_per_1m=60.0,
-        flex_input_per_1m=2.5,
-        flex_cached_input_per_1m=0.25,
-        flex_output_per_1m=15.0,
+    "gpt-6-astra": ModelPrice(
+        input_per_1m=10.0,
+        cached_input_per_1m=1.0,
+        output_per_1m=50.0,
+        priority_input_per_1m=20.0,
+        priority_cached_input_per_1m=2.0,
+        priority_output_per_1m=100.0,
+        flex_input_per_1m=5.0,
+        flex_cached_input_per_1m=0.5,
+        flex_output_per_1m=25.0,
         long_context_threshold_tokens=272_000,
-        long_context_input_per_1m=10.0,
-        long_context_cached_input_per_1m=1.0,
-        long_context_output_per_1m=45.0,
+        long_context_input_per_1m=20.0,
+        long_context_cached_input_per_1m=2.0,
+        long_context_output_per_1m=75.0,
+        cache_write_multiplier=1.25,
+        priority_long_context=True,
+    ),
+    "gpt-5.6-sol": ModelPrice(
+        input_per_1m=4.0,
+        cached_input_per_1m=0.4,
+        output_per_1m=20.0,
+        priority_input_per_1m=8.0,
+        priority_cached_input_per_1m=0.8,
+        priority_output_per_1m=40.0,
+        flex_input_per_1m=2.0,
+        flex_cached_input_per_1m=0.2,
+        flex_output_per_1m=10.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=8.0,
+        long_context_cached_input_per_1m=0.8,
+        long_context_output_per_1m=30.0,
+        cache_write_multiplier=1.25,
+        priority_long_context=True,
     ),
     "gpt-5.6-terra": ModelPrice(
         input_per_1m=2.0,
@@ -117,6 +217,8 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_input_per_1m=4.0,
         long_context_cached_input_per_1m=0.4,
         long_context_output_per_1m=18.0,
+        cache_write_multiplier=1.25,
+        priority_long_context=True,
     ),
     "gpt-5.6-luna": ModelPrice(
         input_per_1m=0.2,
@@ -132,6 +234,8 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_input_per_1m=0.4,
         long_context_cached_input_per_1m=0.04,
         long_context_output_per_1m=1.8,
+        cache_write_multiplier=1.25,
+        priority_long_context=True,
     ),
     "gpt-5.5": ModelPrice(
         input_per_1m=5.0,
@@ -143,12 +247,19 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         priority_input_per_1m=12.5,
         priority_cached_input_per_1m=1.25,
         priority_output_per_1m=75.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=10.0,
+        long_context_cached_input_per_1m=1.0,
+        long_context_output_per_1m=45.0,
     ),
     "gpt-5.5-pro": ModelPrice(
         input_per_1m=30.0,
         output_per_1m=180.0,
         flex_input_per_1m=15.0,
         flex_output_per_1m=90.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=60.0,
+        long_context_output_per_1m=270.0,
     ),
     "gpt-5.4": ModelPrice(
         input_per_1m=2.5,
@@ -169,6 +280,9 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         input_per_1m=0.75,
         cached_input_per_1m=0.075,
         output_per_1m=4.5,
+        priority_input_per_1m=1.5,
+        priority_cached_input_per_1m=0.15,
+        priority_output_per_1m=9.0,
         flex_input_per_1m=0.375,
         flex_cached_input_per_1m=0.0375,
         flex_output_per_1m=2.25,
@@ -287,42 +401,41 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         priority_cached_input_per_1m=0.25,
         priority_output_per_1m=20.0,
     ),
-    # OpenAI Images token-based pricing (per 1M tokens, USD).
-    # gpt-image-2 (April 2026):
-    #   text input  $5.00, image input $8.00, image cached input $2.00,
-    #   image output $30.00.
-    # The current ``ModelPrice`` shape carries a single input rate, so we
-    # use the text-input rate as the dominant input cost (text dominates
-    # the input side for typical prompts) and the image-output rate as
-    # the output cost. Cached input maps to the image-cached rate.
-    # The legacy gpt-image-1.5 / gpt-image-1 / gpt-image-1-mini entries
-    # mirror gpt-image-2 today; they will be split out once OpenAI
-    # publishes per-model deltas. Without these entries cost-based API
-    # key quotas would resolve every /v1/images/* call to $0 and the
-    # quota would never bite.
+    # Image models have distinct text/image input prices. A total without
+    # the modality breakdown is insufficient to calculate their input cost.
     "gpt-image-2": ModelPrice(
         input_per_1m=5.0,
-        cached_input_per_1m=2.0,
+        cached_input_per_1m=1.25,
         output_per_1m=30.0,
+        image_input_per_1m=8.0,
+        image_cached_input_per_1m=2.0,
     ),
     "gpt-image-1.5": ModelPrice(
         input_per_1m=5.0,
-        cached_input_per_1m=2.0,
-        output_per_1m=30.0,
+        cached_input_per_1m=1.25,
+        output_per_1m=32.0,
+        image_input_per_1m=8.0,
+        image_cached_input_per_1m=2.0,
+        text_output_per_1m=10.0,
     ),
     "gpt-image-1": ModelPrice(
         input_per_1m=5.0,
-        cached_input_per_1m=2.0,
-        output_per_1m=30.0,
+        cached_input_per_1m=1.25,
+        output_per_1m=40.0,
+        image_input_per_1m=10.0,
+        image_cached_input_per_1m=2.5,
     ),
     "gpt-image-1-mini": ModelPrice(
-        input_per_1m=5.0,
-        cached_input_per_1m=2.0,
-        output_per_1m=30.0,
+        input_per_1m=2.0,
+        cached_input_per_1m=0.2,
+        output_per_1m=8.0,
+        image_input_per_1m=2.5,
+        image_cached_input_per_1m=0.25,
     ),
 }
 
 DEFAULT_MODEL_ALIASES: dict[str, str] = {
+    "gpt-6-astra-20??-??-??": "gpt-6-astra",
     "gpt-5.6": "gpt-5.6-sol",
     "gpt-5.6-sol*": "gpt-5.6-sol",
     "gpt-5.6-terra*": "gpt-5.6-terra",
@@ -435,6 +548,8 @@ def _effective_rates(
                 if price.priority_cached_input_per_1m is not None
                 else price.priority_input_per_1m
             )
+            if is_long_context and price.priority_long_context:
+                return price.priority_input_per_1m * 2.0, priority_cached * 2.0, price.priority_output_per_1m * 1.5
             return price.priority_input_per_1m, priority_cached, price.priority_output_per_1m
         if price.priority_multiplier is not None:
             input_rate *= price.priority_multiplier
@@ -476,6 +591,52 @@ def calculate_cost_from_usage(
     return breakdown.total_usd
 
 
+def _image_cost_components(usage: UsageTokens, price: ModelPrice) -> tuple[float, float, float] | None:
+    assert price.image_input_per_1m is not None
+    image_input = _as_number(usage.image_input_tokens)
+    if image_input is None:
+        if usage.input_tokens != 0:
+            return None
+        image_input = 0.0
+    if not 0 <= image_input <= usage.input_tokens or usage.cache_write_tokens:
+        return None
+    text_input = usage.input_tokens - image_input
+    cached_image = _as_number(usage.cached_image_input_tokens)
+    if cached_image is None:
+        if usage.cached_input_tokens == 0 or image_input == 0:
+            cached_image = 0.0
+        elif text_input == 0:
+            cached_image = usage.cached_input_tokens
+        else:
+            return None
+    if (
+        not max(0.0, usage.cached_input_tokens - text_input)
+        <= cached_image
+        <= min(image_input, usage.cached_input_tokens)
+    ):
+        return None
+    cached_text = usage.cached_input_tokens - cached_image
+    text_output = 0.0
+    if price.text_output_per_1m is None and usage.text_output_tokens not in (None, 0.0):
+        return None
+    if price.text_output_per_1m is not None and usage.output_tokens:
+        reported_text_output = _as_number(usage.text_output_tokens)
+        if reported_text_output is None or not 0 <= reported_text_output <= usage.output_tokens:
+            return None
+        text_output = reported_text_output
+    text_cached_rate = price.cached_input_per_1m if price.cached_input_per_1m is not None else price.input_per_1m
+    image_cached_rate = (
+        price.image_cached_input_per_1m if price.image_cached_input_per_1m is not None else price.image_input_per_1m
+    )
+    return (
+        ((text_input - cached_text) * price.input_per_1m + (image_input - cached_image) * price.image_input_per_1m)
+        / 1_000_000,
+        (cached_text * text_cached_rate + cached_image * image_cached_rate) / 1_000_000,
+        ((usage.output_tokens - text_output) * price.output_per_1m + text_output * (price.text_output_per_1m or 0.0))
+        / 1_000_000,
+    )
+
+
 def calculate_cost_breakdown_from_usage(
     usage: UsageTokens | ResponseUsage | None,
     price: ModelPrice,
@@ -486,7 +647,7 @@ def calculate_cost_breakdown_from_usage(
     normalized = _normalize_usage(usage)
     if not normalized:
         return None
-    billable_input = max(0.0, normalized.input_tokens - normalized.cached_input_tokens)
+    billable_input = max(0.0, normalized.input_tokens - normalized.cached_input_tokens - normalized.cache_write_tokens)
 
     input_rate, cached_rate, output_rate = _effective_rates(
         normalized,
@@ -497,13 +658,21 @@ def calculate_cost_breakdown_from_usage(
     input_usd = (billable_input / 1_000_000) * input_rate
     cached_input_usd = (normalized.cached_input_tokens / 1_000_000) * cached_rate
     output_usd = (normalized.output_tokens / 1_000_000) * output_rate
+    cache_write_usd = (normalized.cache_write_tokens / 1_000_000) * input_rate * (price.cache_write_multiplier or 1.0)
+
+    if price.image_input_per_1m is not None:
+        image_cost = _image_cost_components(normalized, price)
+        if image_cost is None:
+            return None
+        input_usd, cached_input_usd, output_usd = image_cost
 
     if precision is not None:
         input_usd = round(input_usd, precision)
         cached_input_usd = round(cached_input_usd, precision)
         output_usd = round(output_usd, precision)
+        cache_write_usd = round(cache_write_usd, precision)
 
-    total_usd = input_usd + cached_input_usd + output_usd
+    total_usd = input_usd + cached_input_usd + output_usd + cache_write_usd
 
     if precision is not None:
         total_usd = round(total_usd, precision)
@@ -513,6 +682,7 @@ def calculate_cost_breakdown_from_usage(
         cached_input_usd=cached_input_usd,
         output_usd=output_usd,
         total_usd=total_usd,
+        cache_write_usd=cache_write_usd,
     )
 
 

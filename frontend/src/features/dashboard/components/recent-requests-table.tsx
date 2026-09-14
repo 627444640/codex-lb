@@ -51,7 +51,7 @@ import {
   formatDateTimeInline,
   formatDateTimeLines,
   formatCompactNumber,
-  formatCurrency,
+  formatRequestCost,
   formatModelLabel,
   formatElapsed,
   formatSlug,
@@ -236,14 +236,14 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
   const segments: string[] = [];
   const cachedInputTokens = request.cachedInputTokens ?? 0;
   const nonCachedInputTokens =
-    request.inputTokens == null ? null : Math.max(0, request.inputTokens - cachedInputTokens);
+    request.inputTokens == null ? null : Math.max(0, request.inputTokens - cachedInputTokens - (request.cacheWriteTokens ?? 0));
 
   if (nonCachedInputTokens != null && request.costBreakdown?.inputUsd != null) {
     segments.push(
       t("dashboard.requestDetails.costSegment", {
         count: formatCompactNumber(nonCachedInputTokens),
         label: t("common.units.input"),
-        cost: formatCurrency(request.costBreakdown.inputUsd),
+        cost: formatRequestCost(request.costBreakdown.inputUsd),
       }),
     );
   }
@@ -253,9 +253,17 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
       t("dashboard.requestDetails.costSegment", {
         count: formatCompactNumber(request.cachedInputTokens),
         label: t("common.units.cached"),
-        cost: formatCurrency(request.costBreakdown.cachedInputUsd),
+        cost: formatRequestCost(request.costBreakdown.cachedInputUsd),
       }),
     );
+  }
+
+  if (request.cacheWriteTokens != null && request.costBreakdown?.cacheWriteUsd != null) {
+    segments.push(t("dashboard.requestDetails.costSegment", {
+      count: formatCompactNumber(request.cacheWriteTokens),
+      label: t("dashboard.requestDetails.cacheWrite"),
+      cost: formatRequestCost(request.costBreakdown.cacheWriteUsd),
+    }));
   }
 
   if (request.outputTokens != null && request.costBreakdown?.outputUsd != null) {
@@ -263,7 +271,7 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
       t("dashboard.requestDetails.costSegment", {
         count: formatCompactNumber(request.outputTokens),
         label: t("common.units.output"),
-        cost: formatCurrency(request.costBreakdown.outputUsd),
+        cost: formatRequestCost(request.costBreakdown.outputUsd),
       }),
     );
   }
@@ -276,7 +284,7 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
     return segments.join(" + ");
   }
 
-  return `${formatCurrency(totalUsd)} = ${segments.join(" + ")}`;
+  return `${formatRequestCost(totalUsd)} = ${segments.join(" + ")}`;
 }
 
 function formatGenerationSpeed(request: RequestLog): string | null {
@@ -520,8 +528,13 @@ export function RecentRequestsTable({
                       ) : null}
                     </div>
                   </TableCell> : null}
-                  {isColumnVisible("cost") ? <TableCell className="text-right align-top font-mono text-xs tabular-nums">
-                    {formatCurrency(request.costUsd)}
+                  {isColumnVisible("cost") ? <TableCell className="whitespace-normal text-right align-top font-mono text-xs tabular-nums">
+                    <div className="break-all">{formatRequestCost(request.costUsd)}</div>
+                    {request.costStatus ? (
+                      <div className="break-words font-sans text-[11px] leading-tight text-muted-foreground">
+                        {t(`dashboard.requestCost.status.${request.costStatus}`)}
+                      </div>
+                    ) : null}
                   </TableCell> : null}
                   {isColumnVisible("details") ? <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (
@@ -596,6 +609,7 @@ export function RecentRequestsTable({
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.status")} value={selectedRequest ? t(`dashboard.requestStatus.${selectedRequest.status}`, { defaultValue: REQUEST_STATUS_LABELS[selectedRequest.status] ?? selectedRequest.status }) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.model")} value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
+                {selectedRequest?.actualModel ? <RequestDetailField label={t("dashboard.requestDetails.actualModel")} value={selectedRequest.actualModel} mono /> : null}
                 <RequestDetailField label={t("dashboard.requestDetails.requestKind")} value={selectedRequest ? (REQUEST_KIND_LABELS[selectedRequest.requestKind] ?? selectedRequest.requestKind) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.plan")} value={selectedRequest?.planType ? formatSlug(selectedRequest.planType) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.elapsed")} value={formatElapsed(selectedRequest?.latencyMs ?? null)} />
@@ -609,6 +623,10 @@ export function RecentRequestsTable({
                     mono
                   />
                 ) : null}
+                {selectedRequest?.inputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.inputTokensIncluded")} value={String(selectedRequest.inputTokens)} mono /> : null}
+                {selectedRequest?.cachedInputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cachedTokensIncluded")} value={String(selectedRequest.cachedInputTokens)} mono /> : null}
+                {selectedRequest?.cacheWriteTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cacheWriteTokensIncluded")} value={String(selectedRequest.cacheWriteTokens)} mono /> : null}
+                {selectedRequest?.outputTokensRaw != null ? <RequestDetailField label={t("dashboard.requestDetails.outputTokensIncluded")} value={String(selectedRequest.outputTokensRaw)} mono /> : null}
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
@@ -712,13 +730,15 @@ export function RecentRequestsTable({
               />
             ) : null}
 
-            {selectedRequestCostSummary ? (
+            {selectedRequestCostSummary || selectedRequest?.costStatus ? (
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">{t("dashboard.requests.columns.cost")}</h3>
                 <div className="rounded-md bg-muted/50 p-3">
-                  <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">
-                    {selectedRequestCostSummary}
-                  </p>
+                  <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{selectedRequestCostSummary ?? formatRequestCost(selectedRequest?.costUsd)}</p>
+                  {selectedRequest?.costStatus ? (
+                    <p className="mt-2 text-xs text-muted-foreground">{t(`dashboard.requestCost.explanation.${selectedRequest.costStatus}`)}</p>
+                  ) : null}
+                  {selectedRequest?.pricingVersion ? <RequestDetailField label={t("dashboard.requestDetails.pricingVersion")} value={selectedRequest.pricingVersion} mono /> : null}
                 </div>
               </div>
             ) : null}

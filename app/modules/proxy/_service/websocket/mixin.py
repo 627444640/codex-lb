@@ -5192,6 +5192,8 @@ class _WebSocketMixin:
                         request_state.latency_first_token_ms = max(
                             0, int((ttft_visible_at - request_state.started_at) * 1000)
                         )
+                if event and event.response and event.response.model:
+                    request_state.actual_model = event.response.model
                 actual_service_tier = _facade()._service_tier_from_event_payload(payload)
                 if actual_service_tier is not None:
                     request_state.actual_service_tier = actual_service_tier
@@ -5956,6 +5958,8 @@ class _WebSocketMixin:
             output_tokens=usage.output_tokens if usage is not None else None,
         )
 
+        if event and event.response and event.response.model:
+            request_state.actual_model = event.response.model
         actual_service_tier = _facade()._service_tier_from_event_payload(payload)
         if actual_service_tier is not None:
             request_state.actual_service_tier = actual_service_tier
@@ -5964,6 +5968,10 @@ class _WebSocketMixin:
         settlement = _StreamSettlement(
             status=status,
             model=request_state.model or "",
+            actual_model=request_state.actual_model,
+            cache_write_tokens=(
+                usage.input_tokens_details.cache_write_tokens if usage and usage.input_tokens_details else None
+            ),
             service_tier=response_service_tier,
             input_tokens=usage.input_tokens if usage else None,
             output_tokens=usage.output_tokens if usage else None,
@@ -6061,6 +6069,8 @@ class _WebSocketMixin:
                     input_tokens=usage.input_tokens if usage else None,
                     output_tokens=usage.output_tokens if usage else None,
                     cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=settlement.cache_write_tokens,
+                    actual_model=request_state.actual_model,
                     reasoning_tokens=reasoning_tokens,
                     reasoning_effort=request_state.reasoning_effort,
                     transport=request_state.transport,

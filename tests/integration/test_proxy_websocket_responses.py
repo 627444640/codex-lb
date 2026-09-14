@@ -388,6 +388,7 @@ def test_responses_websocket_route_drain_preserves_terminal_ownership_and_reject
         cached_input_tokens: int = 0,
         service_tier: str | None = None,
         cost_microdollars: int | None = None,
+        **accounting_metadata: Any,
     ) -> None:
         settlement_started.set()
         await asyncio.to_thread(settlement_release.wait)
@@ -400,6 +401,7 @@ def test_responses_websocket_route_drain_preserves_terminal_ownership_and_reject
             cached_input_tokens=cached_input_tokens,
             service_tier=service_tier,
             cost_microdollars=cost_microdollars,
+            **accounting_metadata,
         )
 
     async def prepare_persistence_rows() -> tuple[ApiKeyData, ApiKeyUsageReservationData]:

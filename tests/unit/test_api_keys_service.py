@@ -2049,10 +2049,10 @@ async def test_record_usage_cost_limit_uses_flex_service_tier_pricing() -> None:
 @pytest.mark.parametrize(
     ("model", "expected_reserved_microdollars", "expected_final_microdollars"),
     [
-        ("gpt-5.6", 286_720, 31_000_000),
-        ("gpt-5.6-sol-snapshot", 286_720, 31_000_000),
-        ("gpt-5.6-terra-snapshot", 114_688, 12_400_000),
-        ("gpt-5.6-luna-snapshot", 11_468, 1_240_000),
+        ("gpt-5.6", 204_800, 20_800_000),
+        ("gpt-5.6-sol-snapshot", 204_800, 20_800_000),
+        ("gpt-5.6-terra-snapshot", 118_784, 12_400_000),
+        ("gpt-5.6-luna-snapshot", 11_878, 1_240_000),
     ],
 )
 async def test_usage_reservation_uses_gpt_5_6_personality_pricing(
@@ -2577,3 +2577,94 @@ async def test_create_key_rejects_invalid_usage_sections() -> None:
                 usage_sections="bad_section",
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", ["none", "known", "unknown"])
+async def test_finalize_cost_uses_actual_model_cache_writes_or_image_evidence(override: str) -> None:
+    from app.core.usage.pricing import UsageCostBreakdown
+
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="cost-evidence",
+            allowed_models=None,
+            expires_at=None,
+            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+        )
+    )
+    reservation = await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
+    assert reservation is not None
+    breakdown = (
+        None if override == "none" else UsageCostBreakdown(None, None, None, 0.00234 if override == "known" else None)
+    )
+    for _ in range(2):
+        await service.finalize_usage_reservation(
+            reservation.reservation_id,
+            model="gpt-5.4",
+            actual_model="gpt-5.6-luna",
+            input_tokens=100000,
+            cached_input_tokens=40000,
+            cache_write_tokens=20000,
+            output_tokens=1000,
+            cost_override=breakdown,
+        )
+    [limit] = await repo.get_limits_by_key(created.id)
+    assert limit.current_value == {"none": 15000, "known": 2340, "unknown": 0}[override]
+
+
+@pytest.mark.asyncio
+async def test_image_admission_reserves_modality_upper_bound() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="image-cost-budget",
+            allowed_models=None,
+            expires_at=None,
+            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+        )
+    )
+    reservation = await service.enforce_limits_for_request(
+        created.id,
+        request_model="gpt-image-1",
+        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=100, output_tokens=100),
+    )
+    assert reservation is not None
+    [limit] = await repo.get_limits_by_key(created.id)
+    assert limit.current_value == 5000  # $10/M image input + $40/M image output.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("tier", "reserved"), [("default", 2200), ("priority", 4400), ("flex", 1100)])
+async def test_text_admission_covers_all_input_cache_writes_without_inflating_output(tier: str, reserved: int) -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="write-cost-budget",
+            allowed_models=None,
+            expires_at=None,
+            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+        )
+    )
+    reservation = await service.enforce_limits_for_request(
+        created.id,
+        request_model="gpt-5.6-luna",
+        request_service_tier=tier,
+        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=4000, output_tokens=1000),
+    )
+    assert reservation is not None
+    [limit] = await repo.get_limits_by_key(created.id)
+    assert limit.current_value == reserved  # 4K writes * .25 + 1K output * 1.2, then tier rates.
+    await service.finalize_usage_reservation(
+        reservation.reservation_id,
+        model="gpt-5.6-luna",
+        service_tier=tier,
+        input_tokens=4000,
+        output_tokens=1000,
+        cache_write_tokens=4000,
+    )
+    [limit] = await repo.get_limits_by_key(created.id)
+    assert limit.current_value == reserved

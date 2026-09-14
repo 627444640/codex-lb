@@ -314,6 +314,8 @@ class _WarmupMixin:
         input_tokens: int | None = None
         output_tokens: int | None = None
         cached_input_tokens: int | None = None
+        cache_write_tokens: int | None = None
+        actual_model: str | None = None
         reasoning_tokens: int | None = None
         reservation: ApiKeyUsageReservationData | None = None
         upstream_proxy_route_mode: str | None = None
@@ -363,6 +365,10 @@ class _WarmupMixin:
             status = "success"
             request_id = response.id or request_id
             usage = response.usage
+            actual_model = response.model
+            cache_write_tokens = (
+                usage.input_tokens_details.cache_write_tokens if usage and usage.input_tokens_details else None
+            )
             input_tokens = usage.input_tokens if usage else None
             output_tokens = usage.output_tokens if usage else None
             cached_input_tokens = (
@@ -441,6 +447,8 @@ class _WarmupMixin:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    actual_model=actual_model,
                     reasoning_tokens=reasoning_tokens,
                     transport=_REQUEST_TRANSPORT_HTTP,
                     request_kind="warmup",

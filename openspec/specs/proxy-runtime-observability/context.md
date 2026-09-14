@@ -31,3 +31,26 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
   constant validation only. They intentionally avoid request-scoped overrides,
   runtime-derived effective timeout values, payloads, API keys, access tokens,
   raw affinity keys, account emails, and other high-cardinality identifiers.
+
+
+## Request cost evidence
+
+Request cost figures are retail API estimates. Input tokens include cached
+reads and cache writes; output tokens include reasoning. Request logs preserve
+the original model alongside the reported actual model, cache-write evidence
+and a pricing version. Missing metadata is never manufactured by migration.
+
+Stored historical amounts remain unchanged when the price table changes.
+Previously unpriced rows may show a current estimate, with incomplete-usage
+status when cache writes are unreported; this display does not backfill stored
+or folded totals. Aggregate amounts therefore identify their known portion.
+Unknown public models have no invented price, and explicitly unknown image
+costs remain unknown after reads and later pricing-table updates.
+
+For a concrete example, 16,280 input tokens (15,104 cached reads and 100 writes)
+and 63 output tokens total 16,343 tokens. At the Luna standard short-context
+2026-09-14 snapshot, the estimate is $0.00061788, displayed as $0.000618.
+
+Prices are verified from the [official pricing table](https://developers.openai.com/api/docs/pricing)
+and [cache usage documentation](https://developers.openai.com/api/docs/guides/prompt-caching#monitor-cache-performance).
+They represent API estimates, not subscription credit charges or an invoice.

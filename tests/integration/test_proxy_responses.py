@@ -517,6 +517,16 @@ async def test_proxy_responses_repeated_401_after_refresh_fails_over(async_clien
 
     monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
 
+    async def fake_refresh(self, account, *, force=False, **kwargs):
+        from app.core.auth.refresh import RefreshError
+
+        if force:
+            raise RefreshError("invalid_grant", "synthetic invalidated token", is_permanent=True)
+        return account
+
+    # Keep this failover test independent of an actual OAuth refresh endpoint.
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_refresh)
+
     async with async_client.stream(
         "POST",
         "/backend-api/codex/responses",

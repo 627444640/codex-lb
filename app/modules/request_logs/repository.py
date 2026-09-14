@@ -21,6 +21,7 @@ from app.core.usage.logs import (
     RequestLogLike,
     calculated_cost_from_log,
 )
+from app.core.usage.pricing import MODEL_SOURCE_PRICING_VERSION, PRICING_VERSION
 from app.core.usage.types import (
     BucketConversationAggregate,
     BucketModelAggregate,
@@ -58,6 +59,16 @@ from app.modules.accounts.usage_time_rollup_read import (
     read_hourly_window,
     sum_demand_window,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RequestLogUsageUpdate:
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    cache_write_tokens: int | None
+    actual_model: str | None
+    cost_usd: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1041,6 +1052,8 @@ class RequestLogsRepository:
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
         archive_request_id: str | None = None,
+        cache_write_tokens: int | None = None,
+        actual_model: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log
@@ -1066,6 +1079,9 @@ class RequestLogsRepository:
                 request_id=resolved_request_id,
                 archive_request_id=resolved_archive_request_id,
                 model=model,
+                actual_model=actual_model,
+                pricing_version=PRICING_VERSION if model_source_id is None else MODEL_SOURCE_PRICING_VERSION,
+                cache_write_tokens=cache_write_tokens,
                 plan_type=resolved_plan_type,
                 source=source,
                 transport=transport,
@@ -1172,6 +1188,15 @@ class RequestLogsRepository:
 
         Returns the number of rows that were updated.
         """
+        return await self._update_accounting_for_request(request_id, model)
+
+    async def update_usage_for_request(self, request_id: str, model: str, usage: RequestLogUsageUpdate) -> int:
+        """Atomically replace host-model accounting with public image usage."""
+        return await self._update_accounting_for_request(request_id, model, usage=usage)
+
+    async def _update_accounting_for_request(
+        self, request_id: str, model: str, *, usage: RequestLogUsageUpdate | None = None
+    ) -> int:
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
             try:
@@ -1210,7 +1235,18 @@ class RequestLogsRepository:
                     return 0
                 for log in logs:
                     log.model = model
-                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    log.actual_model = model if usage is None else usage.actual_model
+                    log.pricing_version = PRICING_VERSION
+                    if usage is None:
+                        log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    else:
+                        log.input_tokens = usage.input_tokens
+                        log.output_tokens = usage.output_tokens
+                        log.cached_input_tokens = usage.cached_input_tokens
+                        log.cache_write_tokens = usage.cache_write_tokens
+                        log.reasoning_tokens = None
+                        # None explicitly clears host-model cost when image evidence is incomplete.
+                        log.cost_usd = usage.cost_usd
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0

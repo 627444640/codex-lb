@@ -336,11 +336,14 @@ class TestImagePricingPresent:
         canonical, _ = result
         assert canonical == "gpt-image-2"
 
-    def test_calculated_cost_is_nonzero_for_gpt_image_2(self) -> None:
+    def test_image_cost_is_unknown_without_input_modality(self) -> None:
         from app.core.usage.logs import calculated_cost_from_log
 
         class _Log:
             model = "gpt-image-2"
+            actual_model = None
+            cache_write_tokens = None
+            pricing_version = None
             service_tier = None
             input_tokens = 1000
             output_tokens = 500
@@ -349,8 +352,7 @@ class TestImagePricingPresent:
             cost_usd = None
 
         cost = calculated_cost_from_log(_Log())
-        assert cost is not None
-        assert cost > 0
+        assert cost is None
 
     def test_legacy_gpt_image_models_have_pricing(self) -> None:
         from app.core.usage.pricing import get_pricing_for_model

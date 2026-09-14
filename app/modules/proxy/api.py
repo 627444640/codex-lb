@@ -148,6 +148,7 @@ from app.core.resilience.overload import is_local_overload_error_code, merge_ret
 from app.core.runtime_logging import log_error_response
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.usage.pricing import UsageCostBreakdown
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.sse import (
@@ -3217,31 +3218,9 @@ async def _proxy_images_generation_request(
                 captured["image_stream_outcome"] = "upstream_error"
                 raise
             finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
+                # Keep public image accounting independent of the host
+                # Responses usage, including on downstream cancellation.
+                await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
                 stream_outcome = captured.get("image_stream_outcome")
                 if not isinstance(stream_outcome, str):
                     stream_outcome = "stream_closed"
@@ -3282,21 +3261,7 @@ async def _proxy_images_generation_request(
             headers=rate_limit_headers,
         )
 
-    response_id = captured.get("response_id")
-    if response_id and isinstance(response_id, str):
-        await context.service.rewrite_request_log_model(response_id, public_model)
-    _input = captured.get("image_input_tokens")
-    _output = captured.get("image_output_tokens")
-    _cached = captured.get("image_cached_input_tokens")
-    await _finalize_image_reservation(
-        context.service,
-        api_key,
-        reservation,
-        model=public_model,
-        input_tokens=_input if isinstance(_input, int) else None,
-        output_tokens=_output if isinstance(_output, int) else None,
-        cached_input_tokens=_cached if isinstance(_cached, int) else None,
-    )
+    await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
 
     if error_envelope is not None:
         error_status = _status_for_image_error_envelope(error_envelope)
@@ -3516,31 +3481,9 @@ async def _proxy_images_edit_request(
                 captured["image_stream_outcome"] = "upstream_error"
                 raise
             finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
+                # Keep public image accounting independent of the host
+                # Responses usage, including on downstream cancellation.
+                await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
                 stream_outcome = captured.get("image_stream_outcome")
                 if not isinstance(stream_outcome, str):
                     stream_outcome = "stream_closed"
@@ -3581,21 +3524,7 @@ async def _proxy_images_edit_request(
             headers=rate_limit_headers,
         )
 
-    response_id = captured.get("response_id")
-    if response_id and isinstance(response_id, str):
-        await context.service.rewrite_request_log_model(response_id, public_model)
-    _input = captured.get("image_input_tokens")
-    _output = captured.get("image_output_tokens")
-    _cached = captured.get("image_cached_input_tokens")
-    await _finalize_image_reservation(
-        context.service,
-        api_key,
-        reservation,
-        model=public_model,
-        input_tokens=_input if isinstance(_input, int) else None,
-        output_tokens=_output if isinstance(_output, int) else None,
-        cached_input_tokens=_cached if isinstance(_cached, int) else None,
-    )
+    await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
 
     if error_envelope is not None:
         error_status = _status_for_image_error_envelope(error_envelope)
@@ -7830,6 +7759,44 @@ async def _release_reservation_best_effort(
         )
 
 
+async def _finalize_image_accounting(
+    service: proxy_service_module.ProxyService,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    captured: Mapping[str, object],
+    model: str,
+) -> None:
+    """Persist image usage and settle its sole reservation from the same evidence."""
+    usage = images_service_module.captured_image_usage(captured)
+    input_tokens = usage.input_tokens if usage else None
+    output_tokens = usage.output_tokens if usage else None
+    cached_tokens = images_service_module.image_usage_detail_tokens(usage, "cached_tokens")
+    cache_write_tokens = images_service_module.image_usage_detail_tokens(usage, "cache_write_tokens")
+    cost = images_service_module.image_usage_cost(usage, model)
+    response_id = captured.get("response_id")
+    if isinstance(response_id, str) and response_id:
+        await service.rewrite_request_log_usage(
+            response_id,
+            model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cost_usd=cost.total_usd,
+        )
+    await _finalize_image_reservation(
+        service,
+        api_key,
+        reservation,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_override=cost,
+    )
+
+
 async def _finalize_image_reservation(
     service: proxy_service_module.ProxyService,
     api_key: ApiKeyData | None,
@@ -7839,6 +7806,8 @@ async def _finalize_image_reservation(
     input_tokens: int | None,
     output_tokens: int | None,
     cached_input_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    cost_override: UsageCostBreakdown | None = None,
 ) -> None:
     """Transfer image-token settlement to tracked persistence ownership."""
     if reservation is None:
@@ -7850,6 +7819,8 @@ async def _finalize_image_reservation(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_override=cost_override,
         request_id=get_request_id() or reservation.reservation_id,
     )
 

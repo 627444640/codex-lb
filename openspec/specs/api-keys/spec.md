@@ -3,7 +3,9 @@
 ## Purpose
 
 Define API key lifecycle, enforcement, accounting, and dashboard management contracts for downstream clients.
+
 ## Requirements
+
 ### Requirement: API Key creation
 
 The system SHALL allow the admin to create API keys via `POST /api/api-keys` with a `name` (required), `allowed_models` (optional list), `weekly_token_limit` (optional integer), `expires_at` (optional ISO 8601 datetime), `assigned_account_ids` (optional list), and `usage_sections` (optional comma-separated string, defaults to `"upstream_limits,account_pool_usage"`). The system MUST generate a key in the format `sk-clb-{48 hex chars}`, store only the `sha256` hash in the database, and return the plain key exactly once in the creation response. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt`, normalize them to UTC naive for persistence, and return the expiration as UTC in API responses.
@@ -1246,19 +1248,23 @@ for input, cached input, and output:
 
 | Model | Standard | Fast/priority | Flex | Standard long context |
 | --- | --- | --- | --- | --- |
-| `gpt-5.6-sol` | `5 / 0.50 / 30` | `10 / 1 / 60` | `2.5 / 0.25 / 15` | `10 / 1 / 45` |
+| `gpt-5.6-sol` | `4 / 0.40 / 20` | `8 / 0.80 / 40` | `2 / 0.20 / 10` | `8 / 0.80 / 30` |
 | `gpt-5.6-terra` | `2 / 0.20 / 12` | `4 / 0.40 / 24` | `1 / 0.10 / 6` | `4 / 0.40 / 18` |
 | `gpt-5.6-luna` | `0.20 / 0.02 / 1.20` | `0.40 / 0.04 / 2.40` | `0.10 / 0.01 / 0.60` | `0.40 / 0.04 / 1.80` |
 
 The existing `priority` and `fast` service-tier aliases MUST use the
 Fast/priority rates. Standard long-context rates MUST apply only when input
-tokens exceed 272,000. Flex long-context pricing MUST continue to use the
-existing Flex short-context rates and multipliers. Model aliases with a
+tokens exceed 272,000. Fast and Flex long-context pricing MUST apply twice their short-context input
+and cached-input rates and 1.5 times their short-context output rates. Model aliases with a
 version or snapshot suffix MUST resolve to the corresponding canonical table
 entry.
 
-Batch rates and cache-write rates MUST NOT be introduced into this contract
-without corresponding proxy request and usage fields.
+Reported cache-write tokens MUST be priced at 1.25 times the effective
+input rate and MUST be subtracted alongside cached reads from ordinary
+input tokens. Unreported cache writes MUST remain unknown in request logs.
+Sol rates are the verified promotional table as of 2026-09-14; persisted
+estimates MUST retain a pricing version. Batch service behavior is outside
+this proxy contract.
 
 #### Scenario: Terra standard usage uses the current rate
 
@@ -1451,3 +1457,27 @@ The dashboard MUST omit credits from new limit choices and MUST explain that an 
 - **AND** any visible upstream credit windows remain in `upstream_limits` with `aggregate` source
 - **AND** `/api/codex/usage` returns null `rate_limit` and `credits` rather than inventing a conversion or substituting upstream aggregate limits
 - **AND** ChatGPT-authenticated upstream credit and monthly-window presentation remains unchanged
+
+### Requirement: Cost reservations cover cache-write and image modality rates
+Within a request's bounded input/output budget, admission MUST reserve the maximum applicable input rate when cache writes or image modality are not yet known. Final successful settlement MUST use reported cache writes and actual model identity, and MUST preserve explicit image cost overrides. Settlement MUST remain idempotent and MUST NOT convert an image cost marked unknown into host-model charges.
+
+#### Scenario: Cache writes exceed ordinary input rates
+- **WHEN** admission estimates 10,000 input tokens for a model with a 1.25-times cache-write rate
+- **THEN** its cost reservation covers all 10,000 tokens being cache writes
+- **AND** final settlement adjusts the reservation to the reported input partition exactly once
+
+#### Scenario: Image modality is not known at admission
+- **WHEN** an image request has a bounded input/output token budget
+- **THEN** reservation uses the upper bound of the model's text and image token rates
+- **AND** final costs use the image usage evidence instead of this admission estimate
+
+### Requirement: Verified Astra and long-context pricing
+The system MUST recognize Astra and its versioned aliases with standard short-context USD-per-million rates of 10 input, 1 cached input, 12.5 cache write, and 50 output. For Astra requests above 272,000 input tokens, input and cache rates MUST double and output rates MUST increase by 1.5 times. Fast MUST use twice the respective standard rates and Flex MUST use half. GPT-5.5 standard long-context pricing MUST apply the published 2-times input and 1.5-times output uplift, and GPT-5.4-mini Fast MUST use twice its standard rates. Unverified model aliases MUST NOT be guessed.
+
+#### Scenario: Astra cache writes are separately priced
+- **WHEN** an Astra request reports 100 input tokens, 40 cached reads, 20 cache writes, and 10 output tokens
+- **THEN** ordinary input is 40 tokens and its standard short-context estimate is 0.00119 USD
+
+#### Scenario: Auto-review has no verified price
+- **WHEN** a response reports the model codex-auto-review and no custom price exists
+- **THEN** builtin cost accounting returns unknown

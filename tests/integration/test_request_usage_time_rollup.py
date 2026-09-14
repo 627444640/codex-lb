@@ -1015,7 +1015,8 @@ async def test_upgrade_repair_marker_covers_multi_slice_legacy_advance(db_setup)
 
 
 @pytest.mark.asyncio
-async def test_model_rewrite_skips_folded_rows(db_setup):
+@pytest.mark.parametrize("rewrite_usage", [False, True])
+async def test_model_rewrite_skips_folded_rows(db_setup, rewrite_usage):
     """`update_model_for_request` must never rewrite rows below ANY rollup
     watermark (the bound is max(lifetime, hourly)): model is a folded
     dimension and cost a folded measure, so a pre-watermark rewrite (a
@@ -1054,7 +1055,15 @@ async def test_model_rewrite_skips_folded_rows(db_setup):
         await _add_log(logs, account_id="acc_rw", request_id="r_rw", requested_at=at_lifetime)
 
     async with SessionLocal() as session:
-        updated = await RequestLogsRepository(session).update_model_for_request("r_rw", "gpt-image-1")
+        repository = RequestLogsRepository(session)
+        if rewrite_usage:
+            from app.modules.request_logs.repository import RequestLogUsageUpdate
+
+            updated = await repository.update_usage_for_request(
+                "r_rw", "gpt-image-1", RequestLogUsageUpdate(7, 13, 0, None, "gpt-image-1", 0.000555)
+            )
+        else:
+            updated = await repository.update_model_for_request("r_rw", "gpt-image-1")
     assert updated == 1  # the live-tail row only
 
     async with SessionLocal() as session:
@@ -1064,6 +1073,11 @@ async def test_model_rewrite_skips_folded_rows(db_setup):
     assert models_by_age[between_at] == "gpt-5.1-codex"  # below the lifetime watermark
     assert models_by_age[at_lifetime] == "gpt-5.1-codex"  # AT the inclusive lifetime watermark
     assert models_by_age[now] == "gpt-image-1"
+    if rewrite_usage:
+        async with SessionLocal() as session:
+            row = await session.scalar(select(RequestLog).where(RequestLog.requested_at == now))
+            assert row is not None
+            assert (row.input_tokens, row.output_tokens, row.reasoning_tokens, row.cost_usd) == (7, 13, None, 0.000555)
 
     # The folded hourly bucket still carries the original model dimension.
     hourly, _, _, _ = await _dump_all_rollups()

@@ -96,6 +96,65 @@ function openRequestDetails() {
 }
 
 describe("RecentRequestsTable", () => {
+  it("shows precise costs and prices cache writes as a separate input subset", () => {
+    render(<RecentRequestsTable {...PAGINATION_PROPS} accounts={[]} requests={[{
+      ...LAYOUT_REQUEST,
+      model: "codex-auto-review",
+      actualModel: "gpt-5.6-luna",
+      cacheWriteTokens: 300,
+      cachedInputTokens: 200,
+      costUsd: 0.000419,
+      costStatus: "estimated",
+      pricingVersion: "openai-api-2026-09-14-v1",
+      costBreakdown: { inputUsd: 0.0001, cachedInputUsd: 0.000004, cacheWriteUsd: 0.000075, outputUsd: 0.00024, totalUsd: 0.000419 },
+    }]} />);
+
+    expect(screen.getByText("$0.000419")).toBeInTheDocument();
+    const dialog = openRequestDetails();
+    expect(dialog).toHaveTextContent("gpt-5.6-luna");
+    expect(dialog).toHaveTextContent("openai-api-2026-09-14-v1");
+    expect(dialog).toHaveTextContent("500 Input ($0.0001)");
+    expect(dialog).toHaveTextContent("200 Cached ($0.000004)");
+    expect(dialog).toHaveTextContent("300 Cache write ($0.000075)");
+    expect(dialog).toHaveTextContent("Cache-write tokens (included in input)");
+    expect(dialog).toHaveTextContent("not the actual charge for a ChatGPT subscription");
+  });
+
+  it.each([
+    ["unknown_model", "Price unknown", "not treated as free"],
+    ["missing_usage", "Usage missing", "Missing usage is not zero"],
+    ["incomplete_usage", "Incomplete estimate", "Some usage details were not reported"],
+  ] as const)("explains %s instead of presenting a free request", (costStatus, label, explanation) => {
+    render(<RecentRequestsTable {...PAGINATION_PROPS} accounts={[]} requests={[{
+      ...LAYOUT_REQUEST, costUsd: null, costStatus,
+    }]} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+    const dialog = openRequestDetails();
+    expect(dialog).toHaveTextContent(explanation);
+    expect(dialog).not.toHaveTextContent("Cache-write tokens (included in input)");
+  });
+
+  it("preserves historical total-only costs and explains their provenance", () => {
+    render(<RecentRequestsTable {...PAGINATION_PROPS} accounts={[]} requests={[{
+      ...LAYOUT_REQUEST, costUsd: 4.321234, costStatus: "historical",
+    }]} />);
+    expect(screen.getByText("$4.321234")).toBeInTheDocument();
+    expect(screen.getByText("Historical estimate")).toBeInTheDocument();
+    const dialog = openRequestDetails();
+    expect(dialog).toHaveTextContent("has not been recalculated");
+    expect(dialog).toHaveTextContent("$4.321234");
+  });
+
+  it("wraps precise amounts and status labels with an older narrow saved cost column", () => {
+    render(<RecentRequestsTable {...PAGINATION_PROPS} accounts={[]} visibleColumns={["cost", "details"]}
+      columnWidths={{ cost: 64 }} requests={[{ ...LAYOUT_REQUEST, costUsd: 0.00000002, costStatus: "incomplete_usage" }]} />);
+    const amount = screen.getByText("$2.000000e-8");
+    expect(amount).toHaveClass("break-all");
+    expect(amount.closest("td")).toHaveClass("whitespace-normal");
+    expect(screen.getByText("Incomplete estimate")).toHaveClass("break-words");
+  });
+
   beforeEach(() => {
     toastSuccess.mockReset();
     toastError.mockReset();
@@ -904,9 +963,9 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).toHaveTextContent("$0.01 =");
-    expect(costSection).toHaveTextContent("800 Input ($0.00)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
-    expect(costSection).toHaveTextContent("400 Output ($0.00)");
+    expect(costSection).toHaveTextContent("800 Input ($0.004)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.002)");
+    expect(costSection).toHaveTextContent("400 Output ($0.004)");
   });
 
   it("shows the full user agent in request details when present", () => {
@@ -1133,8 +1192,8 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).toHaveTextContent("$0.01 =");
-    expect(costSection).toHaveTextContent("500 Input ($0.01)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
+    expect(costSection).toHaveTextContent("500 Input ($0.006)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.004)");
     expect(costSection).not.toHaveTextContent("Output");
   });
 
@@ -1190,8 +1249,8 @@ describe("RecentRequestsTable", () => {
 
     expect(within(dialog).getByText("Cost")).toBeInTheDocument();
     expect(costSection).not.toHaveTextContent("=");
-    expect(costSection).toHaveTextContent("800 Input ($0.01)");
-    expect(costSection).toHaveTextContent("200 Cached ($0.00)");
+    expect(costSection).toHaveTextContent("800 Input ($0.006)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.004)");
     expect(costSection).not.toHaveTextContent("Output");
   });
 

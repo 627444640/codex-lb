@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.usage.pricing import (
+    UsageCostBreakdown,
     UsageTokens,
     calculate_cost_from_usage,
     get_pricing_for_model,
@@ -986,6 +987,9 @@ class ApiKeysService:
         cached_input_tokens: int = 0,
         service_tier: str | None = None,
         cost_microdollars: int | None = None,
+        cache_write_tokens: int = 0,
+        actual_model: str | None = None,
+        cost_override: UsageCostBreakdown | None = None,
     ) -> None:
         for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
             try:
@@ -998,6 +1002,9 @@ class ApiKeysService:
                     service_tier=service_tier,
                     status="finalized",
                     cost_microdollars_override=cost_microdollars,
+                    cache_write_tokens=cache_write_tokens,
+                    actual_model=actual_model,
+                    cost_override=cost_override,
                 )
                 return
             except OperationalError as exc:
@@ -1049,6 +1056,9 @@ class ApiKeysService:
         service_tier: str | None,
         status: str,
         cost_microdollars_override: int | None = None,
+        cache_write_tokens: int = 0,
+        actual_model: str | None = None,
+        cost_override: UsageCostBreakdown | None = None,
     ) -> None:
         async with sqlite_writer_section():
             reservation = await self._repository.get_usage_reservation(reservation_id)
@@ -1070,12 +1080,15 @@ class ApiKeysService:
             cost_microdollars = (
                 cost_microdollars_override
                 if cost_microdollars_override is not None
+                else _usd_to_microdollars(cost_override.total_usd or 0.0)
+                if cost_override is not None
                 else _calculate_cost_microdollars(
-                    model,
+                    actual_model or model,
                     effective_input_tokens,
                     effective_output_tokens,
                     effective_cached_input_tokens,
                     service_tier,
+                    cache_write_tokens=cache_write_tokens,
                 )
             )
 
@@ -1196,13 +1209,16 @@ class ApiKeysService:
         output_tokens: int,
         cached_input_tokens: int = 0,
         service_tier: str | None = None,
+        cache_write_tokens: int = 0,
+        actual_model: str | None = None,
     ) -> None:
         cost_microdollars = _calculate_cost_microdollars(
-            model,
+            actual_model or model,
             input_tokens,
             output_tokens,
             cached_input_tokens,
             service_tier,
+            cache_write_tokens=cache_write_tokens,
         )
         await self._repository.increment_limit_usage(
             key_id,
@@ -1728,12 +1744,26 @@ def _reserve_cost_budget_microdollars(
 ) -> int:
     if not model:
         return _unknown_model_reserve_cost_budget_microdollars(input_tokens=input_tokens, output_tokens=output_tokens)
+    resolved = get_pricing_for_model(model)
+    if resolved is not None and resolved[1].image_input_per_1m is not None:
+        price = resolved[1]
+        # Admission has no actual modality counts yet. Reserve the upper
+        # token-rate bound; final image accounting still requires real usage.
+        return ceil(
+            input_tokens * max(price.input_per_1m, price.image_input_per_1m or 0.0)
+            + output_tokens * max(price.output_per_1m, price.text_output_per_1m or 0.0)
+        )
     cost_microdollars = _calculate_cost_microdollars(
         model,
         input_tokens,
         output_tokens,
         0,
         service_tier,
+        # Before the upstream runs, all input may become a charged cache
+        # write. Reserve that upper bound without multiplying output prices.
+        cache_write_tokens=(
+            input_tokens if resolved is not None and (resolved[1].cache_write_multiplier or 1.0) > 1.0 else 0
+        ),
     )
     return (
         cost_microdollars
@@ -1985,6 +2015,8 @@ def _calculate_cost_microdollars(
     output_tokens: int,
     cached_input_tokens: int,
     service_tier: str | None = None,
+    *,
+    cache_write_tokens: int = 0,
 ) -> int:
     resolved = get_pricing_for_model(model)
     if resolved is None:
@@ -1994,11 +2026,18 @@ def _calculate_cost_microdollars(
         input_tokens=float(input_tokens),
         output_tokens=float(output_tokens),
         cached_input_tokens=float(cached_input_tokens),
+        cache_write_tokens=float(cache_write_tokens),
     )
     cost_usd = calculate_cost_from_usage(usage, price, service_tier=service_tier)
     if cost_usd is None:
         return 0
-    return int(cost_usd * 1_000_000)
+    return _usd_to_microdollars(cost_usd)
+
+
+def _usd_to_microdollars(cost_usd: float) -> int:
+    # Retain sub-microdollar truncation, removing binary floating-point noise
+    # below one trillionth of a dollar at exact microdollar boundaries.
+    return int(round(cost_usd * 1_000_000, 6))
 
 
 def _is_sqlite_database_locked(exc: OperationalError) -> bool:

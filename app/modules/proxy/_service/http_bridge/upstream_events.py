@@ -1846,6 +1846,8 @@ class _HTTPBridgeUpstreamEventsMixin:
                     matched_request_state.latency_response_created_ms = int(
                         max(0.0, now - matched_request_state.started_at) * 1000
                     )
+                if event and event.response and event.response.model:
+                    matched_request_state.actual_model = event.response.model
                 actual_service_tier = _service_tier_from_event_payload(payload)
                 if actual_service_tier is not None:
                     matched_request_state.actual_service_tier = actual_service_tier

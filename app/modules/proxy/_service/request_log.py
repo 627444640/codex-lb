@@ -11,6 +11,7 @@ from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, proxy_phase_latenc
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy.affinity import _extract_model_class
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
+from app.modules.request_logs.repository import RequestLogUsageUpdate
 
 logger = logging.getLogger("app.modules.proxy.service")
 
@@ -99,7 +100,32 @@ class _RequestLogMixin:
         )
         self._track_request_log_task(task, account_id=None, request_id=request_id)
 
-    async def _rewrite_request_log_model_once(self, request_id: str, model: str) -> None:
+    async def rewrite_request_log_usage(
+        self,
+        request_id: str,
+        model: str,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cached_input_tokens: int | None,
+        cache_write_tokens: int | None,
+        cost_usd: float | None,
+        actual_model: str | None = None,
+    ) -> None:
+        if not request_id or not model:
+            return
+        usage = RequestLogUsageUpdate(
+            input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, actual_model, cost_usd
+        )
+        task = asyncio.create_task(
+            self._rewrite_request_log_model_once(request_id, model, usage=usage),
+            name=f"proxy-request-log-rewrite-{request_id}",
+        )
+        self._track_request_log_task(task, account_id=None, request_id=request_id)
+
+    async def _rewrite_request_log_model_once(
+        self, request_id: str, model: str, *, usage: RequestLogUsageUpdate | None = None
+    ) -> None:
         proxy = cast(_RequestLogServiceProtocol, self)
         insert_task_name = f"proxy-request-log-{request_id}"
         with anyio.CancelScope(shield=True):
@@ -125,7 +151,10 @@ class _RequestLogMixin:
                         except Exception:  # insert failures surface via the update probe below
                             pass
                     async with proxy._repo_factory() as repos:
-                        rowcount = await repos.request_logs.update_model_for_request(request_id, model)
+                        if usage is None:
+                            rowcount = await repos.request_logs.update_model_for_request(request_id, model)
+                        else:
+                            rowcount = await repos.request_logs.update_usage_for_request(request_id, model, usage)
                     if rowcount:
                         break
                     if loop.time() >= deadline:
@@ -169,6 +198,8 @@ class _RequestLogMixin:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
+        actual_model: str | None = None,
         reasoning_tokens: int | None = None,
         reasoning_effort: str | None = None,
         transport: str | None = None,
@@ -219,6 +250,8 @@ class _RequestLogMixin:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cached_input_tokens=cached_input_tokens,
+                cache_write_tokens=cache_write_tokens,
+                actual_model=actual_model,
                 reasoning_tokens=reasoning_tokens,
                 reasoning_effort=reasoning_effort,
                 transport=transport,
@@ -398,6 +431,8 @@ class _RequestLogMixin:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
+        actual_model: str | None = None,
         reasoning_tokens: int | None = None,
         reasoning_effort: str | None = None,
         transport: str | None = None,
@@ -437,6 +472,8 @@ class _RequestLogMixin:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cached_input_tokens=cached_input_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    actual_model=actual_model,
                     reasoning_tokens=reasoning_tokens,
                     reasoning_effort=reasoning_effort,
                     transport=transport,
