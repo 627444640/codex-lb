@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 from collections.abc import AsyncIterator, Awaitable, Mapping
 from contextlib import AsyncExitStack
@@ -16,9 +17,12 @@ from app.core.clients.http import lease_http_session
 from app.core.crypto import TokenEncryptor
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.core.utils.sse import parse_sse_data_json
 from app.db.models import ModelSource
 
 _DEFAULT_SOURCE_TIMEOUT_SECONDS = 600
+# Request-log timings and token counts use SQL Integer (PostgreSQL int32).
+_MAX_REQUEST_LOG_INTEGER = 2_147_483_647
 
 
 class ModelSourceForwardingError(Exception):
@@ -40,6 +44,7 @@ class SourceUsage:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,59 +678,71 @@ def _timings_from_metrics(metrics: Mapping[str, JsonValue]) -> SourceTimings | N
         return None
     if (isinstance(ttft, float) and not isfinite(ttft)) or (isinstance(generation, float) and not isfinite(generation)):
         return None
-    if ttft < 0 or generation < 0:
+    if not (0 <= ttft <= _MAX_REQUEST_LOG_INTEGER and 0 <= generation <= _MAX_REQUEST_LOG_INTEGER):
+        return None
+    total = ttft + generation
+    if total > _MAX_REQUEST_LOG_INTEGER:
         return None
     return SourceTimings(
         latency_first_token_ms=round(ttft),
-        latency_ms=round(ttft + generation),
+        latency_ms=round(total),
     )
 
 
+def _nonnegative_token_count(value: JsonValue) -> int | None:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_REQUEST_LOG_INTEGER
+        else None
+    )
+
+
+def _reasoning_tokens_from_details(usage: Mapping[str, JsonValue], details_field: str) -> int | None:
+    details = usage.get(details_field)
+    return _nonnegative_token_count(details.get("reasoning_tokens")) if is_json_mapping(details) else None
+
+
 def _usage_from_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
-    prompt_tokens = usage.get("prompt_tokens")
-    completion_tokens = usage.get("completion_tokens")
-    if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
-        return None
-    if prompt_tokens < 0 or completion_tokens < 0:
+    prompt_tokens = _nonnegative_token_count(usage.get("prompt_tokens"))
+    completion_tokens = _nonnegative_token_count(usage.get("completion_tokens"))
+    if prompt_tokens is None or completion_tokens is None:
         # Fail closed: negative counts from a misbehaving source would reduce
         # API-key limit counters or record negative cost at settlement.
         return None
     cached_tokens = 0
     details = usage.get("prompt_tokens_details")
     if is_json_mapping(details):
-        raw_cached = details.get("cached_tokens")
-        cached_tokens = raw_cached if isinstance(raw_cached, int) else 0
+        cached_tokens = _nonnegative_token_count(details.get("cached_tokens")) or 0
     return SourceUsage(
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
         cached_input_tokens=max(0, min(cached_tokens, prompt_tokens)),
+        reasoning_tokens=_reasoning_tokens_from_details(usage, "completion_tokens_details"),
     )
 
 
 def _usage_from_responses_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
-        return None
-    if input_tokens < 0 or output_tokens < 0:
+    input_tokens = _nonnegative_token_count(usage.get("input_tokens"))
+    output_tokens = _nonnegative_token_count(usage.get("output_tokens"))
+    if input_tokens is None or output_tokens is None:
         # Fail closed: negative counts from a misbehaving source would reduce
         # API-key limit counters or record negative cost at settlement.
         return None
     cached_tokens = 0
     details = usage.get("input_tokens_details")
     if is_json_mapping(details):
-        raw_cached = details.get("cached_tokens")
-        cached_tokens = raw_cached if isinstance(raw_cached, int) else 0
+        cached_tokens = _nonnegative_token_count(details.get("cached_tokens")) or 0
     return SourceUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=max(0, min(cached_tokens, input_tokens)),
+        reasoning_tokens=_reasoning_tokens_from_details(usage, "output_tokens_details"),
     )
 
 
 def _usage_from_total_tokens_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
-    total_tokens = usage.get("total_tokens")
-    if not isinstance(total_tokens, int) or total_tokens < 0:
+    total_tokens = _nonnegative_token_count(usage.get("total_tokens"))
+    if total_tokens is None:
         return None
     return SourceUsage(input_tokens=total_tokens, output_tokens=0)
 
@@ -746,12 +763,19 @@ class SourceStreamUsageParser:
         self._usage_holder = usage_holder
         self._response_shape = response_shape
         self._buffer = ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._skip_leading_lf = False
 
     def feed(self, chunk: bytes) -> None:
-        # SSE permits CRLF (and bare CR) line endings; normalize so frame
-        # detection below only has to handle "\n\n".
-        text = chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-        self._buffer += text
+        text = self._decoder.decode(chunk)
+        if not text:
+            return
+        # A trailing CR already terminates a line. Ignore a following LF even
+        # across network chunks, so one CRLF cannot become an empty SSE line.
+        if self._skip_leading_lf and text.startswith("\n"):
+            text = text[1:]
+        self._skip_leading_lf = text.endswith("\r")
+        self._buffer += text.replace("\r\n", "\n").replace("\r", "\n")
         while "\n\n" in self._buffer:
             frame, self._buffer = self._buffer.split("\n\n", 1)
             self._capture_frame(frame)
@@ -759,29 +783,23 @@ class SourceStreamUsageParser:
             self._buffer = self._buffer[-self._MAX_BUFFER_CHARS :]
 
     def _capture_frame(self, frame: str) -> None:
-        for line in frame.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("data:"):
-                continue
-            data = stripped.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                parsed = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            if self._response_shape == "responses":
-                usage = _usage_from_responses_event(parsed)
-                timings = _timings_from_responses_event(parsed)
-            else:
-                usage = _usage_from_chat_payload(parsed)
-                timings = _timings_from_payload(parsed)
-            if usage is not None:
-                self._usage_holder.usage = usage
-            if timings is not None:
-                self._usage_holder.timings = timings
+        try:
+            parsed = parse_sse_data_json(frame)
+        except ValueError:
+            # JSON integers exceeding Python's parser limit are not usage.
+            return
+        if parsed is None:
+            return
+        if self._response_shape == "responses":
+            usage = _usage_from_responses_event(parsed)
+            timings = _timings_from_responses_event(parsed)
+        else:
+            usage = _usage_from_chat_payload(parsed)
+            timings = _timings_from_payload(parsed)
+        if usage is not None:
+            self._usage_holder.usage = usage
+        if timings is not None:
+            self._usage_holder.timings = timings
 
 
 def _usage_from_responses_event(payload: Mapping[str, JsonValue]) -> SourceUsage | None:

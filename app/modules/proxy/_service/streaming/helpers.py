@@ -48,6 +48,7 @@ from app.core.errors import (
 )
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import parse_sse_event
+from app.core.openai.requests import ResponsesRequest
 from app.core.resilience.network_recovery import (
     PROCESS_NETWORK_UNAVAILABLE_CODE,
 )
@@ -62,6 +63,7 @@ from app.db.models import (
     Account,
     AccountStatus,  # noqa: F401
 )
+from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -272,6 +274,7 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
+from app.modules.proxy._service.streaming.protocol import _StreamingServiceProtocol
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
@@ -411,6 +414,38 @@ def _stream_iterator_after_capacity_admission(
 
 
 _REQUEST_TRANSPORT_HTTP = "http"
+
+
+def _stream_responses(
+    proxy: _StreamingServiceProtocol,
+    payload: ResponsesRequest,
+    headers: Mapping[str, str],
+    *,
+    codex_session_affinity: bool = False,
+    propagate_http_errors: bool = False,
+    openai_cache_affinity: bool = False,
+    api_key: ApiKeyData | None = None,
+    api_key_reservation: ApiKeyUsageReservationData | None = None,
+    suppress_text_done_events: bool = False,
+    request_transport: str = _REQUEST_TRANSPORT_HTTP,
+    client_ip: str | None = None,
+    enforce_openai_sdk_contract: bool = True,
+) -> AsyncIterator[str]:
+    _maybe_log_proxy_request_payload("stream", payload, headers)
+    filtered = _facade().filter_inbound_headers(headers)
+    return proxy._stream_with_retry(
+        payload,
+        filtered,
+        codex_session_affinity=codex_session_affinity,
+        propagate_http_errors=propagate_http_errors,
+        openai_cache_affinity=openai_cache_affinity,
+        api_key=api_key,
+        api_key_reservation=api_key_reservation,
+        suppress_text_done_events=suppress_text_done_events,
+        request_transport=request_transport,
+        client_ip=client_ip,
+        enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+    )
 
 
 def _resolve_upstream_stream_transport(upstream_stream_transport: str) -> str | None:

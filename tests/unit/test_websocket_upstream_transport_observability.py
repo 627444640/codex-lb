@@ -87,6 +87,112 @@ class _DummyFacade:
         return None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["websocket", "http"])
+@pytest.mark.parametrize("settlement_seconds", [0.0, 2.0])
+async def test_generation_latency_excludes_terminal_settlement(monkeypatch, transport, settlement_seconds):
+    service = _DummyWebSocketService()
+    clock = SimpleNamespace(now=101.0)
+    monkeypatch.setattr(websocket_mixin_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    async def settle(*_args, **kwargs):
+        assert kwargs["wait_for_settlement"] is True
+        clock.now += settlement_seconds
+        return True
+
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", settle)
+    state = _WebSocketRequestState(
+        request_id="timing",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=100.0,
+        latency_first_token_ms=250,
+        latency_first_output_ms=500,
+        output_delta_count=2,
+        transport=transport,
+    )
+    await service._finalize_websocket_request_state(
+        state,
+        account=cast(Any, object()),
+        account_id_value="timing",
+        event=None,
+        event_type="response.completed",
+        payload={},
+        api_key=None,
+        upstream_control=_WebSocketUpstreamControl(),
+        response_create_gate=asyncio.Semaphore(1),
+    )
+    row = service.request_log_calls[0]
+    assert row["latency_ms"] == 1000
+    assert row["latency_first_token_ms"] == 250
+    assert row["latency_first_output_ms"] == 500
+    assert row["output_delta_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_aborted_websocket_latency_excludes_reservation_cleanup(monkeypatch):
+    service = _DummyWebSocketService()
+    clock = SimpleNamespace(now=101.0)
+    monkeypatch.setattr(websocket_mixin_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    async def release(_state):
+        clock.now += 2.0
+
+    monkeypatch.setattr(service, "_release_websocket_request_state_reservation", release)
+    state = _WebSocketRequestState(
+        request_id="timing-abort",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=100.0,
+    )
+    await service._fail_pending_websocket_requests(
+        account_id_value="timing",
+        pending_requests=deque([state]),
+        pending_lock=anyio.Lock(),
+        error_code="client_disconnected",
+        error_message="disconnected",
+        api_key=None,
+        penalize_account=False,
+        status="cancelled",
+    )
+    assert service.request_log_calls[0]["latency_ms"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_terminal_snapshot_does_not_replace_earlier_pending_reasoning(monkeypatch):
+    from app.modules.proxy._service.support import _TTFTReasoningDeltaState
+
+    service = _DummyWebSocketService()
+    monkeypatch.setattr(websocket_mixin_module, "time", SimpleNamespace(monotonic=lambda: 101.0))
+    state = _WebSocketRequestState(
+        request_id="pending-reasoning",
+        model="gpt-5.1",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=100.0,
+        ttft_reasoning_deltas={(None, None, None): _TTFTReasoningDeltaState("plan\n<!", visible_at=100.125)},
+    )
+    await service._finalize_websocket_request_state(
+        state,
+        account=cast(Any, object()),
+        account_id_value="timing",
+        event=None,
+        event_type="response.completed",
+        payload={"response": {"output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}]}},
+        api_key=None,
+        upstream_control=_WebSocketUpstreamControl(),
+        response_create_gate=asyncio.Semaphore(1),
+    )
+    assert service.request_log_calls[0]["latency_first_token_ms"] == 125
+    assert service.request_log_calls[0]["latency_first_output_ms"] == 1000
+    assert service.request_log_calls[0]["output_delta_count"] == 1
+
+
 async def _no_op_release_gate(_request_state: object, _response_create_gate: object) -> None:
     return None
 
@@ -225,6 +331,8 @@ async def test_websocket_finalizer_records_bridge_upstream_transport_and_metric(
             "requested_service_tier": None,
             "actual_service_tier": None,
             "latency_first_token_ms": None,
+            "latency_first_output_ms": None,
+            "output_delta_count": 0,
             "latency_response_created_ms": None,
             "latency_first_upstream_event_ms": None,
             "latency_response_create_gate_wait_ms": None,
@@ -308,6 +416,8 @@ async def test_websocket_connect_failure_records_bridge_upstream_transport_and_m
             "requested_service_tier": None,
             "actual_service_tier": None,
             "latency_first_token_ms": None,
+            "latency_first_output_ms": None,
+            "output_delta_count": 0,
             "latency_response_created_ms": None,
             "latency_first_upstream_event_ms": None,
             "latency_response_create_gate_wait_ms": None,
@@ -385,6 +495,8 @@ async def test_fail_pending_websocket_requests_records_bridge_upstream_transport
             "requested_service_tier": None,
             "actual_service_tier": None,
             "latency_first_token_ms": None,
+            "latency_first_output_ms": None,
+            "output_delta_count": 0,
             "session_id": None,
             "upstream_proxy_route_mode": None,
             "upstream_proxy_pool_id": None,

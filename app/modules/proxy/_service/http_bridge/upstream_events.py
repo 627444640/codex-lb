@@ -141,6 +141,7 @@ from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
     _PENDING_TOOL_CALL_ITEM_TYPES,
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    TERMINAL_EVENT_TYPES,
     _account_capacity_wait_payload,
     _clear_websocket_deferred_reasoning_downstream_texts,
     _clear_websocket_precreated_replay_fallback,
@@ -153,10 +154,13 @@ from app.modules.proxy._service.support import (
     _record_response_event,
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
+    _ttft_event_visible_at,
     _websocket_request_can_replay_before_visible_output,
     _websocket_should_defer_reasoning_prelude,
     _WebSocketReceiveTimeout,
     _WebSocketRequestState,
+    finish_response_timing,
+    observe_output_timing,
 )
 from app.modules.proxy._service.support import (
     _websocket_route_log_kwargs as _websocket_route_log_kwargs,
@@ -1257,9 +1261,14 @@ class _HTTPBridgeUpstreamEventsMixin:
     ) -> None:
         runtime_settings = _service_get_settings()
         relay_upstream = session.upstream
-        receive_task: asyncio.Task[UpstreamWebSocketMessage] | None = None
+        receive_task: asyncio.Task[tuple[UpstreamWebSocketMessage, float]] | None = None
         wakeup_task: asyncio.Task[bool] | None = None
         reader_failure_retry_circuit_attempt_selection: _HTTPBridgeRetryCircuitAttemptSelection | None = None
+
+        async def receive_observed() -> tuple[UpstreamWebSocketMessage, float]:
+            message = await session.upstream.receive()
+            return message, _service_time().monotonic()
+
         try:
             while True:
                 reader_failure_retry_circuit_attempt_selection = None
@@ -1287,12 +1296,12 @@ class _HTTPBridgeUpstreamEventsMixin:
                     stuck_gate_retire_after_seconds=stuck_gate_retire_after_seconds,
                 )
                 if receive_task is None:
-                    receive_task = asyncio.create_task(session.upstream.receive())
+                    receive_task = asyncio.create_task(receive_observed())
 
                 message: UpstreamWebSocketMessage | None = None
                 timed_out = False
                 if receive_task.done():
-                    message = receive_task.result()
+                    message, message_observed_at = receive_task.result()
                     receive_task = None
                 elif receive_timeout is not None and receive_timeout.timeout_seconds <= 0:
                     timed_out = True
@@ -1304,7 +1313,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if receive_task in done:
-                        message = receive_task.result()
+                        message, message_observed_at = receive_task.result()
                         receive_task = None
                     elif wakeup_task in done:
                         wakeup_task.result()
@@ -1501,7 +1510,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                             account_id=session.account.id,
                             chatgpt_account_id=session.account.chatgpt_account_id,
                         )
-                    await self._process_http_bridge_upstream_text(session, message.text)
+                    await self._process_http_bridge_upstream_text(
+                        session, message.text, observed_at=message_observed_at
+                    )
                     if await self._retire_http_bridge_after_drain_if_ready(session):
                         break
                     continue
@@ -1659,7 +1670,10 @@ class _HTTPBridgeUpstreamEventsMixin:
         self: Any,
         session: "_HTTPBridgeSession",
         text: str,
+        *,
+        observed_at: float | None = None,
     ) -> None:
+        observed_at = _service_time().monotonic() if observed_at is None else observed_at
         event_block = f"data: {text}\n\n"
         payload = parse_sse_data_json(event_block)
         event_type = classify_event_type(payload)
@@ -1670,6 +1684,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             await self._process_parsed_http_bridge_upstream_event(
                 session,
                 text=text,
+                observed_at=observed_at,
                 event_block=event_block,
                 payload=payload,
                 event=event,
@@ -1687,6 +1702,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             await self._settle_aborted_http_bridge_terminal_states(
                 session,
                 claimed_terminal_request_states,
+                ended_at=observed_at,
             )
             raise
         else:
@@ -1700,6 +1716,8 @@ class _HTTPBridgeUpstreamEventsMixin:
         self: Any,
         session: "_HTTPBridgeSession",
         request_states: list[_WebSocketRequestState],
+        *,
+        ended_at: float,
     ) -> None:
         """Settle claimed-but-unfinalized terminal requests after an abort.
 
@@ -1725,6 +1743,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                     if request_state in session.pending_requests:
                         request_state.terminal_settlement_phase = None
                         continue
+                    finish_response_timing(request_state, ended_at=ended_at)
                 request_state.terminal_settlement_phase = "abandoned"
                 try:
                     self._cancel_request_state_api_key_reservation_heartbeat(request_state)
@@ -1760,6 +1779,7 @@ class _HTTPBridgeUpstreamEventsMixin:
         event_type: str | None,
         completed_delivery_scope: _HTTPBridgeCompletedDeliveryScope | None,
         claimed_terminal_request_states: list[_WebSocketRequestState],
+        observed_at: float,
     ) -> None:
         original_text = text
         response_id = _websocket_response_id(event, payload)
@@ -1837,7 +1857,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 # that attempt transition before any later recovery await can
                 # classify the send as eventless.
                 _mark_response_create_attempt_observed(matched_request_state, event_type)
-                now = _service_time().monotonic()
+                now = observed_at
                 if matched_request_state.latency_first_upstream_event_ms is None:
                     matched_request_state.latency_first_upstream_event_ms = int(
                         max(0.0, now - matched_request_state.started_at) * 1000
@@ -1871,6 +1891,16 @@ class _HTTPBridgeUpstreamEventsMixin:
                 ):
                     matched_request_state.suppressed_duplicate_tool_call = True
                     return
+                if event_type not in TERMINAL_EVENT_TYPES and matched_request_state.latency_first_token_ms is None:
+                    visible_at = _ttft_event_visible_at(
+                        event_type, payload, matched_request_state.ttft_reasoning_deltas, observed_at=observed_at
+                    )
+                    if visible_at is not None:
+                        matched_request_state.latency_first_token_ms = max(
+                            0, int((visible_at - matched_request_state.started_at) * 1000)
+                        )
+                if event_type not in TERMINAL_EVENT_TYPES:
+                    observe_output_timing(matched_request_state, event_type, payload, observed_at=observed_at)
                 if event_type in _TEXT_DELTA_EVENT_TYPES:
                     matched_request_state.downstream_visible = True
                 if event_type == "response.created" and matched_request_state.suppress_next_created_downstream:
@@ -2025,6 +2055,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             )
             grouped_terminal_events = []
             for grouped_request_state in grouped_previous_response_request_states:
+                finish_response_timing(grouped_request_state, ended_at=observed_at)
                 grouped_request_state.error_http_status_override = 502
                 (
                     _grouped_downstream_text,
@@ -2944,6 +2975,9 @@ class _HTTPBridgeUpstreamEventsMixin:
                     retried = await self._retry_http_bridge_security_work_request(session, terminal_request_state)
                     if retried:
                         return
+
+        if terminal_request_state is not None:
+            finish_response_timing(terminal_request_state, ended_at=observed_at)
 
         matched_event_queue = (
             completed_event_queue

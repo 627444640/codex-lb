@@ -9,6 +9,7 @@ from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.usage.logs import CANCELLED_STATUS, NON_ERROR_STATUSES
+from app.core.usage.speed import MIN_GENERATION_WINDOW_MS, MIN_OUTPUT_DELTA_COUNT
 from app.db.models import Account, RequestLog
 from app.modules.accounts.usage_time_rollup import conversation_id_expr
 from app.modules.accounts.usage_time_rollup_read import (
@@ -39,9 +40,10 @@ class DailyReportAggregateRow:
     cost_usd: float
     active_accounts: int
     error_count: int
-    median_ttft_ms: float
-    median_tps: float
-    median_queue_ms: float
+    median_ttft_ms: float | None
+    median_tps: float | None
+    median_queue_ms: float | None
+    tps_sample_count: int = 0
     conversation_count: int = 0
     cancelled_count: int = 0
 
@@ -123,9 +125,10 @@ class ReportsRepository:
             )
             speed_values = {
                 speed_row.report_date: (
-                    float(speed_row.median_ttft_ms or 0.0),
-                    float(speed_row.median_tps or 0.0),
-                    float(speed_row.median_queue_ms or 0.0),
+                    float(speed_row.median_ttft_ms) if speed_row.median_ttft_ms is not None else None,
+                    float(speed_row.median_tps) if speed_row.median_tps is not None else None,
+                    float(speed_row.median_queue_ms) if speed_row.median_queue_ms is not None else None,
+                    int(speed_row.tps_sample_count),
                 )
                 for speed_row in speed_result.all()
             }
@@ -163,9 +166,10 @@ class ReportsRepository:
                     active_accounts=int(row.active_accounts or 0),
                     error_count=int(row.error_count or 0),
                     cancelled_count=int(row.cancelled_count or 0),
-                    median_ttft_ms=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[0],
-                    median_tps=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[1],
-                    median_queue_ms=speed_values.get(row.report_date, (0.0, 0.0, 0.0))[2],
+                    median_ttft_ms=speed_values.get(row.report_date, (None, None, None, 0))[0],
+                    median_tps=speed_values.get(row.report_date, (None, None, None, 0))[1],
+                    median_queue_ms=speed_values.get(row.report_date, (None, None, None, 0))[2],
+                    tps_sample_count=speed_values.get(row.report_date, (None, None, None, 0))[3],
                     conversation_count=(
                         conversation_values.get(row.report_date, 0) if use_rollup else int(row.conversation_count or 0)
                     ),
@@ -473,34 +477,61 @@ def _daily_speed_medians_stmt(
             RequestLog.requested_at >= day_ranges_cte.c.day_start,
             RequestLog.requested_at < day_ranges_cte.c.day_end,
             _normal_traffic_clause(),
+            RequestLog.status == "success",
+            or_(RequestLog.request_kind.is_(None), RequestLog.request_kind == "normal"),
+            or_(RequestLog.latency_ms.is_(None), RequestLog.latency_ms >= 0),
+            or_(RequestLog.latency_first_token_ms.is_(None), RequestLog.latency_first_token_ms >= 0),
+            or_(
+                RequestLog.latency_ms.is_(None),
+                RequestLog.latency_first_token_ms.is_(None),
+                RequestLog.latency_ms >= RequestLog.latency_first_token_ms,
+            ),
+            or_(RequestLog.latency_first_output_ms.is_(None), RequestLog.latency_first_output_ms >= 0),
+            or_(
+                RequestLog.latency_first_output_ms.is_(None),
+                RequestLog.latency_first_token_ms.is_(None),
+                RequestLog.latency_first_output_ms >= RequestLog.latency_first_token_ms,
+            ),
+            or_(
+                RequestLog.latency_first_output_ms.is_(None),
+                RequestLog.latency_ms.is_(None),
+                RequestLog.latency_ms >= RequestLog.latency_first_output_ms,
+            ),
             *([RequestLog.account_id.in_(account_ids)] if account_ids else []),
             *([RequestLog.model == model] if model else []),
             *([useragent_group_clause] if useragent_group_clause is not None else []),
             *([RequestLog.api_key_id.in_(api_key_ids)] if api_key_ids else []),
         ),
     )
-    token_count = RequestLog.output_tokens - func.coalesce(RequestLog.reasoning_tokens, 0)
+    token_count = RequestLog.output_tokens - RequestLog.reasoning_tokens
+    generation_ms = RequestLog.latency_ms - RequestLog.latency_first_output_ms
     ttft_values_cte = (
         select(
             day_ranges_cte.c.report_date,
             RequestLog.latency_first_token_ms.label("ttft_ms"),
         )
         .select_from(traffic_join)
-        .where(RequestLog.latency_first_token_ms.is_not(None))
+        .where(
+            RequestLog.latency_first_token_ms >= 0,
+            RequestLog.latency_ms >= RequestLog.latency_first_token_ms,
+        )
         .cte("daily_ttft_values")
     )
     tps_values_cte = (
         select(
             day_ranges_cte.c.report_date,
-            (token_count * 1000.0 / (RequestLog.latency_ms - RequestLog.latency_first_token_ms)).label("tps"),
+            (token_count * 1000.0 / generation_ms).label("tps"),
         )
         .select_from(traffic_join)
         .where(
             token_count.is_not(None),
             token_count > 0,
-            RequestLog.latency_ms.is_not(None),
-            RequestLog.latency_first_token_ms.is_not(None),
-            RequestLog.latency_ms > RequestLog.latency_first_token_ms,
+            RequestLog.reasoning_tokens >= 0,
+            RequestLog.latency_first_output_ms >= 0,
+            RequestLog.latency_first_token_ms >= 0,
+            RequestLog.latency_first_output_ms >= RequestLog.latency_first_token_ms,
+            RequestLog.output_delta_count >= MIN_OUTPUT_DELTA_COUNT,
+            generation_ms >= MIN_GENERATION_WINDOW_MS,
         )
         .cte("daily_tps_values")
     )
@@ -510,7 +541,7 @@ def _daily_speed_medians_stmt(
             RequestLog.latency_queue_ms.label("queue_ms"),
         )
         .select_from(traffic_join)
-        .where(RequestLog.latency_queue_ms.is_not(None))
+        .where(RequestLog.latency_queue_ms >= 0)
         .cte("daily_queue_values")
     )
     ttft_count = func.count().over(partition_by=ttft_values_cte.c.report_date)
@@ -567,6 +598,7 @@ def _daily_speed_medians_stmt(
         select(
             tps_ranked_cte.c.report_date,
             func.avg(case((tps_is_middle, tps_ranked_cte.c.tps), else_=None)).label("median_tps"),
+            func.count().label("tps_sample_count"),
         )
         .group_by(tps_ranked_cte.c.report_date)
         .cte("daily_tps_medians")
@@ -582,9 +614,10 @@ def _daily_speed_medians_stmt(
     return (
         select(
             day_ranges_cte.c.report_date,
-            func.coalesce(ttft_medians_cte.c.median_ttft_ms, 0.0).label("median_ttft_ms"),
-            func.coalesce(tps_medians_cte.c.median_tps, 0.0).label("median_tps"),
-            func.coalesce(queue_medians_cte.c.median_queue_ms, 0.0).label("median_queue_ms"),
+            ttft_medians_cte.c.median_ttft_ms,
+            tps_medians_cte.c.median_tps,
+            queue_medians_cte.c.median_queue_ms,
+            func.coalesce(tps_medians_cte.c.tps_sample_count, 0).label("tps_sample_count"),
         )
         .select_from(
             day_ranges_cte.outerjoin(

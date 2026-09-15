@@ -323,6 +323,7 @@ from app.modules.proxy._service.support import (
     _REQUEST_TRANSPORT_HTTP,
     _REQUEST_TRANSPORT_WEBSOCKET,
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
+    TERMINAL_EVENT_TYPES,
     _account_capacity_wait_payload,
     _clear_websocket_precreated_replay_fallback,
     _clear_websocket_request_error_overrides,
@@ -343,6 +344,8 @@ from app.modules.proxy._service.support import (
     _WebSocketRequestState,
     _WebSocketTransientRefreshFailover,
     _WebSocketUpstreamControl,
+    finish_response_timing,
+    observe_output_timing,
 )
 from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
@@ -961,7 +964,9 @@ async def _process_and_forward_upstream_websocket_text(
     downstream_activity: _DownstreamWebSocketActivity,
     continuity_state: _WebSocketContinuityState | None,
     codex_session_affinity: bool,
+    observed_at: float | None = None,
 ) -> bool:
+    observed_at = time.monotonic() if observed_at is None else observed_at
     parsed_frame = _parse_upstream_websocket_text_frame(text)
     archive_request_id = await _websocket_archive_request_id_for_message(
         message,
@@ -977,6 +982,7 @@ async def _process_and_forward_upstream_websocket_text(
     downstream_text = await proxy._process_upstream_websocket_text(
         text,
         parsed_frame=parsed_frame,
+        observed_at=observed_at,
         account=account,
         account_id_value=account_id_value,
         pending_requests=pending_requests,
@@ -4789,6 +4795,7 @@ class _WebSocketMixin:
                             upstream.receive(),
                             timeout=wait_timeout,
                         )
+                        message_observed_at = time.monotonic()
                         if message.kind not in {"text", "binary"}:
                             # A transport-end frame makes this socket
                             # ineligible for another turn immediately. Set the
@@ -4885,6 +4892,7 @@ class _WebSocketMixin:
                             upstream,
                             message=message,
                             text=message.text,
+                            observed_at=message_observed_at,
                             account=account,
                             account_id_value=account_id_value,
                             pending_requests=pending_requests,
@@ -5094,9 +5102,11 @@ class _WebSocketMixin:
         continuity_state: "_WebSocketContinuityState | None" = None,
         codex_session_affinity: bool = False,
         parsed_frame: _ParsedUpstreamWebSocketFrame | None = None,
+        observed_at: float | None = None,
     ) -> str:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+        observed_at = time.monotonic() if observed_at is None else observed_at
         if parsed_frame is None:
             parsed_frame = _parse_upstream_websocket_text_frame(text)
         payload = parsed_frame.payload
@@ -5179,14 +5189,14 @@ class _WebSocketMixin:
                     )
                 if event_type not in {"response.completed", "response.failed", "response.incomplete", "error"}:
                     _record_response_event(request_state, event_type)
-                elapsed_ms = int((time.monotonic() - request_state.started_at) * 1000)
+                elapsed_ms = max(0, int((observed_at - request_state.started_at) * 1000))
                 if request_state.latency_first_upstream_event_ms is None:
                     request_state.latency_first_upstream_event_ms = elapsed_ms
                 if event_type == "response.created" and request_state.latency_response_created_ms is None:
                     request_state.latency_response_created_ms = elapsed_ms
-                if request_state.latency_first_token_ms is None:
+                if event_type not in TERMINAL_EVENT_TYPES and request_state.latency_first_token_ms is None:
                     ttft_visible_at = _facade()._ttft_event_visible_at(
-                        event_type, payload, request_state.ttft_reasoning_deltas
+                        event_type, payload, request_state.ttft_reasoning_deltas, observed_at=observed_at
                     )
                     if ttft_visible_at is not None:
                         request_state.latency_first_token_ms = max(
@@ -5213,6 +5223,8 @@ class _WebSocketMixin:
                     request_state.suppressed_duplicate_tool_call = True
                     upstream_control.suppress_downstream_event = True
                     return text
+                if event_type not in TERMINAL_EVENT_TYPES:
+                    observe_output_timing(request_state, event_type, payload, observed_at=observed_at)
                 if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                     request_state.downstream_visible = True
                 if event_type == "response.created" and request_state.suppress_next_created_downstream:
@@ -5368,6 +5380,7 @@ class _WebSocketMixin:
                     reason=grouped_error_reason,
                 )
                 downstream_texts.append(grouped_downstream_text)
+                finish_response_timing(grouped_request_state, ended_at=observed_at)
                 await proxy._finalize_websocket_request_state(
                     grouped_request_state,
                     account=account,
@@ -5687,6 +5700,7 @@ class _WebSocketMixin:
                         upstream_control.replay_request_state = request_state
                         return downstream_text
 
+        finish_response_timing(request_state, ended_at=observed_at)
         await proxy._finalize_websocket_request_state(
             request_state,
             account=account,
@@ -5903,6 +5917,9 @@ class _WebSocketMixin:
     ) -> None:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+        latency_ms = finish_response_timing(request_state, ended_at=time.monotonic())
+        assert request_state.ended_at is not None
+        observe_output_timing(request_state, event_type, payload, observed_at=request_state.ended_at)
         status = "success"
         error_code = None
         error_message = None
@@ -5920,9 +5937,13 @@ class _WebSocketMixin:
             return
 
         if request_state.latency_first_token_ms is None:
-            ttft_visible_at = _finalize_ttft_reasoning_deltas(request_state.ttft_reasoning_deltas)
+            ttft_visible_at = _finalize_ttft_reasoning_deltas(
+                request_state.ttft_reasoning_deltas, observed_at=request_state.ended_at
+            )
             if ttft_visible_at is not None:
                 request_state.latency_first_token_ms = max(0, int((ttft_visible_at - request_state.started_at) * 1000))
+        if request_state.latency_first_token_ms is None and request_state.latency_first_output_ms is not None:
+            request_state.latency_first_token_ms = request_state.latency_first_output_ms
 
         if event_type == "error":
             error = event.error if event else None
@@ -6042,7 +6063,6 @@ class _WebSocketMixin:
             )
             if pending_backoffs:
                 await proxy._drain_deferred_account_error_backoffs(pending_backoffs)
-        latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
         cached_input_tokens = usage.input_tokens_details.cached_tokens if usage and usage.input_tokens_details else None
         reasoning_tokens = (
             usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
@@ -6079,6 +6099,8 @@ class _WebSocketMixin:
                     requested_service_tier=request_state.requested_service_tier,
                     actual_service_tier=request_state.actual_service_tier,
                     latency_first_token_ms=request_state.latency_first_token_ms,
+                    latency_first_output_ms=request_state.latency_first_output_ms,
+                    output_delta_count=request_state.output_delta_count,
                     latency_response_created_ms=request_state.latency_response_created_ms,
                     latency_first_upstream_event_ms=request_state.latency_first_upstream_event_ms,
                     latency_response_create_gate_wait_ms=request_state.latency_response_create_gate_wait_ms,
@@ -6204,7 +6226,7 @@ class _WebSocketMixin:
             request_id=request_state.request_log_id or request_state.request_id,
             archive_request_id=request_state.archive_request_id,
             model=request_state.model or "",
-            latency_ms=int((time.monotonic() - request_state.started_at) * 1000),
+            latency_ms=finish_response_timing(request_state, ended_at=time.monotonic()),
             status="error",
             error_code=error_code,
             error_message=error_message,
@@ -6218,6 +6240,8 @@ class _WebSocketMixin:
             requested_service_tier=request_state.requested_service_tier,
             actual_service_tier=request_state.actual_service_tier,
             latency_first_token_ms=request_state.latency_first_token_ms,
+            latency_first_output_ms=request_state.latency_first_output_ms,
+            output_delta_count=request_state.output_delta_count,
             latency_response_created_ms=request_state.latency_response_created_ms,
             latency_first_upstream_event_ms=request_state.latency_first_upstream_event_ms,
             latency_response_create_gate_wait_ms=request_state.latency_response_create_gate_wait_ms,
@@ -6350,11 +6374,14 @@ class _WebSocketMixin:
     ) -> bool:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+        failure_observed_at = time.monotonic()
         finalization_task: asyncio.Task[bool] | None = None
         await pending_lock.acquire()
         try:
             remaining = list(pending_requests)
             pending_requests.clear()
+            for request_state in remaining:
+                finish_response_timing(request_state, ended_at=failure_observed_at)
             if remaining:
                 finalization_task = asyncio.create_task(
                     self._finalize_claimed_websocket_requests(
@@ -6419,6 +6446,10 @@ class _WebSocketMixin:
     ) -> bool:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+
+        ended_at = time.monotonic()
+        for request_state in remaining:
+            finish_response_timing(request_state, ended_at=ended_at)
 
         penalty_code: str | None = None
         penalty_message: str | None = None
@@ -6550,9 +6581,11 @@ class _WebSocketMixin:
                     )
             if account_id_value is None or request_state.skip_request_log:
                 continue
-            latency_ms = int((time.monotonic() - request_state.started_at) * 1000)
+            latency_ms = finish_response_timing(request_state, ended_at=ended_at)
             if request_state.latency_first_token_ms is None:
-                ttft_visible_at = _finalize_ttft_reasoning_deltas(request_state.ttft_reasoning_deltas)
+                ttft_visible_at = _finalize_ttft_reasoning_deltas(
+                    request_state.ttft_reasoning_deltas, observed_at=request_state.ended_at
+                )
                 if ttft_visible_at is not None:
                     request_state.latency_first_token_ms = max(
                         0, int((ttft_visible_at - request_state.started_at) * 1000)
@@ -6581,6 +6614,8 @@ class _WebSocketMixin:
                     requested_service_tier=request_state.requested_service_tier,
                     actual_service_tier=request_state.actual_service_tier,
                     latency_first_token_ms=request_state.latency_first_token_ms,
+                    latency_first_output_ms=request_state.latency_first_output_ms,
+                    output_delta_count=request_state.output_delta_count,
                     session_id=request_state.session_id,
                     upstream_proxy_route_mode=request_state.upstream_proxy_route_mode,
                     upstream_proxy_pool_id=request_state.upstream_proxy_pool_id,

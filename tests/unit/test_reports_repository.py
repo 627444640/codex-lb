@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.crypto import TokenEncryptor
+from app.core.usage.speed import generation_speed_from_log
 from app.db.models import Account, AccountStatus, Base, RequestLog
 from app.modules.reports.repository import (
     DailyReportRangeTooLargeError,
@@ -19,6 +20,95 @@ from app.modules.reports.repository import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("status", "output", "reasoning", "ttft", "first_output", "total", "chunks", "expected_status"),
+    [
+        ("success", 200, 40, 100, 200, 1000, 2, "estimated"),
+        ("success", 10000, 0, 100, 200, 300, 2, "estimated"),
+        ("success", 120, 110, 2000, 2000, 2005, 2, "insufficient_sample"),
+        ("success", 120, 110, 100, 200, 1000, 1, "insufficient_sample"),
+        ("success", 120, None, 100, 200, 1000, 2, "missing_usage"),
+        ("success", None, 10, 100, 200, 1000, 2, "missing_usage"),
+        ("success", 10, -1, 100, 200, 1000, 2, "invalid_sample"),
+        ("success", 10, 11, 100, 200, 1000, 2, "invalid_sample"),
+        ("success", 10, 10, 100, 200, 1000, 2, "insufficient_sample"),
+        ("success", 10, 0, -1, 200, 1000, 2, "invalid_sample"),
+        ("success", 10, 0, 300, 200, 1000, 2, "invalid_sample"),
+        ("success", 10, 0, 100, 1200, 1000, 2, "invalid_sample"),
+        ("success", 10, 0, None, 200, 1000, 2, "missing_timing"),
+        ("success", 10, 0, 100, None, 1000, 2, "missing_timing"),
+        ("success", 10, 0, 100, None, 1000, None, "legacy_estimate"),
+        ("cancelled", 10, 0, 100, 200, 1000, 2, "incomplete"),
+        ("error", 10, 0, 100, 200, 1000, 2, "incomplete"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_daily_tps_qualification_matches_request_speed(
+    async_session: AsyncSession,
+    status: str,
+    output: int | None,
+    reasoning: int | None,
+    ttft: int | None,
+    first_output: int | None,
+    total: int,
+    chunks: int | None,
+    expected_status: str,
+) -> None:
+    log = RequestLog(
+        request_id="speed-quality-parity",
+        requested_at=datetime(2026, 9, 15, 12),
+        model="gpt-test",
+        request_kind="normal",
+        status=status,
+        output_tokens=output,
+        reasoning_tokens=reasoning,
+        latency_first_token_ms=ttft,
+        latency_first_output_ms=first_output,
+        latency_ms=total,
+        output_delta_count=chunks,
+    )
+    async_session.add(log)
+    await async_session.commit()
+    speed = generation_speed_from_log(log)
+    assert speed.status == expected_status
+    rows = await ReportsRepository(async_session).aggregate_daily_rows(
+        date(2026, 9, 15), date(2026, 9, 15), timezone.utc
+    )
+    expected_tps = speed.tps if speed.status == "estimated" else None
+    assert rows[0].median_tps == expected_tps
+    assert rows[0].tps_sample_count == (1 if expected_tps is not None else 0)
+
+
+@pytest.mark.asyncio
+async def test_timing_medians_exclude_prewarms_and_invalid_samples(async_session: AsyncSession) -> None:
+    for index, kind, total, ttft, queue in [
+        (0, "normal", 1000, 200, 0),
+        (1, "prewarm", 1000, 800, 900),
+        (2, "normal", 100, 200, 900),
+        (3, "normal", 1000, -1, 900),
+        (4, "normal", 1000, 200, -1),
+    ]:
+        async_session.add(
+            RequestLog(
+                request_id=f"timing-quality-{index}",
+                requested_at=datetime(2026, 9, 15, 12),
+                model="gpt-test",
+                request_kind=kind,
+                status="success",
+                latency_ms=total,
+                latency_first_token_ms=ttft,
+                latency_queue_ms=queue,
+            )
+        )
+    await async_session.commit()
+    rows = await ReportsRepository(async_session).aggregate_daily_rows(
+        date(2026, 9, 15), date(2026, 9, 15), timezone.utc
+    )
+    assert rows[0].median_ttft_ms == 200
+    assert rows[0].median_queue_ms == 0
+    assert rows[0].median_tps is None
 
 
 class ReportAggregateFilters(TypedDict, total=False):
@@ -79,6 +169,9 @@ async def test_aggregate_daily_rows_groups_in_sql_and_returns_only_buckets_with_
                 cost_usd=0.25,
                 latency_ms=1200,
                 latency_first_token_ms=200,
+                latency_first_output_ms=200,
+                output_delta_count=2,
+                reasoning_tokens=0,
                 latency_queue_ms=350,
             ),
             RequestLog(
@@ -141,10 +234,10 @@ async def test_aggregate_daily_rows_groups_in_sql_and_returns_only_buckets_with_
     assert rows[1].active_accounts == 0
     assert rows[1].error_count == 1
     assert rows[1].cancelled_count == 1
-    assert rows[1].median_ttft_ms == 600
-    assert rows[1].median_tps == 0.5
-    # No queue samples on this day: zero-filled rather than null.
-    assert rows[1].median_queue_ms == 0.0
+    assert rows[1].median_ttft_ms is None
+    assert rows[1].median_tps is None
+    # Failed and cancelled requests do not populate timing medians.
+    assert rows[1].median_queue_ms is None
 
 
 @pytest.mark.asyncio
@@ -515,6 +608,8 @@ async def test_aggregate_daily_rows_calculates_sql_medians_for_odd_even_and_inva
                 reasoning_tokens=2,
                 latency_ms=1500,
                 latency_first_token_ms=300,
+                latency_first_output_ms=300,
+                output_delta_count=2,
                 latency_queue_ms=60,
             ),
             RequestLog(
@@ -548,6 +643,9 @@ async def test_aggregate_daily_rows_calculates_sql_medians_for_odd_even_and_inva
                 output_tokens=20,
                 latency_ms=1100,
                 latency_first_token_ms=100,
+                latency_first_output_ms=100,
+                output_delta_count=2,
+                reasoning_tokens=0,
                 latency_queue_ms=10,
             ),
             RequestLog(
@@ -559,6 +657,9 @@ async def test_aggregate_daily_rows_calculates_sql_medians_for_odd_even_and_inva
                 output_tokens=3,
                 latency_ms=950,
                 latency_first_token_ms=200,
+                latency_first_output_ms=200,
+                output_delta_count=2,
+                reasoning_tokens=0,
                 latency_queue_ms=30,
             ),
             RequestLog(
@@ -615,6 +716,9 @@ async def test_aggregate_daily_rows_speed_medians_preserve_filters_and_timezone_
                 output_tokens=4,
                 latency_ms=1100,
                 latency_first_token_ms=100,
+                latency_first_output_ms=100,
+                output_delta_count=2,
+                reasoning_tokens=0,
             ),
             RequestLog(
                 account_id="acc_reports_speed_filter",
@@ -626,6 +730,9 @@ async def test_aggregate_daily_rows_speed_medians_preserve_filters_and_timezone_
                 output_tokens=9,
                 latency_ms=1000,
                 latency_first_token_ms=900,
+                latency_first_output_ms=900,
+                output_delta_count=2,
+                reasoning_tokens=0,
             ),
             RequestLog(
                 account_id="acc_reports_speed_other",
@@ -637,6 +744,9 @@ async def test_aggregate_daily_rows_speed_medians_preserve_filters_and_timezone_
                 output_tokens=8,
                 latency_ms=1000,
                 latency_first_token_ms=800,
+                latency_first_output_ms=800,
+                output_delta_count=2,
+                reasoning_tokens=0,
             ),
             RequestLog(
                 account_id="acc_reports_speed_filter",
@@ -648,6 +758,9 @@ async def test_aggregate_daily_rows_speed_medians_preserve_filters_and_timezone_
                 output_tokens=7,
                 latency_ms=1000,
                 latency_first_token_ms=700,
+                latency_first_output_ms=700,
+                output_delta_count=2,
+                reasoning_tokens=0,
             ),
             RequestLog(
                 account_id="acc_reports_speed_filter",
@@ -659,6 +772,9 @@ async def test_aggregate_daily_rows_speed_medians_preserve_filters_and_timezone_
                 output_tokens=6,
                 latency_ms=1000,
                 latency_first_token_ms=600,
+                latency_first_output_ms=600,
+                output_delta_count=2,
+                reasoning_tokens=0,
             ),
         ]
     )
@@ -696,6 +812,9 @@ async def test_daily_speed_medians_stmt_returns_only_one_row_per_populated_day_a
                 output_tokens=sample + 1,
                 latency_ms=1000 + sample,
                 latency_first_token_ms=sample,
+                latency_first_output_ms=sample,
+                output_delta_count=2,
+                reasoning_tokens=0,
             )
             for day in (1, 2)
             for sample in range(512)

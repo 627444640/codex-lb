@@ -18,6 +18,8 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
   installation-specific datasource UIDs out of chart values while routing all
   four SQL panels through one explicit selection.
 
+- **Generation timing uses upstream observation:** completion is frozen before settlement and cleanup. TPS uses separately observed non-reasoning output timing, requires at least two chunks and a 100 ms window, and remains an estimate. Legacy samples are labeled and excluded from qualified daily medians; missing medians remain null. The reproduced failures and validation are documented in `openspec/changes/archive/2026-09-15-correct-generation-timing/context.md`.
+
 ## Operational Notes
 
 - Use request ids to correlate inbound proxy logs, outbound upstream traces, and client-visible failures.

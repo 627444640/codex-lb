@@ -4717,8 +4717,8 @@ async def test_http_bridge_slow_consumer_fails_without_blocking_sibling_or_losin
     processed = asyncio.Event()
     process_event = service._process_http_bridge_upstream_text
 
-    async def record_processed(target, text):
-        await process_event(target, text)
+    async def record_processed(target, text, *, observed_at=None):
+        await process_event(target, text, observed_at=observed_at)
         processed.set()
 
     monkeypatch.setattr(service, "_process_http_bridge_upstream_text", record_processed)

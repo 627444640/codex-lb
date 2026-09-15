@@ -511,44 +511,50 @@ select the PostgreSQL datasource in Grafana.
 
 ### Requirement: Dashboard request logs show generation speed
 
-The dashboard request-log table MUST show time to first token and output-token generation speed when the required latency and output-token fields are available. Generation speed MUST use output tokens divided by elapsed generation time after time to first token, not total input plus output tokens and not total request latency including TTFT.
+The dashboard request-log table MUST show gateway-observed TTFT and backend-calculated non-reasoning output TPS when eligible. It MUST distinguish estimated, legacy and unavailable samples and explain that HTTP attempt TTFT excludes separately recorded pre-attempt queue time while WebSocket/bridge request-state timing may include waits. Model-source timings supplied by an upstream MUST be described as upstream-reported metrics. Input tokens MUST NOT enter the TPS numerator.
 
 #### Scenario: TPS excludes TTFT and input tokens
 
-- **GIVEN** a successful request log has 1,000 input tokens, 200 output tokens, 1,000 ms total latency, and 200 ms TTFT
-- **WHEN** the dashboard renders request logs
-- **THEN** it shows TTFT as 200ms
-- **AND** it shows TPS as 250.0
+- **GIVEN** 1,000 input tokens, 200 output tokens including 40 reasoning tokens, 1,000 ms completion, 200 ms first non-reasoning output and at least two output chunks
+- **WHEN** request speed is shown
+- **THEN** it displays approximately 200.0 TPS with an estimate explanation
 
 #### Scenario: missing speed inputs stay blank
 
-- **GIVEN** a request log is missing TTFT, total latency, or output tokens
-- **WHEN** the dashboard renders request logs
-- **THEN** it does not show a misleading calculated TPS value
+- **GIVEN** a request lacks required timing or usage evidence
+- **WHEN** the dashboard displays its speed
+- **THEN** it shows no numeric TPS and explains the unavailable sample status
 
 ### Requirement: Reports show daily median generation speed trends
 
-The Reports dashboard MUST expose daily median TTFT, daily median TPS, and daily median queue-wait trends when request-log latency fields are available. Empty days and rows with no valid timing/speed inputs MUST render as zero in those trend charts. Daily TPS MUST median per-request output-token TPS after TTFT rather than use input tokens or include TTFT wait time. Daily queue wait MUST median per-request `latency_queue_ms` over rows where it is non-null.
+The Reports dashboard MUST expose daily median gateway TTFT, qualified non-reasoning TPS and queue wait. Latency/speed medians with no eligible samples MUST be null and render as missing rather than zero. TPS MUST include only successful normal requests meeting the current sample-quality criteria, exclude prewarm, incomplete and legacy-only samples, and expose the eligible daily TPS sample count. TTFT and queue medians MUST exclude failed/cancelled and warmup/prewarm samples, negative values and invalid timing relationships. The existing report retention policy that includes soft-deleted history MUST remain unchanged.
+
+#### Scenario: No eligible speed samples
+
+- **GIVEN** a report day contains only legacy or insufficient TPS samples
+- **WHEN** the report is generated
+- **THEN** median TPS is null and the eligible TPS sample count is zero
+- **AND** the chart does not render a measured zero speed
 
 #### Scenario: Daily speed charts use median valid request values
 
-- **GIVEN** one report day has request logs with TTFT and output-token TPS values
-- **WHEN** the dashboard renders Reports
-- **THEN** it shows a Time to First Token chart using median TTFT for the day
-- **AND** it shows a Tokens per Second chart using median per-request TPS for the day
+- **GIVEN** a day has valid gateway TTFT and qualified TPS samples
+- **WHEN** Reports renders that day
+- **THEN** it uses the median of eligible per-request values and includes the TPS sample count
 
 #### Scenario: Missing daily speed data is zero-filled
 
-- **GIVEN** a selected report range includes a day with no request logs or no valid timing data
-- **WHEN** the dashboard renders Reports
-- **THEN** the TTFT and TPS charts include that day with value zero
+- **GIVEN** a selected report day has no eligible speed samples
+- **WHEN** Reports fills the day
+- **THEN** only its eligible sample count is zero-filled
+- **AND** its missing TTFT, TPS and queue-wait medians remain null
 
 #### Scenario: Daily queue-wait trend surfaces load-balancer wait
 
-- **GIVEN** a report day has request logs with non-null `latency_queue_ms`
-- **WHEN** the dashboard renders Reports
-- **THEN** it shows a queue-wait trend using the day's median `latency_queue_ms`
-- **AND** days without queue samples render as zero
+- **GIVEN** successful normal requests contain valid non-null queue-wait samples
+- **WHEN** Reports renders that day
+- **THEN** it displays their median and preserves a measured zero queue wait
+- **AND** a day without samples has null queue wait
 
 ### Requirement: Websocket responses capture request-log latency timings
 
@@ -624,42 +630,26 @@ Request-log rows MUST be persisted by tracked background tasks that the response
 
 ### Requirement: Request speed timings share one anchor and expose queue wait
 
-For a single request-log row, `latency_ms` and `latency_first_token_ms` MUST be
-measured from the same anchor: the start of the attempt that produced the row.
-Time spent before that attempt — account selection, admission waits, and failed
-failover attempts — MUST NOT inflate `latency_first_token_ms`; the HTTP
-streaming path MUST record it instead in a nullable `latency_queue_ms`
-request-log column. First-token detection MUST treat the first output delta of
-any kind — visible text, refusal, or reasoning deltas — as the first token, so
-TTFT means time to first model output and the generation window
-(`latency_ms - latency_first_token_ms`) covers reasoning generation, matching
-the reasoning-inclusive `output_tokens` numerator used for TPS.
+For a single request-log row, total latency, TTFT and first non-reasoning output latency MUST use the same attempt/request-state anchor. SSE MUST keep account selection, admission and previous failed attempts in nullable `latency_queue_ms` outside that attempt's timings. WebSocket and HTTP bridge MAY retain their request-state anchors and dedicated queue-phase fields. TTFT MUST recognize visible output including reasoning; non-reasoning TPS MUST instead use its separately captured first non-reasoning output timestamp. Hidden model reasoning MUST NOT be reconstructed from usage counts.
 
 #### Scenario: Failover no longer inflates TTFT
 
-- **GIVEN** a streaming request fails over from one account and succeeds on the
-  next attempt
-- **WHEN** the request log is persisted
-- **THEN** `latency_first_token_ms` reflects only the successful attempt
-- **AND** `latency_queue_ms` records the pre-attempt time (selection plus the
-  failed attempt)
-- **AND** `latency_ms` is greater than or equal to `latency_first_token_ms`
+- **GIVEN** a request fails over and subsequently completes successfully
+- **WHEN** the successful request row is persisted
+- **THEN** its completion, TTFT and first non-reasoning output share the successful attempt's anchor
+- **AND** no failed-attempt terminal timestamp truncates its duration
 
 #### Scenario: Reasoning delta counts as the first token
 
-- **GIVEN** an upstream stream emits a reasoning summary delta before the first
-  visible text delta
-- **WHEN** first-token latency is captured
-- **THEN** `latency_first_token_ms` anchors to the reasoning delta rather than
-  waiting for visible text
+- **GIVEN** visible reasoning arrives before text output
+- **WHEN** timings are recorded
+- **THEN** TTFT uses the reasoning event and first non-reasoning output uses the text event
 
 #### Scenario: Single-anchor rows on websocket and bridge paths
 
-- **WHEN** a websocket or HTTP bridge request records latency timings
-- **THEN** `latency_ms` and `latency_first_token_ms` derive from the same
-  request-state anchor
-- **AND** `latency_queue_ms` MAY be null on paths whose queue waits are already
-  recorded in dedicated phase columns
+- **WHEN** WebSocket or HTTP bridge records completion, TTFT and first non-reasoning output
+- **THEN** they share the same request-state anchor
+- **AND** dedicated queue-phase fields may be used instead of `latency_queue_ms`
 
 ### Requirement: Cap partition replica count is observable
 
@@ -838,3 +828,80 @@ The request-log API and dashboard MUST preserve positive sub-cent costs. The das
 #### Scenario: Cache writes were not reported
 - **WHEN** a model charges separately for cache writes and the upstream omits that count
 - **THEN** an available base estimate is identified as incomplete
+
+### Requirement: Generation latency ends at upstream completion
+
+SSE, WebSocket and HTTP bridge request logs MUST capture each upstream event's observation time before asynchronous event processing. Final request latency MUST end at the receipt of the terminal event belonging to the final attempt, before settlement, gate/lease release, deferred health writes or downstream consumption. Abort paths MUST capture their terminal time before cleanup. Retry/failover attempts MUST NOT reuse an earlier failed terminal timestamp. Recording MUST NOT change forwarded response bytes, routing, account ownership, reservation settlement ordering or cleanup guarantees.
+
+#### Scenario: Settlement latency does not change generation latency
+
+- **GIVEN** TTFT is 500 ms and the upstream terminal event arrives at 1,000 ms
+- **WHEN** local settlement takes another 2,000 ms
+- **THEN** the recorded total latency remains 1,000 ms
+
+#### Scenario: Bridge consumer delay does not change TTFT
+
+- **GIVEN** the bridge receives an output event while its downstream consumer is delayed
+- **WHEN** the request log is persisted
+- **THEN** first-output timing uses upstream receipt time rather than queue consumption time
+
+### Requirement: Output speed sample evidence is preserved
+
+New subscription-backed streaming logs MUST persist `latency_first_output_ms`, the first observed non-reasoning content time relative to the existing attempt/request-state anchor, and `output_delta_count`, the count of observed nonempty non-reasoning output chunks. Text, refusal and actual tool arguments/input MUST qualify; reasoning, metadata-only lifecycle events and empty deltas MUST NOT. These fields MUST remain nullable for historical and unsupported-source logs. Existing TTFT MAY still include visible reasoning or supported tool-start events and MUST be described as gateway-observed first output rather than model-internal or client end-to-end timing.
+
+#### Scenario: Reasoning precedes actual output
+
+- **GIVEN** a reasoning summary arrives at 200 ms and first text at 800 ms
+- **WHEN** the request is logged
+- **THEN** TTFT is 200 ms and first non-reasoning output latency is 800 ms
+- **AND** TPS uses the non-reasoning output start
+
+#### Scenario: Full terminal-only output
+
+- **GIVEN** no streamed output has been observed and the terminal payload contains actual text or tool content
+- **WHEN** that terminal event arrives
+- **THEN** its receipt time may establish the first output and TTFT with one output chunk
+- **AND** its TPS sample is insufficient
+- **AND** positive usage alone MUST NOT synthesize first-output timestamps
+
+### Requirement: Request generation speed exposes sample quality
+
+The request-log API MUST expose nullable `generation_tps` and a `generation_tps_status` of `estimated`, `legacy_estimate`, `insufficient_sample`, `missing_usage`, `missing_timing`, `invalid_sample`, or `incomplete`. The UI MUST use this backend value rather than recalculate it. Estimated speed MUST use non-reasoning output tokens divided by time from first non-reasoning output to upstream completion. Only successful requests with known nonnegative output/reasoning counts, a positive non-reasoning count, at least two output chunks and a window of at least 100 ms may receive `estimated`. The 100 ms boundary MUST be a sample qualification rule, not a speed cap or artificial denominator. Even qualified values MUST be presented as observed estimates rather than model-internal decode speed.
+
+#### Scenario: Five-millisecond response is insufficient
+
+- **GIVEN** ten synthetic non-reasoning output tokens and a five-millisecond output window
+- **WHEN** speed is calculated
+- **THEN** the API returns no numeric TPS and an insufficient-sample status
+- **AND** the UI explains that the output sample is too short
+
+#### Scenario: Historical estimate remains distinguishable
+
+- **GIVEN** both new sample fields are null and otherwise valid historical timing/usage has a window of at least 100 ms
+- **WHEN** request speed is displayed
+- **THEN** the old TTFT-based formula may produce a value marked `legacy_estimate`
+- **AND** this value is excluded from qualified daily TPS medians
+- **AND** missing reasoning usage is not silently interpreted as zero
+
+### Requirement: Optional source metrics cannot interrupt valid forwarding
+
+Source usage parsing MUST preserve reported nonnegative integer reasoning tokens and reject boolean or database-integer-out-of-range token values. Missing reasoning details MUST remain unknown. Optional timing parsing MUST reject non-finite, negative, boolean, overflowing and database-integer-out-of-range values, including overflow when adding individually finite timings, without interrupting an otherwise valid upstream response. Streamed usage/metrics MUST parse complete SSE events, combining multiple data lines and preserving framing across chunk-split CRLF boundaries. Forwarded bytes MUST remain unchanged.
+
+#### Scenario: Overflowing timing sum is ignored
+
+- **GIVEN** individually finite source TTFT and generation timing whose sum overflows
+- **WHEN** the response is parsed
+- **THEN** optional timing remains absent and response forwarding completes normally
+
+#### Scenario: Multi-line usage event split at CRLF
+
+- **GIVEN** a valid SSE usage/metrics event contains several data lines and a network chunk ends between CR and LF
+- **WHEN** stream parsing completes
+- **THEN** usage, reasoning and timing match the equivalent single-chunk event
+
+#### Scenario: Unrepresentable source token count
+
+- **GIVEN** an upstream reports a token count outside the request-log database integer range
+- **WHEN** usage is parsed
+- **THEN** that usage is treated as unavailable rather than causing request-log persistence to overflow
+- **AND** the existing fail-closed behavior for API-key limits requiring usage is preserved

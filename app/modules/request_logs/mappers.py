@@ -12,6 +12,7 @@ from app.core.usage.logs import (
     output_tokens_from_log,
     total_tokens_from_log,
 )
+from app.core.usage.speed import generation_speed_from_log
 from app.db.models import RequestLog
 from app.modules.request_logs.schemas import RequestLogCostBreakdown, RequestLogEntry
 
@@ -43,6 +44,7 @@ def to_request_log_entry(
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
     cost_breakdown = cost_breakdown_from_log(log_like)
+    generation_speed = generation_speed_from_log(log)
     return RequestLogEntry(
         requested_at=log.requested_at,
         conversation_id=log.conversation_id if include_sensitive_metadata else None,
@@ -95,5 +97,9 @@ def to_request_log_entry(
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),
         latency_ms=log.latency_ms,
         latency_first_token_ms=log.latency_first_token_ms,
+        latency_first_output_ms=log.latency_first_output_ms,
+        output_delta_count=log.output_delta_count,
+        generation_tps=generation_speed.tps,
+        generation_tps_status=generation_speed.status,
         latency_queue_ms=log.latency_queue_ms,
     )

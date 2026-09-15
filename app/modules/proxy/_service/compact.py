@@ -788,6 +788,7 @@ class _CompactMixin:
         route_fallback_used: bool | None = None
         route_fail_closed_reason: str | None = None
         settlement_attempted = False
+        upstream_completed_at: float | None = None
 
         async def settle_compact_usage(
             *,
@@ -1084,7 +1085,7 @@ class _CompactMixin:
                 target: Account,
                 account_response_create_lease: AccountLease | None = None,
             ) -> CompactResponsePayload:
-                nonlocal route_fallback_used, route_mode, route_pool_id, route_endpoint_id
+                nonlocal route_fallback_used, route_mode, route_pool_id, route_endpoint_id, upstream_completed_at
                 access_token = proxy._encryptor.decrypt(target.access_token_encrypted)
                 account_id = _header_account_id(target.chatgpt_account_id)
                 remaining_budget = _remaining_budget_seconds(deadline)
@@ -1161,6 +1162,7 @@ class _CompactMixin:
                             ),
                             timeout=upstream_budget,
                         )
+                        upstream_completed_at = _service_time().monotonic()
                         logger.info(
                             "Compact upstream call complete request_id=%s account_id=%s elapsed_seconds=%.2f "
                             "timeout_seconds=%.2f",
@@ -2098,7 +2100,13 @@ class _CompactMixin:
                 api_key=api_key,
                 request_id=request_id,
                 model=payload.model,
-                latency_ms=int((_service_time().monotonic() - start) * 1000),
+                latency_ms=int(
+                    (
+                        (upstream_completed_at if upstream_completed_at is not None else _service_time().monotonic())
+                        - start
+                    )
+                    * 1000
+                ),
                 status=log_status,
                 error_code=log_error_code,
                 error_message=log_error_message,

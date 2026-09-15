@@ -3,7 +3,9 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import time
 from datetime import timedelta, timezone
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -22,6 +24,7 @@ from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService
+from app.modules.proxy._service import compact as compact_module
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.rate_limit_cache import get_rate_limit_headers_cache
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
@@ -498,6 +501,40 @@ async def test_proxy_compact_surfaces_additional_quota_exhausted(async_client):
     assert response.status_code == 503
     error = response.json()["error"]
     assert error["code"] == "quota_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_proxy_compact_latency_stops_before_usage_settlement(async_client, monkeypatch):
+    auth_json = _make_auth_json("compact-timing", "compact-timing@example.com")
+    response = await async_client.post(
+        "/api/accounts/import", files={"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    )
+    assert response.status_code == 200
+    clock = SimpleNamespace(now=time.monotonic())
+    logs = []
+    monkeypatch.setattr(compact_module, "_service_time", lambda: SimpleNamespace(monotonic=lambda: clock.now))
+
+    async def upstream(*_args, **_kwargs):
+        clock.now += 1.0
+        return OpenAIResponsePayload.model_validate({"output": []})
+
+    async def settle(_self, **_kwargs):
+        clock.now += 2.0
+
+    async def record(_self, **kwargs):
+        logs.append(kwargs)
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", upstream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_settle_compact_api_key_usage", settle)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", record)
+    response = await async_client.post(
+        "/backend-api/codex/responses/compact", json={"model": "gpt-5.1", "instructions": "", "input": []}
+    )
+    assert response.status_code == 200
+    assert len(logs) == 1
+    assert logs[0]["latency_ms"] == 1000
+    assert logs[0].get("latency_first_token_ms") is None
+    assert logs[0].get("output_delta_count") is None
 
 
 @pytest.mark.asyncio

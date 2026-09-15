@@ -2277,6 +2277,8 @@ def test_backend_responses_websocket_pinned_transient_refresh_claim_emits_retrya
     [
         ("response.output_text.delta", {"delta": "hello"}),
         ("response.function_call_arguments.delta", {"delta": "hello"}),
+        ("response.custom_tool_call_input.delta", {"delta": "pwd"}),
+        ("response.output_text.done", {"text": "hello"}),
         (
             "response.output_item.added",
             {
@@ -2499,6 +2501,13 @@ def test_backend_responses_websocket_proxies_and_persists_conversation_id(
     assert isinstance(latency_response_created_ms, int)
     assert isinstance(latency_first_token_ms, int)
     assert latency_first_upstream_event_ms <= latency_response_created_ms <= latency_first_token_ms
+    if output_event_type == "response.output_item.added":
+        assert log["latency_first_output_ms"] is None
+        assert log["output_delta_count"] == 0
+    else:
+        assert log["latency_first_output_ms"] == latency_first_token_ms
+        assert log["output_delta_count"] == 1
+    assert log["latency_ms"] >= latency_first_token_ms
 
 
 def test_backend_responses_websocket_forwards_client_tools_byte_identical(app_instance, monkeypatch):

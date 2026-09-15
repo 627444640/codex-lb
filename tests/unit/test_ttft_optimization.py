@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 from typing import cast
@@ -14,6 +15,7 @@ from app.core.openai.requests import ResponsesRequest
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus
 from app.modules.proxy import service as proxy_service
+from app.modules.proxy._service.streaming import mixin as streaming_mixin
 from app.modules.proxy.load_balancer import AccountSelection
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
 from app.modules.proxy.service import ProxyService
@@ -241,6 +243,106 @@ async def test_stream_responses_ttft_counts_reasoning_delta_as_first_token(monke
     # TTFT anchors to the reasoning delta, not the visible text 50ms later.
     assert len(chunks) == 3
     assert latency_first_token_ms < 40
+
+
+@pytest.mark.asyncio
+async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_raw_frames(monkeypatch):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = ProxyService(_repo_factory(request_logs))
+    account = _make_account("timing")
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(streaming_mixin, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    raw_first = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta", "delta":"你好"}\n\n'
+    raw_second = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta", "delta":"!"}\n\n'
+
+    async def fake_stream(*_args, **_kwargs):
+        clock.now = 100.125
+        yield 'data: {"type":"response.reasoning_summary_text.delta","delta":"plan"}\n\n'
+        clock.now = 100.25
+        yield raw_first
+        clock.now = 100.5
+        yield 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":""}\n\n'
+        clock.now = 100.75
+        yield raw_second
+        clock.now = 101.0
+        yield (
+            'data: {"type":"response.completed","response":{"id":"timing",'
+            '"usage":{"input_tokens":1,"output_tokens":10}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    payload = ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "", "input": [], "stream": True})
+    chunks = []
+    async for chunk in service.stream_responses(payload, {}):
+        chunks.append(chunk)
+        if "response.completed" in chunk:
+            clock.now += 2.0
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
+    row = request_logs.calls[0]
+    assert row["latency_ms"] == 1000
+    assert row["latency_first_token_ms"] == 125
+    assert row["latency_first_output_ms"] == 250
+    assert row["output_delta_count"] == 2
+    assert chunks[1] == raw_first
+    assert chunks[3] == raw_second
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_content", [False, True])
+async def test_stream_terminal_snapshot_requires_content_not_usage(monkeypatch, has_content):
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = ProxyService(_repo_factory(request_logs))
+    account = _make_account("terminal-timing")
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(streaming_mixin, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        service._load_balancer,
+        "select_account",
+        AsyncMock(return_value=AccountSelection(account=account, error_message=None)),
+    )
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+
+    async def fake_stream(*_args, **_kwargs):
+        clock.now = 101.0
+        output = [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}] if has_content else []
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "terminal-timing",
+                        "output": output,
+                        "usage": {"input_tokens": 1, "output_tokens": 10},
+                    },
+                }
+            )
+            + "\n\n"
+        )
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    payload = ResponsesRequest.model_validate({"model": "gpt-5.1", "instructions": "", "input": [], "stream": True})
+    assert len([chunk async for chunk in service.stream_responses(payload, {})]) == 1
+    assert await service.drain_persistence_tasks(timeout_seconds=1)
+    row = request_logs.calls[0]
+    assert row["latency_ms"] == 1000
+    assert row["latency_first_token_ms"] == (1000 if has_content else None)
+    assert row["latency_first_output_ms"] == (1000 if has_content else None)
+    assert row["output_delta_count"] == int(has_content)
 
 
 def test_ttft_reasoning_finalizer_uses_visible_prefix_arrival_time() -> None:
