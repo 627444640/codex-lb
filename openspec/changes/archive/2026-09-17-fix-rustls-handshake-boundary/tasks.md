@@ -6,6 +6,6 @@
 ## 2. Compatibility verification
 
 - [x] 2.1 Run Rust formatting, Clippy, workspace tests and release build with the pinned toolchain; record command results.
-- [ ] 2.2 Run the existing native routed, SSE, WebSocket and usage probes against the built helper; record transport verification limits.
+- [x] 2.2 Run the existing native routed, SSE, WebSocket and usage probes against the built helper; record transport verification limits.
 - [x] 2.3 Compare old/new provider ClientHello groups, key shares and signature algorithms; record retained invariants and any capability difference.
 - [x] 2.4 Independently review the exact patch, validate OpenSpec and record final local/cloud verification boundaries before archival.
