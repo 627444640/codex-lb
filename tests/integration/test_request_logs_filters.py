@@ -613,6 +613,7 @@ async def test_request_logs_tokens_and_cost_use_reasoning_tokens(async_client, d
     assert entry["costUsd"] == pytest.approx(expected)
     assert entry["costBreakdown"]["inputUsd"] == pytest.approx((900 / 1_000_000) * 1.25)
     assert entry["costBreakdown"]["cachedInputUsd"] == pytest.approx((100 / 1_000_000) * 0.125)
+    assert entry["costBreakdown"]["cacheWriteUsd"] == 0.0
     assert entry["costBreakdown"]["outputUsd"] == pytest.approx((400 / 1_000_000) * 10.0)
     assert entry["costBreakdown"]["totalUsd"] == pytest.approx(expected)
 
@@ -699,7 +700,7 @@ async def test_request_logs_cost_uses_priority_service_tier(async_client, db_set
             request_id="req_priority_1",
             model="gpt-5.4",
             service_tier="priority",
-            input_tokens=1_000_000,
+            input_tokens=200_000,
             output_tokens=1_000_000,
             latency_ms=50,
             status="success",
@@ -713,7 +714,7 @@ async def test_request_logs_cost_uses_priority_service_tier(async_client, db_set
     assert len(payload) == 1
     entry = payload[0]
     assert entry["serviceTier"] == "priority"
-    expected = round(_cost(1_000_000, 1_000_000, input_rate=5.0, cached_rate=0.5, output_rate=30.0), 6)
+    expected = _cost(200_000, 1_000_000, input_rate=5.0, cached_rate=0.5, output_rate=30.0)
     assert entry["costUsd"] == pytest.approx(expected)
 
 

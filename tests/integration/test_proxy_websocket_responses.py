@@ -13054,3 +13054,40 @@ def test_backend_responses_websocket_trusted_capability_pending_conflict_keeps_o
         "acct_ws_capability_conflict_ordinary_1",
         "acct_ws_capability_conflict_cyber_1",
     ]
+
+
+def test_cost_limited_websocket_rejects_unknown_pricing_before_upstream(app_instance, monkeypatch):
+    async def create_key():
+        async with SessionLocal() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            created = await service.create_key(
+                ApiKeyCreateData(
+                    name="websocket-pricing-gate",
+                    allowed_models=None,
+                    limits=[
+                        LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000),
+                    ],
+                )
+            )
+            return created.key, await service.get_key_by_id(created.id)
+
+    with TestClient(app_instance) as client:
+        assert client.portal is not None
+        key, api_key = client.portal.call(create_key)
+
+        async def allow_proxy_api_key(_authorization, *, request=None):
+            return api_key
+
+        monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_proxy_api_key)
+        with client.websocket_connect(
+            "/backend-api/codex/responses",
+            headers={"Authorization": f"Bearer {key}"},
+        ) as websocket:
+            websocket.send_json(
+                {"type": "response.create", "model": "gpt-5.6-sol", "input": "hi", "service_tier": "ultrafast"}
+            )
+            event = websocket.receive_json()
+        assert event["type"] == "error"
+        assert event["status"] == 429
+        assert event["error"]["code"] == "pricing_unavailable"
+        assert "retrying alone" in event["error"]["message"]

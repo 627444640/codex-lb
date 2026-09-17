@@ -20,6 +20,43 @@ from app.core.usage.pricing import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [("gpt-daybreak-blue-latest", "gpt-5.6-sol"), ("gpt-daybreak-red-latest", "gpt-5.6-cyber")],
+)
+def test_published_daybreak_aliases_use_their_underlying_price(alias: str, canonical: str) -> None:
+    assert get_pricing_for_model(alias) == (canonical, DEFAULT_PRICING_MODELS[canonical])
+
+
+@pytest.mark.parametrize(
+    ("model", "tier", "input_tokens"),
+    [
+        ("gpt-5.6-sol", "ultrafast", 100_000),
+        ("gpt-6-astra", "future-tier", 100_000),
+        ("gpt-5-nano", "fast", 100_000),
+        ("gpt-5-pro", "flex", 100_000),
+        ("gpt-5.2-pro", "priority", 100_000),
+        ("gpt-5.6-cyber", "flex", 100_000),
+        ("gpt-5.6-cyber", "default", 272_001),
+        ("gpt-5.5-pro", "flex", 272_001),
+        ("gpt-5.5", "fast", 272_001),
+        ("gpt-5.4", "priority", 272_001),
+        ("gpt-5.2-codex", "priority", 100_000),
+        ("gpt-5.1-codex-max", "priority", 100_000),
+    ],
+)
+def test_unpublished_tier_or_context_price_is_not_guessed(model: str, tier: str, input_tokens: int) -> None:
+    usage = UsageTokens(input_tokens, 1_000)
+    assert calculate_cost_from_usage(usage, DEFAULT_PRICING_MODELS[model], service_tier=tier) is None
+
+
+@pytest.mark.parametrize("tier", [None, "", "default", "auto", " DEFAULT "])
+def test_standard_tier_aliases_use_the_published_price(tier: str | None) -> None:
+    assert calculate_cost_from_usage(
+        UsageTokens(100_000, 1_000), DEFAULT_PRICING_MODELS["gpt-5-mini"], service_tier=tier
+    ) == pytest.approx(0.027)
+
+
 def test_resolve_model_alias_longest_match():
     aliases = {
         "gpt-5*": "gpt-5",
@@ -30,7 +67,7 @@ def test_resolve_model_alias_longest_match():
 
 
 def test_get_pricing_for_model_alias():
-    result = get_pricing_for_model("gpt-5.1-codex-mini-2025", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    result = get_pricing_for_model("gpt-5.1-codex-mini-2025-11-13", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
     model, price = result
     assert model == "gpt-5.1-codex-mini"
@@ -38,7 +75,7 @@ def test_get_pricing_for_model_alias():
 
 
 def test_get_pricing_for_model_gpt_5_3_alias():
-    result = get_pricing_for_model("gpt-5.3-codex-2026", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    result = get_pricing_for_model("gpt-5.3-codex-2026-02-05", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
     model, _ = result
     assert model == "gpt-5.3-codex"
@@ -51,15 +88,13 @@ def test_get_pricing_for_model_gpt_5_3_chat_alias():
     assert model == "gpt-5.3-chat-latest"
 
 
-def test_get_pricing_for_model_gpt_5_3_plain_alias():
-    result = get_pricing_for_model("gpt-5.3-2026-01-01", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
-    assert result is not None
-    model, _ = result
-    assert model == "gpt-5.3"
+def test_get_pricing_for_model_unpublished_gpt_5_3_plain_alias():
+    assert get_pricing_for_model("gpt-5.3") is None
+    assert get_pricing_for_model("gpt-5.3-2026-01-01") is None
 
 
 def test_get_pricing_for_model_gpt_5_4_alias():
-    result = get_pricing_for_model("gpt-5.4-2026", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
+    result = get_pricing_for_model("gpt-5.4-2026-03-05", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result is not None
     model, _ = result
     assert model == "gpt-5.4"
@@ -211,12 +246,12 @@ def test_calculate_cost_breakdown_from_usage_precision_rounds_components_first()
 
 
 def test_calculate_cost_from_usage_priority_service_tier():
-    usage = UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0)
+    usage = UsageTokens(input_tokens=200_000.0, output_tokens=1_000_000.0)
     price = DEFAULT_PRICING_MODELS["gpt-5.4"]
 
     cost = calculate_cost_from_usage(usage, price, service_tier="priority")
 
-    assert cost == pytest.approx(35.0)
+    assert cost == pytest.approx(31.0)
 
 
 def test_calculate_cost_from_usage_flex_service_tier():
@@ -314,15 +349,15 @@ def test_calculate_cost_from_usage_gpt_5_6_uses_272k_long_context_boundary(
 
 
 def test_calculate_cost_from_usage_service_tier_trims_whitespace():
-    usage = UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0)
+    usage = UsageTokens(input_tokens=200_000.0, output_tokens=1_000_000.0)
     priority_price = DEFAULT_PRICING_MODELS["gpt-5.4"]
     flex_price = DEFAULT_PRICING_MODELS["gpt-5.4-mini"]
 
     priority_cost = calculate_cost_from_usage(usage, priority_price, service_tier=" priority ")
     flex_cost = calculate_cost_from_usage(usage, flex_price, service_tier=" flex ")
 
-    assert priority_cost == pytest.approx(35.0)
-    assert flex_cost == pytest.approx(2.625)
+    assert priority_cost == pytest.approx(31.0)
+    assert flex_cost == pytest.approx(2.325)
 
 
 def test_calculate_cost_from_usage_legacy_gpt_5_service_tiers() -> None:
@@ -339,7 +374,7 @@ def test_calculate_cost_from_usage_legacy_gpt_5_service_tiers() -> None:
     assert gpt_5_2_flex == pytest.approx(7.875)
 
 
-def test_calculate_cost_from_usage_unsupported_tiers_fall_back_to_standard():
+def test_calculate_cost_from_usage_unsupported_tiers_remain_unknown():
     usage = UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0)
     codex_mini = DEFAULT_PRICING_MODELS["gpt-5.1-codex-mini"]
     gpt_5_3_chat = DEFAULT_PRICING_MODELS["gpt-5.3-chat-latest"]
@@ -351,16 +386,16 @@ def test_calculate_cost_from_usage_unsupported_tiers_fall_back_to_standard():
     gpt_5_2_chat_priority = calculate_cost_from_usage(usage, gpt_5_2_chat, service_tier="priority")
     gpt_5_2_chat_flex = calculate_cost_from_usage(usage, gpt_5_2_chat, service_tier="flex")
 
-    assert codex_mini_priority == pytest.approx(2.25)
-    assert codex_mini_flex == pytest.approx(2.25)
-    assert gpt_5_3_chat_priority == pytest.approx(15.75)
-    assert gpt_5_2_chat_priority == pytest.approx(15.75)
-    assert gpt_5_2_chat_flex == pytest.approx(15.75)
+    assert codex_mini_priority is None
+    assert codex_mini_flex is None
+    assert gpt_5_3_chat_priority is None
+    assert gpt_5_2_chat_priority is None
+    assert gpt_5_2_chat_flex is None
 
 
-def test_calculate_cost_from_usage_gpt_5_2_codex_priority():
+def test_calculate_cost_from_usage_gpt_5_3_codex_priority():
     usage = UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0)
-    price = DEFAULT_PRICING_MODELS["gpt-5.2-codex"]
+    price = DEFAULT_PRICING_MODELS["gpt-5.3-codex"]
 
     cost = calculate_cost_from_usage(usage, price, service_tier="priority")
 
@@ -435,13 +470,13 @@ def test_calculate_cost_from_usage_gpt_5_4_nano():
 def test_calculate_costs_aggregates_by_model():
     items = [
         CostItem(model="gpt-5.1", usage=UsageTokens(input_tokens=1000.0, output_tokens=1000.0)),
-        CostItem(model="gpt-5.1-variant", usage=UsageTokens(input_tokens=2000.0, output_tokens=1000.0)),
+        CostItem(model="gpt-5.1-2025-11-13", usage=UsageTokens(input_tokens=2000.0, output_tokens=1000.0)),
     ]
     result = calculate_costs(items, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert result.currency == "USD"
     by_model = {entry.model: entry.usd for entry in result.by_model}
     assert "gpt-5.1" in by_model
-    assert by_model["gpt-5.1"] > 0
+    assert by_model["gpt-5.1"] == pytest.approx(0.02375)
 
 
 def test_calculate_costs_uses_service_tier():
@@ -449,13 +484,13 @@ def test_calculate_costs_uses_service_tier():
         CostItem(
             model="gpt-5.4",
             service_tier="priority",
-            usage=UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0),
+            usage=UsageTokens(input_tokens=200_000.0, output_tokens=1_000_000.0),
         ),
     ]
 
     result = calculate_costs(items, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
 
-    assert result.total_usd_7d == pytest.approx(35.0)
+    assert result.total_usd_7d == pytest.approx(31.0)
 
 
 @pytest.mark.parametrize("model", ["gpt-6-astra", "GPT-6-ASTRA", "gpt-6-astra-2026-09-14"])
@@ -466,9 +501,75 @@ def test_astra_pricing_and_snapshot_aliases(model: str) -> None:
     assert calculate_cost_from_usage(UsageTokens(100_000, 1_000, 50_000), resolved[1]) == pytest.approx(0.6)
 
 
-@pytest.mark.parametrize("model", ["codex-auto-review", "gpt-6-astra-unknown-variant", "gpt-6-unknown"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "codex-auto-review",
+        "gpt-6-astra-unknown-variant",
+        "gpt-6-unknown",
+        "gpt-5.3-codex-spark",
+        "gpt-5.7",
+        "gpt-5.6-sol-pro",
+        "gpt-5.6-sol-2026-07-13-preview",
+        "gpt-5.5-cyber-preview",
+        "gpt-5-mini-unknown",
+        "gpt-image-2.5-unknown",
+        "gpt-image-10",
+        "gpt-5.4-2026",
+        "gpt-5.4-2026-aa-bb",
+        "gpt-6-astra-2026-aa-bb",
+    ],
+)
 def test_unpublished_model_prices_remain_unknown(model: str) -> None:
     assert get_pricing_for_model(model) is None
+
+
+@pytest.mark.parametrize(
+    ("model", "tier", "expected"),
+    [
+        ("gpt-5-mini", "default", 0.0225),
+        ("GPT-5-MINI-2025-08-07", "default", 0.0225),
+        ("gpt-5-mini", "flex", 0.01125),
+        ("gpt-5-mini", "fast", 0.0405),
+        ("gpt-5-mini", "priority", 0.0405),
+        ("gpt-5-nano", "default", 0.0045),
+        ("gpt-5-nano", "flex", 0.00225),
+        ("gpt-5-pro", "default", 1.62),
+        ("gpt-5.2-pro", "default", 2.268),
+        ("gpt-5.5-cyber", "default", 1.1),
+        ("gpt-5.6-cyber", "default", 1.13125),
+        ("chat-latest", "default", 0.44),
+    ],
+)
+def test_distinct_variant_costs(model: str, tier: str, expected: float) -> None:
+    resolved = get_pricing_for_model(model)
+    assert resolved is not None
+    # 100K total input: 70K ordinary, 20K reads, 10K writes. Pro has no
+    # discounted cache price; cyber writes use the explicitly published premium.
+    usage = UsageTokens(100_000, 1_000, 20_000, 10_000)
+    assert calculate_cost_from_usage(usage, resolved[1], service_tier=tier) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("gpt-image-2.5-sunburst", 0.08825),
+        ("gpt-image-2.5-flare", 0.08825),
+        ("chatgpt-image-latest", 0.08585),
+    ],
+)
+def test_verified_image_variants_keep_modality_rates(model: str, expected: float) -> None:
+    resolved = get_pricing_for_model(model)
+    assert resolved is not None
+    usage = UsageTokens(
+        10_000,
+        1_000,
+        2_000,
+        image_input_tokens=6_000,
+        cached_image_input_tokens=1_000,
+        text_output_tokens=200 if model == "chatgpt-image-latest" else 0,
+    )
+    assert calculate_cost_from_usage(usage, resolved[1]) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(

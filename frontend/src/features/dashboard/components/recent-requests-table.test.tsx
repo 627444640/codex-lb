@@ -122,6 +122,7 @@ describe("RecentRequestsTable", () => {
 
   it.each([
     ["unknown_model", "Price unknown", "not treated as free"],
+    ["unknown_pricing", "Rate unknown", "no verified rate is available for this service tier or context length"],
     ["missing_usage", "Usage missing", "Missing usage is not zero"],
     ["incomplete_usage", "Incomplete estimate", "Some usage details were not reported"],
   ] as const)("explains %s instead of presenting a free request", (costStatus, label, explanation) => {

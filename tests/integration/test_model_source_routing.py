@@ -799,10 +799,16 @@ async def test_source_usage_settles_cost_from_source_pricing(async_client, sourc
 
 
 @pytest.mark.asyncio
-async def test_unpriced_source_usage_settles_zero_cost_for_priced_slug(async_client, source_upstream):
+@pytest.mark.parametrize("with_cost_limit", [False, True])
+async def test_unpriced_source_is_unknown_and_cost_limited_requests_are_rejected(
+    async_client, source_upstream, with_cost_limit
+):
     await _enable_api_key_auth(async_client)
+    calls = 0
 
     async def completion(_request: web.Request) -> web.Response:
+        nonlocal calls
+        calls += 1
         return web.json_response(
             {
                 "id": "chatcmpl_unpriced",
@@ -838,7 +844,9 @@ async def test_unpriced_source_usage_settles_zero_cost_for_priced_slug(async_cli
             "assignedSourceIds": [source_id],
             "limits": [
                 {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
-            ],
+            ]
+            if with_cost_limit
+            else [],
         },
     )
     assert created.status_code == 200
@@ -850,18 +858,24 @@ async def test_unpriced_source_usage_settles_zero_cost_for_priced_slug(async_cli
         headers={"Authorization": f"Bearer {key}"},
         json={"model": "gpt-5.2", "messages": [{"role": "user", "content": "hi"}]},
     )
-    assert response.status_code == 200
+    assert response.status_code == (429 if with_cost_limit else 200)
+    assert calls == (0 if with_cost_limit else 1)
+    if with_cost_limit:
+        assert response.json()["error"]["code"] == "pricing_unavailable"
 
     async with SessionLocal() as session:
         limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
-        assert len(limits) == 1
-        assert limits[0].current_value == 0
+        assert len(limits) == (1 if with_cost_limit else 0)
+        assert all(limit.current_value == 0 for limit in limits)
 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
+        if with_cost_limit:
+            assert latest_log is None
+            return
         assert latest_log is not None
         assert latest_log.model_source_id == source_id
-        assert latest_log.cost_usd == 0.0
+        assert latest_log.cost_usd is None
 
 
 @pytest.mark.asyncio

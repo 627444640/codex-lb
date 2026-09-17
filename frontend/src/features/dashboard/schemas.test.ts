@@ -185,7 +185,7 @@ describe("RequestLogsResponseSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it("parses request rows including apiKeyName", () => {
+  it.each(["estimated", "unknown_pricing"] as const)("parses request rows with %s cost status", (costStatus) => {
     const parsed = RequestLogsResponseSchema.parse({
       requests: [
         {
@@ -201,7 +201,7 @@ describe("RequestLogsResponseSchema", () => {
           actualModel: "gpt-6-astra",
           cacheWriteTokens: 3,
           pricingVersion: "openai-api-2026-09-14-v1",
-          costStatus: "estimated",
+          costStatus,
           transport: "websocket",
           upstreamProxyRouteMode: "account_bound",
           upstreamProxyPoolId: "pool-1",
@@ -250,7 +250,7 @@ describe("RequestLogsResponseSchema", () => {
     expect(parsed.requests[0]?.actualModel).toBe("gpt-6-astra");
     expect(parsed.requests[0]?.cacheWriteTokens).toBe(3);
     expect(parsed.requests[0]?.pricingVersion).toBe("openai-api-2026-09-14-v1");
-    expect(parsed.requests[0]?.costStatus).toBe("estimated");
+    expect(parsed.requests[0]?.costStatus).toBe(costStatus);
     expect(parsed.requests[0]?.costBreakdown?.cacheWriteUsd).toBe(0.0001);
     expect(parsed.requests[0]?.planType).toBe("plus");
     expect(parsed.requests[0]?.transport).toBe("websocket");

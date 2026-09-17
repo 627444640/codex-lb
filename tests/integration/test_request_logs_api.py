@@ -690,3 +690,110 @@ async def test_request_logs_preserve_explicit_unknown_image_and_custom_source_pr
     assert source["costStatus"] == "estimated"
     assert source["pricingVersion"] == MODEL_SOURCE_PRICING_VERSION
     assert source["costBreakdown"]["inputUsd"] is None
+
+
+@pytest.mark.asyncio
+async def test_corrected_model_prices_persist_without_repricing_history(async_client, db_setup):
+    from sqlalchemy import select
+
+    from app.core.usage.pricing import PRICING_VERSION
+
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+        for model in ("gpt-5-mini", "gpt-5.2-pro", "gpt-5.3-codex-spark", "gpt-5.7"):
+            row = await repo.add_log(
+                account_id=None,
+                latency_ms=1,
+                status="success",
+                error_code=None,
+                request_id=f"corrected-{model}",
+                model="gpt-5",
+                actual_model=model,
+                input_tokens=100_000,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                output_tokens=1_000,
+            )
+            assert row.pricing_version == PRICING_VERSION
+        session.add(
+            RequestLog(
+                request_id="previous-mini-price",
+                model="gpt-5-mini",
+                input_tokens=100_000,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+                output_tokens=1_000,
+                status="success",
+                cost_usd=0.135,
+                pricing_version="openai-api-2026-09-14-v1",
+            )
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=20")
+    assert response.status_code == 200
+    rows = {row["requestId"]: row for row in response.json()["requests"]}
+    for model, expected in (("gpt-5-mini", 0.027), ("gpt-5.2-pro", 2.268)):
+        row = rows[f"corrected-{model}"]
+        assert row["costUsd"] == pytest.approx(expected)
+        assert row["costStatus"] == "estimated"
+        assert row["pricingVersion"] == PRICING_VERSION
+    for model in ("gpt-5.3-codex-spark", "gpt-5.7"):
+        row = rows[f"corrected-{model}"]
+        assert row["costUsd"] is None
+        assert row["costStatus"] == "unknown_model"
+        assert all(value is None for value in row["costBreakdown"].values())
+    historical = rows["previous-mini-price"]
+    assert historical["costUsd"] == pytest.approx(0.135)
+    assert historical["pricingVersion"] == "openai-api-2026-09-14-v1"
+    assert historical["costStatus"] == "historical"
+    assert historical["costBreakdown"]["inputUsd"] is None
+
+    async with SessionLocal() as session:
+        saved = {row.request_id: row for row in (await session.scalars(select(RequestLog))).all()}
+        assert saved["corrected-gpt-5-mini"].cost_usd == pytest.approx(0.027)
+        assert saved["corrected-gpt-5.2-pro"].cost_usd == pytest.approx(2.268)
+        assert saved["corrected-gpt-5.3-codex-spark"].cost_usd is None
+        assert saved["corrected-gpt-5.7"].cost_usd is None
+        assert saved["previous-mini-price"].cost_usd == pytest.approx(0.135)
+        assert saved["previous-mini-price"].pricing_version == "openai-api-2026-09-14-v1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "service_tier", "input_tokens"),
+    [("gpt-5.6-sol", "ultrafast", 100_000), ("gpt-5.5-pro", "flex", 272_001)],
+)
+async def test_request_logs_keep_unpublished_tier_and_context_prices_unknown(
+    async_client, db_setup, model, service_tier, input_tokens
+):
+    from sqlalchemy import select
+
+    from app.core.usage.pricing import PRICING_VERSION
+
+    async with SessionLocal() as session:
+        await RequestLogsRepository(session).add_log(
+            account_id=None,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            request_id="unpublished-price",
+            model=model,
+            service_tier=service_tier,
+            input_tokens=input_tokens,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
+            output_tokens=1_000,
+        )
+
+    response = await async_client.get("/api/request-logs?limit=20")
+    assert response.status_code == 200
+    row = next(row for row in response.json()["requests"] if row["requestId"] == "unpublished-price")
+    assert row["costUsd"] is None
+    assert row["costStatus"] == "unknown_pricing"
+    assert row["pricingVersion"] == PRICING_VERSION
+    assert all(value is None for value in row["costBreakdown"].values())
+
+    async with SessionLocal() as session:
+        saved = await session.scalar(select(RequestLog).where(RequestLog.request_id == "unpublished-price"))
+        assert saved is not None and saved.cost_usd is None and saved.pricing_version == PRICING_VERSION

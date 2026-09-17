@@ -169,6 +169,7 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyInvalidError,
     ApiKeyRateLimitExceededError,
+    ApiKeyRequestPricing,
     ApiKeyRequestUsageBudget,
     ApiKeySelfLimitData,
     ApiKeysService,
@@ -2400,6 +2401,7 @@ async def backend_files_create(
         api_key,
         request_model=_FILES_CREATE_LIMIT_MODEL,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.create_file(
@@ -2447,6 +2449,7 @@ async def backend_files_finalize(
         api_key,
         request_model=_FILES_FINALIZE_LIMIT_MODEL,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.finalize_file(
@@ -3579,6 +3582,7 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_codex_models_response_body(api_key)
@@ -3696,6 +3700,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_models_response_body(api_key)
@@ -4173,6 +4178,7 @@ async def v1_chat_completions(
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(responses_payload),
+        request_pricing=_source_request_pricing(source, request_model) if source is not None else None,
     )
     if source is not None:
         return await _source_chat_completion_response(
@@ -4411,6 +4417,7 @@ async def _source_embeddings_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        request_pricing=_source_request_pricing(source, model),
     )
     outbound = payload.model_dump(exclude_none=True)
     outbound["model"] = model
@@ -4495,6 +4502,7 @@ async def _source_audio_transcription_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        request_pricing=_source_request_pricing(source, model),
     )
     try:
         result = await forward_source_audio_transcription(
@@ -4615,6 +4623,7 @@ async def _source_responses_response(
         request_model=payload.model,
         request_service_tier=payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(payload),
+        request_pricing=_source_request_pricing(source, payload.model),
     )
     source_payload = payload.model_dump_for_forwarding()
     preserve_materialized_provider_alias = payload._codex_lb_provider_reasoning_effort_materialized and (
@@ -7664,12 +7673,25 @@ async def _websocket_firewall_denial_response(websocket: WebSocket) -> JSONRespo
     )
 
 
+def _source_request_pricing(source: ModelSource, model: str) -> ApiKeyRequestPricing:
+    entry = next((entry for entry in source.models if entry.model == model and entry.is_enabled), None)
+    if entry is None:
+        return ApiKeyRequestPricing()
+    return ApiKeyRequestPricing(
+        input_per_1m=entry.input_per_1m,
+        cached_input_per_1m=entry.cached_input_per_1m,
+        output_per_1m=entry.output_per_1m,
+        audio_per_minute=entry.audio_per_minute,
+    )
+
+
 async def _enforce_request_limits(
     api_key: ApiKeyData | None,
     *,
     request_model: str | None,
     request_service_tier: str | None,
     request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+    request_pricing: ApiKeyRequestPricing | None = None,
 ) -> ApiKeyUsageReservationData | None:
     if api_key is None:
         return None
@@ -7682,10 +7704,15 @@ async def _enforce_request_limits(
                 request_model=request_model,
                 request_service_tier=request_service_tier,
                 request_usage_budget=request_usage_budget,
+                request_pricing=request_pricing,
             )
         except ApiKeyRateLimitExceededError as exc:
-            message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-            raise ProxyRateLimitError(message) from exc
+            message = (
+                str(exc)
+                if exc.code == "pricing_unavailable"
+                else f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
+            )
+            raise ProxyRateLimitError(message, code=exc.code) from exc
         except ApiKeyInvalidError as exc:
             raise ProxyAuthError(str(exc)) from exc
 
@@ -7849,7 +7876,7 @@ async def _settle_source_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
-                cost_microdollars=int(cost_usd * 1_000_000) if cost_usd is not None else None,
+                cost_override=UsageCostBreakdown(None, None, None, cost_usd),
             )
         return True
     except Exception:
@@ -7880,7 +7907,7 @@ def _source_usage_cost_usd(source: ModelSource, model: str, usage: SourceUsage |
         output_tokens=usage.output_tokens,
         cached_input_tokens=usage.cached_input_tokens,
     )
-    return 0.0 if cost_usd is None else cost_usd
+    return cost_usd
 
 
 async def _log_source_chat_completion(

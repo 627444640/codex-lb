@@ -11,6 +11,7 @@ from app.core.usage.pricing import (
     calculate_cost_breakdown_from_usage,
     calculate_cost_from_usage,
     get_pricing_for_model,
+    has_pricing_for_usage,
 )
 
 # Request-log status classification shared by every error-metric surface
@@ -78,12 +79,14 @@ def cache_write_tokens_from_log(log: RequestLogLike) -> int | None:
     return write_tokens
 
 
-CostStatus = Literal["estimated", "incomplete_usage", "unknown_model", "missing_usage", "historical"]
+CostStatus = Literal["estimated", "incomplete_usage", "unknown_model", "unknown_pricing", "missing_usage", "historical"]
 
 
 def cost_status_from_log(log: RequestLogLike) -> CostStatus:
     if log.pricing_version == MODEL_SOURCE_PRICING_VERSION:
-        return "estimated" if log.cost_usd is not None else "missing_usage"
+        if log.cost_usd is not None:
+            return "estimated"
+        return "unknown_pricing" if log.input_tokens is not None and log.output_tokens is not None else "missing_usage"
     if log.cost_usd is not None and log.pricing_version != PRICING_VERSION:
         return "historical"
     model = log.actual_model or log.model
@@ -93,6 +96,13 @@ def cost_status_from_log(log: RequestLogLike) -> CostStatus:
     if log.input_tokens is None or log.output_tokens is None:
         return "missing_usage" if log.cost_usd is None else "incomplete_usage"
     _, price = resolved
+    usage = usage_tokens_from_log(log)
+    if (
+        log.cost_usd is None
+        and usage is not None
+        and not has_pricing_for_usage(usage, price, service_tier=log.service_tier)
+    ):
+        return "unknown_pricing"
     if log.cached_input_tokens is None or (price.cache_write_multiplier is not None and log.cache_write_tokens is None):
         return "incomplete_usage"
     if price.image_input_per_1m is not None and log.cost_usd is None:

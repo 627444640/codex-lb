@@ -1134,7 +1134,7 @@ class RequestLogsRepository:
             log.cost_usd = (
                 cost_usd
                 if cost_usd is not None
-                else 0.0
+                else None
                 if model_source_id is not None
                 else calculated_cost_from_log(typing_cast(RequestLogLike, log))
             )

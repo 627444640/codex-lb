@@ -217,7 +217,7 @@ export const RequestLogSchema = z.object({
   reasoningEffort: z.string().nullable(),
   costUsd: z.number().nullable(),
   pricingVersion: z.string().nullable().optional(),
-  costStatus: z.enum(["estimated", "incomplete_usage", "unknown_model", "missing_usage", "historical"]).optional(),
+  costStatus: z.enum(["estimated", "incomplete_usage", "unknown_model", "unknown_pricing", "missing_usage", "historical"]).optional(),
   costBreakdown: RequestLogCostBreakdownSchema.nullable().optional().default(null),
   latencyMs: z.number().nullable(),
   latencyFirstTokenMs: z.number().nullable().optional().default(null),
