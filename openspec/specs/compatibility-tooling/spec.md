@@ -287,6 +287,13 @@ reported as unobserved rather than pass.
 - **THEN** that transport cohort is reported as unobserved
 - **AND** it is not reported as a pass
 
+#### Scenario: Security update changes signature capabilities
+
+- **GIVEN** a security-updated TLS provider advertises signature algorithms absent from sufficiently sampled direct-client reference cohorts
+- **WHEN** the analyzer compares invariant TLS capability profiles
+- **THEN** it MUST report the signature capability mismatch
+- **AND** it MUST NOT hide the mismatch as randomized extension order or waive it because the update fixes a vulnerability
+
 ### Requirement: Controlled origin probe covers every Responses transport
 
 The traffic parity toolkit MUST provide an explicitly launched deterministic
