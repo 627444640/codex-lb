@@ -191,3 +191,66 @@ async def test_watermark_equality_is_lifetime_inclusive_and_hourly_exclusive(db_
         boundary = await session.scalar(select(RequestLog).where(RequestLog.request_id == "boundary"))
         assert boundary is not None
         assert boundary.cost_usd == calculated_cost_from_log(boundary)
+
+
+async def test_backfill_reprices_newly_known_text_but_preserves_unknown_image_evidence(async_client):
+    from app.core.usage.pricing import ModelPrice, get_pricing_version
+    from app.core.usage.pricing_catalog import get_active_prices, install_prices
+    from app.modules.request_logs.repository import RequestLogsRepository
+
+    original = dict(get_active_prices())
+    model = "future-priced-text-model"
+    try:
+        async with SessionLocal() as session:
+            repo = RequestLogsRepository(session)
+            unknown = await repo.add_log(
+                account_id=None,
+                latency_ms=1,
+                status="success",
+                error_code=None,
+                request_id="newly-priced-model",
+                model=model,
+                input_tokens=1000,
+                output_tokens=100,
+                cached_input_tokens=0,
+                cache_write_tokens=0,
+            )
+            assert unknown.cost_usd is None and unknown.pricing_version is not None
+            old_version = unknown.pricing_version
+            session.add(
+                RequestLog(
+                    request_id="unknown-image",
+                    model="gpt-image-2",
+                    status="success",
+                    input_tokens=0,
+                    output_tokens=100,
+                    cached_input_tokens=0,
+                    pricing_version="earlier-image-evidence",
+                )
+            )
+            session.add(
+                RequestLog(
+                    request_id="preserved-total",
+                    model=model,
+                    status="success",
+                    input_tokens=1000,
+                    output_tokens=100,
+                    cached_input_tokens=0,
+                    cost_usd=9.0,
+                    pricing_version="historical-cost",
+                )
+            )
+            await session.commit()
+            assert (await backfill_missing_costs(session)).updated == 0
+            price = ModelPrice(input_per_1m=2.0, output_per_1m=8.0, cached_input_per_1m=0.2)
+            install_prices({**original, model: price})
+            assert (await backfill_missing_costs(session)).updated == 1
+            rows = {row.request_id: row for row in (await session.scalars(select(RequestLog))).all()}
+            assert rows["newly-priced-model"].cost_usd == pytest.approx(0.0028)
+            assert rows["newly-priced-model"].pricing_version == get_pricing_version(model, price) != old_version
+            assert rows["unknown-image"].cost_usd is None
+            assert rows["unknown-image"].pricing_version == "earlier-image-evidence"
+            assert rows["preserved-total"].cost_usd == 9.0
+            assert rows["preserved-total"].pricing_version == "historical-cost"
+    finally:
+        install_prices(original)

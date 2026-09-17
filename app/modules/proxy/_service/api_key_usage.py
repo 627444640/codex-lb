@@ -14,6 +14,7 @@ from app.core.clock import clock_for, scheduler_for
 from app.core.errors import openai_error
 from app.core.exceptions import ProxyAuthError, ProxyRateLimitError
 from app.core.openai.models import CompactResponsePayload
+from app.core.usage.pricing import UsageCostBreakdown
 from app.core.utils.request_id import get_request_id
 from app.core.utils.shared_future import wait_on_shared_future
 from app.db.models import Account
@@ -144,8 +145,12 @@ class _ApiKeyUsageMixin:
                         request_usage_budget=request_usage_budget,
                     )
                 except ApiKeyRateLimitExceededError as exc:
-                    message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-                    raise ProxyRateLimitError(message) from exc
+                    message = (
+                        str(exc)
+                        if exc.code == "pricing_unavailable"
+                        else f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
+                    )
+                    raise ProxyRateLimitError(message, code=exc.code) from exc
                 except ApiKeyInvalidError as exc:
                     raise ProxyAuthError(str(exc)) from exc
 
@@ -430,6 +435,12 @@ class _ApiKeyUsageMixin:
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             cached_input_tokens=cached_input_tokens or 0,
+                            cache_write_tokens=(
+                                usage.input_tokens_details.cache_write_tokens or 0
+                                if usage and usage.input_tokens_details
+                                else 0
+                            ),
+                            actual_model=response.model,
                             service_tier=service_tier,
                         )
                     else:
@@ -480,6 +491,8 @@ class _ApiKeyUsageMixin:
         output_tokens: int | None,
         cached_input_tokens: int | None,
         request_id: str,
+        cache_write_tokens: int | None = None,
+        cost_override: UsageCostBreakdown | None = None,
     ) -> bool:
         """Transfer captured image usage to tracked reservation settlement."""
         has_usage = input_tokens is not None or output_tokens is not None
@@ -489,6 +502,8 @@ class _ApiKeyUsageMixin:
             input_tokens=int(input_tokens or 0) if has_usage else None,
             output_tokens=int(output_tokens or 0) if has_usage else None,
             cached_input_tokens=int(cached_input_tokens or 0) if has_usage else None,
+            cache_write_tokens=cache_write_tokens,
+            cost_override=cost_override,
             service_tier=None,
         )
         return await self._settle_stream_api_key_usage(
@@ -550,6 +565,9 @@ class _ApiKeyUsageMixin:
                             input_tokens=settlement.input_tokens,
                             output_tokens=settlement.output_tokens,
                             cached_input_tokens=settlement.cached_input_tokens or 0,
+                            cache_write_tokens=settlement.cache_write_tokens or 0,
+                            actual_model=settlement.actual_model,
+                            cost_override=settlement.cost_override,
                             service_tier=settlement.service_tier,
                         )
                     else:

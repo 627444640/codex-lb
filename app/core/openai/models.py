@@ -65,7 +65,13 @@ class ResponseUsageDetails(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     cached_tokens: StrictInt | None = None
+    cache_write_tokens: StrictInt | None = None
     reasoning_tokens: StrictInt | None = None
+
+    @field_validator("cache_write_tokens", mode="before")
+    @classmethod
+    def _normalize_cache_write_tokens(cls, value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 class ResponseUsage(BaseModel):
@@ -82,9 +88,15 @@ class OpenAIResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: StrictStr | None = None
+    model: StrictStr | None = None
     status: StrictStr | None = None
     error: OpenAIError | None = None
     usage: ResponseUsage | None = None
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _normalize_model(cls, value: object) -> str | None:
+        return value.strip() or None if isinstance(value, str) else None
 
     @field_validator("error", mode="before")
     @classmethod
@@ -114,9 +126,15 @@ class OpenAIResponsePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: StrictStr | None = None
+    model: StrictStr | None = None
     status: StrictStr | None = None
     error: OpenAIError | None = None
     usage: ResponseUsage | None = None
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _normalize_model(cls, value: object) -> str | None:
+        return value.strip() or None if isinstance(value, str) else None
 
     @field_validator("error", mode="before")
     @classmethod
@@ -134,6 +152,7 @@ class CompactResponsePayload(BaseModel):
 
     object: StrictStr
     id: StrictStr | None = None
+    model: StrictStr | None = None
     status: StrictStr | None = None
     error: OpenAIError | None = None
     usage: ResponseUsage | None = None
@@ -147,6 +166,11 @@ class CompactResponsePayload(BaseModel):
         if not normalized.startswith("response.compact"):
             raise ValueError("Compact response payload requires a compact object discriminator")
         return normalized
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def _normalize_model(cls, value: object) -> str | None:
+        return value.strip() or None if isinstance(value, str) else None
 
     @field_validator("error", mode="before")
     @classmethod

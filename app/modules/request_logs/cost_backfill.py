@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.usage.logs import RequestLogLike, calculated_cost_from_log
+from app.core.usage.pricing import get_pricing_for_model, get_pricing_version
 from app.db.models import (
     AccountUsageRollup,
     AccountUsageRollupState,
@@ -64,11 +65,16 @@ async def backfill_missing_costs(session: AsyncSession, *, after_id: int = 0, li
             ).all()
             updated = 0
             for log in logs:
-                cost = calculated_cost_from_log(cast(RequestLogLike, log))
+                resolved = get_pricing_for_model(log.actual_model or log.model)
+                if resolved is None or resolved[1].image_input_per_1m is not None:
+                    # Flattened logs cannot recover text/image input/output partitions.
+                    continue
+                cost = calculated_cost_from_log(cast(RequestLogLike, log), price=resolved[1])
                 if cost is None:
                     continue
                 await _mirror_cost(session, state, log, cost)
                 log.cost_usd = cost
+                log.pricing_version = get_pricing_version(log.actual_model or log.model, resolved[1])
                 updated += 1
             await session.commit()
             return BackfillBatch(len(logs), updated, logs[-1].id if logs else after_id)

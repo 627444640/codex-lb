@@ -173,6 +173,7 @@ from app.core.runtime_logging import log_error_response
 from app.core.socket_peer import raw_socket_peer_host
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
+from app.core.usage.pricing import UsageCostBreakdown, get_pricing_for_model, get_pricing_version
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import ensure_request_id, get_request_id
 from app.core.utils.shared_future import (
@@ -203,6 +204,7 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyInvalidError,
     ApiKeyRateLimitExceededError,
+    ApiKeyRequestPricing,
     ApiKeyRequestUsageBudget,
     ApiKeySelfLimitData,
     ApiKeysService,
@@ -2586,6 +2588,7 @@ async def backend_files_create(
         api_key,
         request_model=_FILES_CREATE_LIMIT_MODEL,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.create_file(
@@ -2633,6 +2636,7 @@ async def backend_files_finalize(
         api_key,
         request_model=_FILES_FINALIZE_LIMIT_MODEL,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.finalize_file(
@@ -3420,31 +3424,9 @@ async def _proxy_images_generation_request(
                 captured["image_stream_outcome"] = "upstream_error"
                 raise
             finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
+                # Keep public image accounting independent of the host
+                # Responses usage, including on downstream cancellation.
+                await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
                 stream_outcome = captured.get("image_stream_outcome")
                 if not isinstance(stream_outcome, str):
                     stream_outcome = "stream_closed"
@@ -3485,21 +3467,7 @@ async def _proxy_images_generation_request(
             headers=rate_limit_headers,
         )
 
-    response_id = captured.get("response_id")
-    if response_id and isinstance(response_id, str):
-        await context.service.rewrite_request_log_model(response_id, public_model)
-    _input = captured.get("image_input_tokens")
-    _output = captured.get("image_output_tokens")
-    _cached = captured.get("image_cached_input_tokens")
-    await _finalize_image_reservation(
-        context.service,
-        api_key,
-        reservation,
-        model=public_model,
-        input_tokens=_input if isinstance(_input, int) else None,
-        output_tokens=_output if isinstance(_output, int) else None,
-        cached_input_tokens=_cached if isinstance(_cached, int) else None,
-    )
+    await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
 
     if error_envelope is not None:
         error_status = _status_for_image_error_envelope(error_envelope)
@@ -3718,31 +3686,9 @@ async def _proxy_images_edit_request(
                 captured["image_stream_outcome"] = "upstream_error"
                 raise
             finally:
-                # Run the request-log model rewrite even when the stream
-                # is cancelled mid-flight (e.g. client disconnect). Without
-                # this, an interrupted SSE response would leave the
-                # request_logs row pinned to the internal host model.
-                response_id = captured.get("response_id")
-                if response_id and isinstance(response_id, str):
-                    await context.service.rewrite_request_log_model(response_id, public_model)
-                # Finalize the reservation from the captured
-                # ``tool_usage.image_gen`` tokens (or release if
-                # upstream never produced a usable image). This is the
-                # single point where the image API charges API-key
-                # limits; standard stream settlement is bypassed via
-                # ``api_key_reservation=None`` above.
-                _input = captured.get("image_input_tokens")
-                _output = captured.get("image_output_tokens")
-                _cached = captured.get("image_cached_input_tokens")
-                await _finalize_image_reservation(
-                    context.service,
-                    api_key,
-                    reservation,
-                    model=public_model,
-                    input_tokens=_input if isinstance(_input, int) else None,
-                    output_tokens=_output if isinstance(_output, int) else None,
-                    cached_input_tokens=_cached if isinstance(_cached, int) else None,
-                )
+                # Keep public image accounting independent of the host
+                # Responses usage, including on downstream cancellation.
+                await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
                 stream_outcome = captured.get("image_stream_outcome")
                 if not isinstance(stream_outcome, str):
                     stream_outcome = "stream_closed"
@@ -3783,21 +3729,7 @@ async def _proxy_images_edit_request(
             headers=rate_limit_headers,
         )
 
-    response_id = captured.get("response_id")
-    if response_id and isinstance(response_id, str):
-        await context.service.rewrite_request_log_model(response_id, public_model)
-    _input = captured.get("image_input_tokens")
-    _output = captured.get("image_output_tokens")
-    _cached = captured.get("image_cached_input_tokens")
-    await _finalize_image_reservation(
-        context.service,
-        api_key,
-        reservation,
-        model=public_model,
-        input_tokens=_input if isinstance(_input, int) else None,
-        output_tokens=_output if isinstance(_output, int) else None,
-        cached_input_tokens=_cached if isinstance(_cached, int) else None,
-    )
+    await _finalize_image_accounting(context.service, api_key, reservation, captured, public_model)
 
     if error_envelope is not None:
         error_status = _status_for_image_error_envelope(error_envelope)
@@ -3852,6 +3784,7 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_codex_models_response_body(api_key)
@@ -4002,6 +3935,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_models_response_body(api_key)
@@ -4516,6 +4450,7 @@ async def v1_chat_completions(
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(responses_payload),
+        request_pricing=_source_request_pricing(source, request_model) if source is not None else None,
     )
     if source is not None:
         return await _source_chat_completion_response(
@@ -4897,6 +4832,7 @@ async def _source_embeddings_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        request_pricing=_source_request_pricing(source, model),
     )
     outbound = payload.model_dump(exclude_unset=True)
     outbound["model"] = model
@@ -4998,6 +4934,7 @@ async def _source_audio_transcription_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        request_pricing=_source_request_pricing(source, model),
     )
     try:
         result = await forward_source_audio_transcription(
@@ -5163,6 +5100,7 @@ async def _source_responses_response(
             request_model=payload.model,
             request_service_tier=payload.service_tier,
             request_usage_budget=admission_budget,
+            request_pricing=_source_request_pricing(source, payload.model),
         )
         owner = SourceDispatch(
             request=request,
@@ -8591,12 +8529,25 @@ async def _websocket_firewall_denial_response(websocket: WebSocket) -> JSONRespo
     )
 
 
+def _source_request_pricing(source: ModelSource, model: str) -> ApiKeyRequestPricing:
+    entry = next((entry for entry in source.models if entry.model == model and entry.is_enabled), None)
+    if entry is None:
+        return ApiKeyRequestPricing()
+    return ApiKeyRequestPricing(
+        input_per_1m=entry.input_per_1m,
+        cached_input_per_1m=entry.cached_input_per_1m,
+        output_per_1m=entry.output_per_1m,
+        audio_per_minute=entry.audio_per_minute,
+    )
+
+
 async def _enforce_request_limits(
     api_key: ApiKeyData | None,
     *,
     request_model: str | None,
     request_service_tier: str | None,
     request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+    request_pricing: ApiKeyRequestPricing | None = None,
 ) -> ApiKeyUsageReservationData | None:
     if api_key is None:
         return None
@@ -8609,10 +8560,15 @@ async def _enforce_request_limits(
                 request_model=request_model,
                 request_service_tier=request_service_tier,
                 request_usage_budget=request_usage_budget,
+                request_pricing=request_pricing,
             )
         except ApiKeyRateLimitExceededError as exc:
-            message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-            raise ProxyRateLimitError(message) from exc
+            message = (
+                str(exc)
+                if exc.code == "pricing_unavailable"
+                else f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
+            )
+            raise ProxyRateLimitError(message, code=exc.code) from exc
         except ApiKeyInvalidError as exc:
             raise ProxyAuthError(str(exc)) from exc
 
@@ -8686,6 +8642,48 @@ async def _release_reservation_best_effort(
         )
 
 
+async def _finalize_image_accounting(
+    service: proxy_service_module.ProxyService,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    captured: Mapping[str, object],
+    model: str,
+) -> None:
+    """Persist image usage and settle its sole reservation from the same evidence."""
+    usage = images_service_module.captured_image_usage(captured)
+    input_tokens = usage.input_tokens if usage else None
+    output_tokens = usage.output_tokens if usage else None
+    cached_tokens = images_service_module.image_usage_detail_tokens(usage, "cached_tokens")
+    cache_write_tokens = images_service_module.image_usage_detail_tokens(usage, "cache_write_tokens")
+    resolved_price = get_pricing_for_model(model)
+    price = resolved_price[1] if resolved_price is not None else None
+    cost = images_service_module.image_usage_cost(usage, model, price=price)
+    pricing_version = get_pricing_version(model, price)
+    response_id = captured.get("response_id")
+    if isinstance(response_id, str) and response_id:
+        await service.rewrite_request_log_usage(
+            response_id,
+            model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cost_usd=cost.total_usd,
+            pricing_version=pricing_version,
+        )
+    await _finalize_image_reservation(
+        service,
+        api_key,
+        reservation,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_override=cost,
+    )
+
+
 async def _finalize_image_reservation(
     service: proxy_service_module.ProxyService,
     api_key: ApiKeyData | None,
@@ -8695,6 +8693,8 @@ async def _finalize_image_reservation(
     input_tokens: int | None,
     output_tokens: int | None,
     cached_input_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    cost_override: UsageCostBreakdown | None = None,
 ) -> None:
     """Transfer image-token settlement to tracked persistence ownership."""
     if reservation is None:
@@ -8706,6 +8706,8 @@ async def _finalize_image_reservation(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cost_override=cost_override,
         request_id=get_request_id() or reservation.reservation_id,
     )
 
@@ -8734,7 +8736,7 @@ async def _settle_source_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
-                cost_microdollars=int(cost_usd * 1_000_000) if cost_usd is not None else None,
+                cost_override=UsageCostBreakdown(None, None, None, cost_usd),
             )
         return True
     except Exception:
@@ -8765,7 +8767,7 @@ def _source_usage_cost_usd(source: ModelSource, model: str, usage: SourceUsage |
         output_tokens=usage.output_tokens,
         cached_input_tokens=usage.cached_input_tokens,
     )
-    return 0.0 if cost_usd is None else cost_usd
+    return cost_usd
 
 
 async def _log_source_chat_completion(

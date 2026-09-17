@@ -34,3 +34,9 @@ The request-log API and dashboard MUST preserve positive sub-cent costs. The das
 - **WHEN** Sol reports complete usage on ultrafast without a stored estimate
 - **THEN** the request-log API returns null cost and unknown_pricing
 - **AND** the dashboard labels the price as unknown
+
+#### Scenario: Catalog refresh precedes atomic missing-cost repair
+- **WHEN** a versioned unknown-cost request becomes priceable after a catalog refresh
+- **AND** its stored amount and price version have not yet been repaired
+- **THEN** the API keeps the amount unknown rather than attaching a new estimate to the old version
+- **AND** successful atomic repair publishes the matching amount and new price version together

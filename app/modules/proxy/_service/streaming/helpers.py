@@ -517,7 +517,18 @@ def _settle_background_ack(
         return False, response_id, None
     ack_response_id, ack_payload = canonical_ack
     settlement.response_id = ack_response_id
-    return True, ack_response_id, ack_payload.usage
+    settlement.actual_model = ack_payload.model or settlement.actual_model
+    usage = ack_payload.usage
+    if usage is not None:
+        settlement.input_tokens = usage.input_tokens
+        settlement.output_tokens = usage.output_tokens
+        details = usage.input_tokens_details
+        settlement.cached_input_tokens = details.cached_tokens if details else None
+        settlement.cache_write_tokens = details.cache_write_tokens if details else None
+        settlement.reasoning_tokens = (
+            usage.output_tokens_details.reasoning_tokens if usage.output_tokens_details else None
+        )
+    return True, ack_response_id, usage
 
 
 def _stream_iterator_after_capacity_admission(

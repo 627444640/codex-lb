@@ -2372,9 +2372,9 @@ async def test_api_key_usage_summary_cost_respects_service_tier(async_client, mo
                 "status": "completed",
                 "service_tier": "priority",
                 "usage": {
-                    "input_tokens": 1_000_000,
+                    "input_tokens": 200_000,
                     "output_tokens": 1_000_000,
-                    "total_tokens": 2_000_000,
+                    "total_tokens": 1_200_000,
                 },
             },
         }
@@ -2403,7 +2403,7 @@ async def test_api_key_usage_summary_cost_respects_service_tier(async_client, mo
     usage_key_row = next((row for row in listed_rows if row["id"] == key_id), None)
     assert usage_key_row is not None
     assert usage_key_row["usageSummary"] is not None
-    assert usage_key_row["usageSummary"]["totalCostUsd"] == pytest.approx(35.0, abs=1e-6)
+    assert usage_key_row["usageSummary"]["totalCostUsd"] == pytest.approx(31.0, abs=1e-6)
 
 
 @pytest.mark.asyncio
@@ -3186,9 +3186,9 @@ async def test_compact_cost_limit_uses_canonical_request_service_tier_when_respo
                 "model": "gpt-5.4",
                 "status": "completed",
                 "usage": {
-                    "input_tokens": 1_000_000,
+                    "input_tokens": 200_000,
                     "output_tokens": 1_000_000,
-                    "total_tokens": 2_000_000,
+                    "total_tokens": 1_200_000,
                 },
                 "output": [],
             }
@@ -3223,7 +3223,7 @@ async def test_compact_cost_limit_uses_canonical_request_service_tier_when_respo
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 35_000_000
+        assert limits[0].current_value == 31_000_000
 
 
 @pytest.mark.asyncio
@@ -4696,3 +4696,39 @@ async def test_stream_without_api_key_auth_skips_settlement(async_client, monkey
         assert response.status_code == 200
         lines = [line async for line in response.aiter_lines() if line]
         assert len(lines) >= 1  # stream completed without error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model,tier", [("gpt-5.6-sol", "ultrafast"), ("gpt-5.7", "default")])
+async def test_cost_limited_http_request_rejects_unknown_pricing_before_upstream(
+    async_client, monkeypatch, model, tier
+):
+    await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "unknown-price",
+            "limits": [
+                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
+            ],
+        },
+    )
+    assert created.status_code == 200
+
+    async def forbidden_stream(*args, **kwargs):
+        raise AssertionError("Unpriced cost-limited request must not reach upstream")
+        yield ""
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", forbidden_stream)
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={"model": model, "instructions": "hi", "input": [], "service_tier": tier, "stream": True},
+    )
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "pricing_unavailable"
+    assert "retrying alone" in response.json()["error"]["message"]
+    async with SessionLocal() as session:
+        limits = await ApiKeysRepository(session).get_limits_by_key(created.json()["id"])
+        assert all(limit.current_value == 0 for limit in limits)
+        assert not (await session.scalars(select(ApiKeyUsageReservation))).all()

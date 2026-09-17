@@ -27,6 +27,12 @@ Keys can also be scoped to specific accounts, so a key draws quota only from the
 
 ![API keys with assigned accounts](screenshots/apis-assigned-accounts.jpg)
 
+## Cost limits and unavailable prices
+
+A key with a cost limit receives `429 pricing_unavailable` when its requested model or service tier has no verified price. Select a priced model/tier or configure the model source's own prices; retrying alone does not resolve this condition. Token-only keys retain their normal admission rules.
+
+If the upstream switches to an unpriced model, tier or context after admission, the key keeps the previously reserved cost allowance while its actual cost remains unknown. Token counters still settle to reported usage. That allowance is a conservative quota reservation, not a known bill. An explicitly known zero cost releases the allowance normally. Later request-log cost repairs do not rewrite API-key limit counters.
+
 ## Reasoning effort policies
 
 A key can either enforce one reasoning effort or allow a selected non-empty set of client-requested efforts.

@@ -273,7 +273,7 @@ def error_message_from_payload(payload: Mapping[str, JsonValue]) -> str | None:
 
 
 def source_usage_cost_usd(source: ModelSource, model: str, usage: SourceUsage | None) -> float | None:
-    """Source pricing for ``usage``; unpriced entries cost ``0.0`` (never ``None`` for known usage)."""
+    """Preserve unknown source prices separately from explicitly configured zero rates."""
 
     if usage is None:
         return None
@@ -284,7 +284,7 @@ def source_usage_cost_usd(source: ModelSource, model: str, usage: SourceUsage | 
         output_tokens=usage.output_tokens,
         cached_input_tokens=usage.cached_input_tokens,
     )
-    return 0.0 if cost_usd is None else cost_usd
+    return cost_usd
 
 
 def _reservation_requires_usage(reservation: ApiKeyUsageReservationData | None) -> bool:

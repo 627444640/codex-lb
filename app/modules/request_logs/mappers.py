@@ -5,8 +5,10 @@ from typing import cast as typing_cast
 from app.core.usage.logs import (
     CANCELLED_STATUS,
     RequestLogLike,
+    cache_write_tokens_from_log,
     cached_input_tokens_from_log,
     cost_breakdown_from_log,
+    cost_status_from_log,
     output_tokens_from_log,
     total_tokens_from_log,
 )
@@ -41,7 +43,7 @@ def to_request_log_entry(
     include_api_key_identity: bool = True,
 ) -> RequestLogEntry:
     log_like = typing_cast(RequestLogLike, log)
-    cost_breakdown = cost_breakdown_from_log(log_like, precision=6)
+    cost_breakdown = cost_breakdown_from_log(log_like)
     return RequestLogEntry(
         sticky_key_source=log.sticky_key_source if include_sensitive_metadata else None,
         sticky_kind=log.sticky_kind if include_sensitive_metadata else None,
@@ -57,6 +59,9 @@ def to_request_log_entry(
         request_kind=log.request_kind,
         connection_request_kind=log.connection_request_kind,
         model=log.model,
+        actual_model=log.actual_model,
+        pricing_version=log.pricing_version,
+        cost_status=cost_status_from_log(log_like),
         source=log.source,
         model_source_id=log.model_source_id,
         model_source_kind=log.model_source_kind,
@@ -89,6 +94,7 @@ def to_request_log_entry(
         output_tokens_raw=log.output_tokens,
         reasoning_tokens=log.reasoning_tokens,
         cached_input_tokens=cached_input_tokens_from_log(log_like),
+        cache_write_tokens=cache_write_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
         cost_breakdown=RequestLogCostBreakdown(**cost_breakdown.__dict__),
         latency_ms=log.latency_ms,

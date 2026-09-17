@@ -635,6 +635,7 @@ export function DashboardPage() {
                         <p className="text-sm text-muted-foreground">{conversationSummary}</p>
                       </div>
                     ) : null}
+                    <p className="text-xs text-muted-foreground">{t("dashboard.requestCost.aggregateNote")}</p>
                     <div className="transition-opacity duration-200">
                       <RecentRequestsTable
                         requests={view.requestLogs}
