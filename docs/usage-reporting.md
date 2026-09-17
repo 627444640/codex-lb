@@ -4,10 +4,10 @@ codex-lb records the token counts reported in the terminal Responses API event. 
 
 For direct Codex traffic over HTTP or WebSocket, the reported buckets have these relationships:
 
-- `input_tokens` includes the full input count; cached input is reported as a subset.
+- `input_tokens` includes ordinary input, cached reads and cache writes. Reads and writes are disjoint subsets.
 - `output_tokens` includes all generated output, including reasoning tokens.
 - `reasoning_tokens` is the reported reasoning subset of `output_tokens`.
-- Total tokens are `input_tokens + output_tokens`. Do not add cached input or reasoning tokens again.
+- Total tokens are `input_tokens + output_tokens`. Do not add cached reads, writes or reasoning tokens again.
 
 ## Dashboard
 
@@ -28,6 +28,12 @@ codex-lb refreshes OpenAI text-token pricing hourly from models.dev. Compatible 
 When a model's price becomes available, retained subscription requests with missing costs are repaired automatically in small batches. Their dashboard, report, account, and API-key usage aggregates are corrected in the same transaction. Existing costs, including zero, and API-key limit counters are preserved. Requests whose raw logs have already been deleted by retention cannot be reconstructed.
 
 The Codex client-version fallback is also retained across restarts. Bundled prices and the stable Codex version are maintained by a daily update workflow that opens a reviewable PR. Operators do not need an extra API key or configuration setting.
+
+Request details distinguish the requested model from the actual upstream model and show the effective price version. Known costs retain small positive amounts instead of rounding them to zero. Unknown models, unpriced service tiers/context lengths and incomplete usage have separate labels; totals include available estimates only. A versioned request with unknown cost stays unknown until an atomic repair can save both its amount and matching price version.
+
+Cache writes use their own rate and are subtracted from ordinary input before pricing. Image costs require the reported text/image partitions; totals alone do not provide enough evidence. A partial catalog update retains the previous complete record when it cannot safely preserve the known tier, context or modality rates.
+
+*Spec: [proxy-runtime-observability](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/proxy-runtime-observability)*
 
 *Spec: [upstream-metadata](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/upstream-metadata)*
 

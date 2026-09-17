@@ -21,3 +21,11 @@ For example, an unpriced Astra request with 1,000 input tokens (500 cached), 100
 Run `uv run python scripts/update_upstream_metadata.py` to refresh the pricing snapshot and generated stable Codex version. Generation requires both pricing sources and a valid live version; runtime may degrade to one source. Unchanged pricing preserves its timestamp to avoid empty daily updates.
 
 The `Update upstream metadata` workflow runs daily at 06:23 UTC or manually. It uses the repository's existing `RELEASE_PLEASE_TOKEN`, updates one maintenance branch without force-pushing, runs catalog/version tests, and opens a normal reviewable PR. It does not merge automatically. A merge conflict stops the workflow for resolution rather than overwriting review changes. No new `CODEX_LB_*` setting is required.
+
+## Effective accounting evidence
+
+Catalog records include validated cache-write and image-modality rates. Explicit tier/context prices remain authoritative; unavailable rates are not synthesized from another tier. Compatible partial updates retain missing verified groups, while an incompatible partial update leaves the last complete record active until consistent metadata arrives.
+
+Each model-rate content set has a stable fingerprint. Request logs preserve that fingerprint with the computed amount; unrelated catalog updates do not change it. A versioned NULL-cost row remains unknown during the interval between a catalog refresh and atomic backfill. Complete text usage can still be repaired when its model becomes priced, while source-defined prices and incomplete image partitions are excluded from automatic repair.
+
+Snapshots use the extended schema while retaining older snapshot readability. Known unpublished price identifiers are excluded across network parsing and stored-cache restoration; future public price announcements require updating that explicit exclusion. See [the specification](spec.md) for the requirements.

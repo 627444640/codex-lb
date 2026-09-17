@@ -139,3 +139,55 @@ async def test_unexpected_failure_backs_off_only_the_failed_operation(setup, mon
     await scheduler._run_loop()
     assert fetch.await_count == (2 if failed_operation == "refresh" else 1)
     assert backfill.await_count == (2 if failed_operation == "backfill" else 3)
+
+
+async def test_refresh_and_restart_preserve_effective_price_version_and_accounting_fields(setup, monkeypatch):
+    from dataclasses import replace
+
+    from app.core.usage.pricing import get_pricing_version
+
+    resolved = get_pricing_for_model("gpt-6-astra")
+    assert resolved is not None
+    updated = replace(resolved[1], input_per_1m=11.0, cache_write_multiplier=1.5)
+    monkeypatch.setattr(module, "fetch_catalogs", AsyncMock(return_value={"gpt-6-astra": updated}))
+    scheduler = module.MetadataRefreshScheduler()
+    await scheduler._refresh()
+    version = get_pricing_version("gpt-6-astra")
+    assert version == get_pricing_version(price=updated)
+    monkeypatch.setattr(catalog, "_prices", None)
+    restarted = module.MetadataRefreshScheduler()
+    monkeypatch.setattr(restarted, "_run_loop", AsyncMock())
+    await restarted.start()
+    assert get_pricing_for_model("gpt-6-astra") == ("gpt-6-astra", updated)
+    assert get_pricing_version("gpt-6-astra") == version
+    await restarted.stop()
+
+
+async def test_new_cache_cannot_reintroduce_known_unpriced_model(setup, monkeypatch):
+    snapshot = json.loads(catalog.encode_snapshot({"gpt-valid": ModelPrice(1, 2)}))
+    snapshot["updated_at"] = "2099-01-01T00:00:00+00:00"
+    snapshot["models"]["gpt-5.3-codex-spark"] = {"input_per_1m": 1.75, "output_per_1m": 14}
+    (setup / "pricing-cache.json").write_text(json.dumps(snapshot))
+    scheduler = module.MetadataRefreshScheduler()
+    monkeypatch.setattr(scheduler, "_run_loop", AsyncMock())
+    await scheduler.start()
+    assert get_pricing_for_model("gpt-5.3-codex-spark") is None
+    assert get_pricing_for_model("gpt-valid") == ("gpt-valid", ModelPrice(1, 2))
+    await scheduler.stop()
+
+
+async def test_base_only_refresh_keeps_long_context_price_and_does_not_restart_backfill(setup, monkeypatch):
+    from app.core.usage.pricing import UsageTokens, calculate_cost_from_usage, get_pricing_version
+
+    resolved = get_pricing_for_model("gpt-5.5")
+    assert resolved is not None
+    before = resolved[1]
+    version = get_pricing_version("gpt-5.5")
+    monkeypatch.setattr(module, "fetch_catalogs", AsyncMock(return_value={"gpt-5.5": ModelPrice(5, 30, 0.5)}))
+    scheduler = module.MetadataRefreshScheduler(_cursor=123)
+    await scheduler._refresh()
+    assert scheduler._cursor == 123
+    assert get_pricing_version("gpt-5.5") == version
+    persisted = catalog.decode_snapshot(json.loads((setup / "pricing-cache.json").read_text()))
+    assert persisted["gpt-5.5"] == before
+    assert calculate_cost_from_usage(UsageTokens(300000, 1000), persisted["gpt-5.5"]) == pytest.approx(3.045)

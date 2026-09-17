@@ -32,6 +32,7 @@ from app.core.resilience.network_recovery import PROCESS_NETWORK_UNAVAILABLE_COD
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
+from app.core.usage.pricing import UsageCostBreakdown
 from app.core.utils.locks import fast_lock
 from app.core.utils.sse import sse_event_type_from_block
 from app.db.models import Account, StickySessionKind
@@ -878,10 +879,14 @@ class _StreamSettlement:
 
     status: str = "success"
     model: str = ""
+    actual_model: str | None = None
+    cache_write_tokens: int | None = None
+    cost_override: UsageCostBreakdown | None = None
     service_tier: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
     error_code: str | None = None
     error_message: str | None = None
     error: UpstreamError | None = None
@@ -898,6 +903,23 @@ class _StreamSettlement:
     # sample ends its generation span here; the row's ``latency_ms`` keeps
     # measuring to the generator's close (downstream flush, upstream EOF).
     upstream_terminal_at: float | None = None
+
+    def capture_response_usage(self, event: OpenAIEvent | None) -> None:
+        """Keep authoritative accounting before terminal errors are retried or rewritten."""
+        if event is None or event.response is None:
+            return
+        self.actual_model = event.response.model or self.actual_model
+        if event.type not in {"response.completed", "response.failed", "response.incomplete"}:
+            return
+        usage = event.response.usage
+        self.input_tokens = usage.input_tokens if usage else None
+        self.output_tokens = usage.output_tokens if usage else None
+        input_details = usage.input_tokens_details if usage else None
+        self.cached_input_tokens = input_details.cached_tokens if input_details else None
+        self.cache_write_tokens = input_details.cache_write_tokens if input_details else None
+        self.reasoning_tokens = (
+            usage.output_tokens_details.reasoning_tokens if usage and usage.output_tokens_details else None
+        )
 
     def reset(self) -> None:
         fresh = type(self)()
@@ -1037,6 +1059,7 @@ class _WebSocketRequestState:
     archive_request_id: str | None = None
     requested_service_tier: str | None = None
     actual_service_tier: str | None = None
+    actual_model: str | None = None
     response_id: str | None = None
     awaiting_response_created: bool = False
     event_queue: asyncio.Queue[str | None] | None = None

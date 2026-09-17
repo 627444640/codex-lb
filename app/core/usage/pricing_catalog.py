@@ -12,7 +12,7 @@ from pathlib import Path
 import aiohttp
 
 from app.core.types import JsonValue
-from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice
+from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice, is_catalog_model_allowed
 
 logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
@@ -54,6 +54,50 @@ def _price(values: dict[str, float]) -> ModelPrice:
     return ModelPrice(**values)
 
 
+def _cache_write_multiplier(
+    values: dict[str, float], data: dict[str, JsonValue], field: str, *, prefix: str = "", scale: float = 1.0
+) -> None:
+    writes = _rates(data, {field: "write"}, scale)
+    if not writes:
+        return
+    input_rate = values.get(prefix + "input_per_1m")
+    if input_rate is None or input_rate <= 0:
+        raise ValueError("Cache-write price requires a positive input rate")
+    multiplier = writes["write"] / input_rate
+    if not math.isfinite(multiplier):
+        raise ValueError("Invalid cache-write multiplier")
+    previous = values.get("cache_write_multiplier")
+    if prefix and previous is None:
+        raise ValueError("Tier-only cache-write multiplier is unsupported")
+    if previous is not None and not math.isclose(previous, multiplier, rel_tol=1e-6):
+        raise ValueError("Inconsistent cache-write multipliers")
+    values["cache_write_multiplier"] = multiplier
+
+
+def _context_rates(
+    values: dict[str, float], cost: dict[str, JsonValue], names: dict[str, str], *, prefix: str = ""
+) -> None:
+    tiers = cost.get("tiers", [])
+    if not isinstance(tiers, list) or len(tiers) > 1:
+        raise ValueError("Unsupported context tiers")
+    if not tiers:
+        if cost.get("context_over_200k") is not None:
+            raise ValueError("Context tier lacks an explicit threshold")
+        return
+    tier = _object(tiers[0])
+    descriptor = _object(tier.get("tier"))
+    if descriptor.get("type") != "context":
+        raise ValueError("Unsupported price tier")
+    threshold = _rates(descriptor, {"size": "long_context_threshold_tokens"})
+    existing_threshold = values.get("long_context_threshold_tokens")
+    if existing_threshold is not None and threshold.get("long_context_threshold_tokens") != existing_threshold:
+        raise ValueError("Inconsistent context thresholds")
+    values.update(threshold)
+    context_prefix = prefix + "long_context_"
+    values.update(_rates(tier, {key: context_prefix + value for key, value in names.items()}))
+    _cache_write_multiplier(values, tier, "cache_write", prefix=context_prefix)
+
+
 def parse_models_dev(payload: JsonValue) -> dict[str, ModelPrice]:
     models = _object(_object(_object(payload).get("openai")).get("models"))
     result: dict[str, ModelPrice] = {}
@@ -61,30 +105,22 @@ def parse_models_dev(payload: JsonValue) -> dict[str, ModelPrice]:
     for model, raw in models.items():
         entry = _object(raw)
         # The bare personality alias must keep resolving to the canonical Sol entry.
-        if model == "gpt-5.6" or _object(entry.get("modalities")).get("output") != ["text"]:
+        if not is_catalog_model_allowed(model) or _object(entry.get("modalities")).get("output") != ["text"]:
             continue
         try:
             cost = _object(entry.get("cost"))
             values = _rates(cost, names)
-            tiers = cost.get("tiers", [])
-            if not isinstance(tiers, list) or len(tiers) > 1:
-                raise ValueError("Unsupported context tiers")
-            if tiers:
-                tier = _object(tiers[0])
-                descriptor = _object(tier.get("tier"))
-                if descriptor.get("type") != "context":
-                    raise ValueError("Unsupported price tier")
-                values.update(_rates(descriptor, {"size": "long_context_threshold_tokens"}))
-                values.update(_rates(tier, {key: "long_context_" + value for key, value in names.items()}))
-            elif cost.get("context_over_200k") is not None:
-                # Legacy data has no precise threshold. Do not guess 200k vs 272k.
-                raise ValueError("Context tier lacks an explicit threshold")
+            _cache_write_multiplier(values, cost, "cache_write")
+            _context_rates(values, cost, names)
             modes = _object(_object(entry.get("experimental")).get("modes"))
             for raw_mode in modes.values():
                 mode = _object(raw_mode)
                 tier_name = _object(_object(mode.get("provider")).get("body")).get("service_tier")
                 if tier_name in ("priority", "flex"):
-                    values.update(_rates(_object(mode.get("cost")), {k: f"{tier_name}_{v}" for k, v in names.items()}))
+                    mode_cost = _object(mode.get("cost"))
+                    values.update(_rates(mode_cost, {k: f"{tier_name}_{v}" for k, v in names.items()}))
+                    _cache_write_multiplier(values, mode_cost, "cache_write", prefix=f"{tier_name}_")
+                    _context_rates(values, mode_cost, names, prefix=f"{tier_name}_")
             result[model.lower()] = _price(values)
         except (ValueError, OverflowError):
             logger.debug("Ignoring unsupported models.dev price for %s", model)
@@ -104,12 +140,16 @@ def parse_litellm(payload: JsonValue) -> dict[str, ModelPrice]:
         entry = _object(raw)
         if entry.get("litellm_provider") != "openai" or entry.get("mode") != "chat" or "/" in model:
             continue
-        if any(word in model for word in ("audio", "realtime")) or model == "gpt-5.6":
+        if any(word in model for word in ("audio", "realtime")) or not is_catalog_model_allowed(model):
             continue
         try:
             values = _rates(entry, base, 1_000_000)
+            _cache_write_multiplier(values, entry, "cache_creation_input_token_cost", scale=1_000_000)
             for tier in ("priority", "flex"):
                 values.update(_rates(entry, {f"{k}_{tier}": f"{tier}_{v}" for k, v in base.items()}, 1_000_000))
+                _cache_write_multiplier(
+                    values, entry, f"cache_creation_input_token_cost_{tier}", prefix=f"{tier}_", scale=1_000_000
+                )
             thresholds = {
                 int(key.split("_above_")[1].split("k_tokens")[0]) * 1000
                 for key in entry
@@ -124,6 +164,9 @@ def parse_litellm(payload: JsonValue) -> dict[str, ModelPrice]:
                     suffix = f"_above_{threshold // 1000}k_tokens" + (f"_{tier}" if tier else "")
                     prefix = f"{tier}_long_context_" if tier else "long_context_"
                     values.update(_rates(entry, {k + suffix: prefix + v for k, v in base.items()}, 1_000_000))
+                    _cache_write_multiplier(
+                        values, entry, "cache_creation_input_token_cost" + suffix, prefix=prefix, scale=1_000_000
+                    )
             result[model.lower()] = _price(values)
         except (ValueError, OverflowError):
             logger.debug("Ignoring unsupported LiteLLM price for %s", model)
@@ -132,29 +175,54 @@ def parse_litellm(payload: JsonValue) -> dict[str, ModelPrice]:
     return result
 
 
+def _merge_values(price: ModelPrice) -> dict[str, float | None]:
+    values: dict[str, float | None] = asdict(price)
+    if price.priority_multiplier is not None:
+        # A multiplier and an explicit priority triple are alternative
+        # representations of the same evidence, not independent requirements.
+        if price.priority_input_per_1m is None and price.priority_output_per_1m is None:
+            values["priority_input_per_1m"] = price.input_per_1m * price.priority_multiplier
+            values["priority_output_per_1m"] = price.output_per_1m * price.priority_multiplier
+            cached = price.cached_input_per_1m if price.cached_input_per_1m is not None else price.input_per_1m
+            values["priority_cached_input_per_1m"] = cached * price.priority_multiplier
+        values["priority_multiplier"] = None
+    return values
+
+
+def _compatible_rate(value: float | None, previous: float | None) -> bool:
+    return value is None or previous is None or math.isclose(value, previous, rel_tol=1e-6)
+
+
 def merge_catalogs(primary: dict[str, ModelPrice], secondary: dict[str, ModelPrice]) -> dict[str, ModelPrice]:
-    result = dict(secondary)
+    result = {model.lower(): price for model, price in secondary.items() if is_catalog_model_allowed(model)}
     for model, price in primary.items():
-        other = secondary.get(model)
-        values = asdict(price)
-        if (
-            other is not None
-            and all(
-                a is not None and b is not None and math.isclose(a, b, rel_tol=1e-6)
-                for a, b in (
-                    (price.input_per_1m, other.input_per_1m),
-                    (price.output_per_1m, other.output_per_1m),
-                    (price.cached_input_per_1m, other.cached_input_per_1m),
-                )
+        if not is_catalog_model_allowed(model):
+            continue
+        model = model.lower()
+        other = result.get(model)
+        if other is None:
+            result[model] = price
+            continue
+        values = _merge_values(price)
+        previous = _merge_values(other)
+        missing_evidence = any(value is not None and values[key] is None for key, value in previous.items())
+        if not missing_evidence:
+            # A complete new record may change base, tier, context or modality
+            # rates. Last-good protection must not freeze verified updates.
+            result[model] = price
+        elif all(_compatible_rate(value, previous[key]) for key, value in values.items()):
+            # Absence is not deletion. Compatible partial refreshes inherit all
+            # missing evidence together, including thresholds and whole tiers.
+            merged = {key: value if value is not None else previous[key] for key, value in values.items()}
+            result[model] = (
+                other if merged == previous else _price({key: val for key, val in merged.items() if val is not None})
             )
-            and price.long_context_threshold_tokens == other.long_context_threshold_tokens
-            and all(
-                value is None or asdict(other)[key] is None or math.isclose(value, asdict(other)[key], rel_tol=1e-6)
-                for key, value in values.items()
-            )
-        ):
-            values = {key: value if value is not None else asdict(other)[key] for key, value in values.items()}
-        result[model] = ModelPrice(**values)
+        else:
+            # Different base/threshold/tier rates cannot borrow missing groups
+            # from an older quote. Retain the last complete record instead.
+            logger.debug("Retaining complete pricing evidence for %s after an incomplete refresh", model)
+            result[model] = other
+
     return result
 
 
@@ -171,11 +239,12 @@ def snapshot_updated_at(payload: JsonValue) -> datetime:
 def decode_snapshot(payload: JsonValue) -> dict[str, ModelPrice]:
     root = _object(payload)
     snapshot_updated_at(payload)
-    if root.get("schema_version") != 1:
+    if root.get("schema_version") not in (1, 2):
         raise ValueError("Unsupported pricing snapshot")
     result = {
-        model: _price(_rates(_object(raw), {key: key for key in _FIELDS}))
+        model.lower(): _price(_rates(_object(raw), {key: key for key in _FIELDS}))
         for model, raw in _object(root.get("models")).items()
+        if is_catalog_model_allowed(model)
     }
     if not result:
         raise ValueError("Empty pricing snapshot")
@@ -186,12 +255,13 @@ def encode_snapshot(prices: dict[str, ModelPrice]) -> str:
     return (
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "sources": [MODELS_DEV_URL, LITELLM_URL],
                 "models": {
                     model: {k: v for k, v in asdict(price).items() if v is not None}
                     for model, price in sorted(prices.items())
+                    if is_catalog_model_allowed(model)
                 },
             },
             indent=2,

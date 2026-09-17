@@ -1167,7 +1167,7 @@ describe("buildDashboardView", () => {
     expect(burn.meta).toBe("Projected account-equivalents: 0.0/5h · 1.0/7d");
   });
 
-  it("shows only the averaged cost text on the estimated cost card", () => {
+  it("labels aggregate cost as known estimates alongside the average", () => {
     const weeklyView = buildDashboardView(
       createDashboardOverview({
         summary: {
@@ -1248,8 +1248,8 @@ describe("buildDashboardView", () => {
       false,
     );
 
-    expect(weeklyView.stats[2]?.meta).toBe("Avg/day $8.00");
-    expect(dailyView.stats[2]?.meta).toBe("Avg/hr $1.00");
+    expect(weeklyView.stats[2]?.meta).toBe("Avg/day $8.00 · Known estimates only");
+    expect(dailyView.stats[2]?.meta).toBe("Avg/hr $1.00 · Known estimates only");
   });
 
   it("adds previous-window comparison indicators to requests tokens and cost cards", () => {

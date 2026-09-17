@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from typing import Protocol
+from math import isclose
+from typing import Literal, Protocol
 
 from app.core.usage.pricing import (
+    MODEL_SOURCE_PRICING_VERSION,
+    ModelPrice,
     UsageCostBreakdown,
     UsageTokens,
     calculate_cost_breakdown_from_usage,
     calculate_cost_from_usage,
     get_pricing_for_model,
+    get_pricing_version,
+    has_pricing_for_usage,
 )
 
 # Request-log status classification shared by every error-metric surface
@@ -27,6 +32,15 @@ CLIENT_DISCONNECT_ERROR_CODE = "client_disconnected"
 class RequestLogLike(Protocol):
     @property
     def model(self) -> str | None: ...
+
+    @property
+    def actual_model(self) -> str | None: ...
+
+    @property
+    def pricing_version(self) -> str | None: ...
+
+    @property
+    def cache_write_tokens(self) -> int | None: ...
 
     @property
     def service_tier(self) -> str | None: ...
@@ -58,6 +72,50 @@ def cached_input_tokens_from_log(log: RequestLogLike) -> int | None:
     return cached_tokens
 
 
+def cache_write_tokens_from_log(log: RequestLogLike) -> int | None:
+    if log.cache_write_tokens is None:
+        return None
+    write_tokens = max(0, log.cache_write_tokens)
+    if log.input_tokens is not None:
+        write_tokens = min(write_tokens, max(0, log.input_tokens - (cached_input_tokens_from_log(log) or 0)))
+    return write_tokens
+
+
+CostStatus = Literal["estimated", "incomplete_usage", "unknown_model", "unknown_pricing", "missing_usage", "historical"]
+
+
+def cost_status_from_log(log: RequestLogLike) -> CostStatus:
+    if log.pricing_version == MODEL_SOURCE_PRICING_VERSION:
+        if log.cost_usd is not None:
+            return "estimated"
+        return "unknown_pricing" if log.input_tokens is not None and log.output_tokens is not None else "missing_usage"
+    if log.cost_usd is not None and log.pricing_version != get_pricing_version(log.actual_model or log.model):
+        return "historical"
+    model = log.actual_model or log.model
+    resolved = get_pricing_for_model(model) if model else None
+    if resolved is None:
+        return "estimated" if log.cost_usd is not None else "unknown_model"
+    if log.input_tokens is None or log.output_tokens is None:
+        return "missing_usage" if log.cost_usd is None else "incomplete_usage"
+    _, price = resolved
+    usage = usage_tokens_from_log(log)
+    if (
+        log.cost_usd is None
+        and usage is not None
+        and not has_pricing_for_usage(usage, price, service_tier=log.service_tier)
+    ):
+        return "unknown_pricing"
+    if log.cached_input_tokens is None or (price.cache_write_multiplier is not None and log.cache_write_tokens is None):
+        return "incomplete_usage"
+    if price.image_input_per_1m is not None and log.cost_usd is None:
+        return "incomplete_usage"
+    if log.cost_usd is None and log.pricing_version is not None:
+        # A catalog refresh may now price the request, but only atomic backfill
+        # can replace its durable unknown amount and price reference together.
+        return "unknown_pricing"
+    return "estimated"
+
+
 def usage_tokens_from_log(log: RequestLogLike) -> UsageTokens | None:
     input_tokens = log.input_tokens
     if input_tokens is None:
@@ -70,6 +128,7 @@ def usage_tokens_from_log(log: RequestLogLike) -> UsageTokens | None:
         input_tokens=float(input_tokens),
         output_tokens=float(output_tokens),
         cached_input_tokens=float(cached_tokens),
+        cache_write_tokens=float(cache_write_tokens_from_log(log) or 0),
     )
 
 
@@ -83,16 +142,20 @@ def output_tokens_from_log(log: RequestLogLike) -> int | None:
     return int(reasoning_tokens)
 
 
-def calculated_cost_from_log(log: RequestLogLike, *, precision: int | None = None) -> float | None:
-    if not log.model:
+def calculated_cost_from_log(
+    log: RequestLogLike, *, precision: int | None = None, price: ModelPrice | None = None
+) -> float | None:
+    model = log.actual_model or log.model
+    if not model:
         return None
     usage = usage_tokens_from_log(log)
     if not usage:
         return None
-    resolved = get_pricing_for_model(log.model, None, None)
-    if not resolved:
-        return None
-    _, price = resolved
+    if price is None:
+        resolved = get_pricing_for_model(model, None, None)
+        if not resolved:
+            return None
+        _, price = resolved
     cost = calculate_cost_from_usage(usage, price, service_tier=log.service_tier)
     if cost is None:
         return None
@@ -114,19 +177,29 @@ def _totals_match(left: float | None, right: float | None, *, precision: int | N
     if left is None or right is None:
         return False
     if precision is None:
-        return left == right
+        return isclose(left, right, rel_tol=1e-12, abs_tol=1e-15)
     return abs(left - right) < (10 ** (-precision)) / 2
 
 
 def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None) -> UsageCostBreakdown:
+    if log.pricing_version == MODEL_SOURCE_PRICING_VERSION:
+        # Source configuration may use different rates or per-minute prices.
+        # Public model rates cannot reconstruct its persisted components.
+        return UsageCostBreakdown(None, None, None, cost_from_log(log, precision=precision))
+    if log.cost_usd is None and log.pricing_version is not None:
+        # A versioned NULL records an explicit unknown. Never attach a freshly
+        # calculated amount to the old price fingerprint on this read-only path.
+        return UsageCostBreakdown(None, None, None, None)
     full_breakdown: UsageCostBreakdown | None = None
     input_usd: float | None = None
     cached_input_usd: float | None = None
+    cache_write_usd: float | None = None
     output_usd: float | None = None
     raw_total_usd: float | None = None
     total_usd: float | None = None
-    if log.model:
-        resolved = get_pricing_for_model(log.model, None, None)
+    model = log.actual_model or log.model
+    if model:
+        resolved = get_pricing_for_model(model, None, None)
         if resolved is not None:
             _, price = resolved
             input_tokens = log.input_tokens
@@ -151,6 +224,7 @@ def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None
                         input_tokens=float(input_tokens),
                         output_tokens=0.0,
                         cached_input_tokens=float(cached_tokens),
+                        cache_write_tokens=float(cache_write_tokens_from_log(log) or 0),
                     ),
                     price,
                     service_tier=log.service_tier,
@@ -159,12 +233,14 @@ def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None
                 if input_breakdown is not None:
                     input_usd = input_breakdown.input_usd
                     cached_input_usd = input_breakdown.cached_input_usd
+                    cache_write_usd = input_breakdown.cache_write_usd
             if output_tokens is not None:
                 output_breakdown = calculate_cost_breakdown_from_usage(
                     UsageTokens(
                         input_tokens=float(input_tokens or 0),
                         output_tokens=float(output_tokens),
                         cached_input_tokens=float(cached_tokens or 0),
+                        cache_write_tokens=float(cache_write_tokens_from_log(log) or 0),
                     ),
                     price,
                     service_tier=log.service_tier,
@@ -186,6 +262,7 @@ def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None
         return UsageCostBreakdown(
             input_usd=input_usd,
             cached_input_usd=cached_input_usd,
+            cache_write_usd=cache_write_usd,
             output_usd=output_usd,
             total_usd=persisted_cost,
         )
@@ -193,12 +270,14 @@ def cost_breakdown_from_log(log: RequestLogLike, *, precision: int | None = None
         return UsageCostBreakdown(
             input_usd=input_usd,
             cached_input_usd=cached_input_usd,
+            cache_write_usd=cache_write_usd,
             output_usd=output_usd,
             total_usd=total_usd,
         )
     return UsageCostBreakdown(
         input_usd=input_usd,
         cached_input_usd=cached_input_usd,
+        cache_write_usd=cache_write_usd,
         output_usd=output_usd,
         total_usd=None,
     )

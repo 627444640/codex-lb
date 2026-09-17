@@ -39,7 +39,7 @@ export const REQUEST_LOG_COLUMN_DEFAULT_WIDTHS: Record<RequestLogColumnId, numbe
   ttft: 80,
   tps: 80,
   tokens: 96,
-  cost: 64,
+  cost: 112,
   details: 288,
 };
 

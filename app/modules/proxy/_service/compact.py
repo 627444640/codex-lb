@@ -2174,6 +2174,10 @@ class _CompactMixin:
                 status=log_status,
                 error_code=log_error_code,
                 error_message=log_error_message,
+                actual_model=response.model if response else None,
+                cache_write_tokens=(
+                    usage.input_tokens_details.cache_write_tokens if usage and usage.input_tokens_details else None
+                ),
                 input_tokens=usage.input_tokens if usage else None,
                 output_tokens=usage.output_tokens if usage else None,
                 cached_input_tokens=(

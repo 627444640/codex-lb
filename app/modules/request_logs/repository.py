@@ -21,6 +21,7 @@ from app.core.usage.logs import (
     RequestLogLike,
     calculated_cost_from_log,
 )
+from app.core.usage.pricing import MODEL_SOURCE_PRICING_VERSION, get_pricing_for_model, get_pricing_version
 from app.core.usage.types import (
     BucketConversationAggregate,
     BucketModelAggregate,
@@ -58,6 +59,17 @@ from app.modules.accounts.usage_time_rollup_read import (
     read_hourly_window,
     sum_demand_window,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RequestLogUsageUpdate:
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    cache_write_tokens: int | None
+    actual_model: str | None
+    cost_usd: float | None
+    pricing_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1044,6 +1056,8 @@ class RequestLogsRepository:
         sticky_key_source: str | None = None,
         sticky_kind: str | None = None,
         sticky_key_hash: str | None = None,
+        cache_write_tokens: int | None = None,
+        actual_model: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log
@@ -1060,6 +1074,8 @@ class RequestLogsRepository:
             )
             resolved_conversation_id = _normalize_conversation_id(conversation_id)
             resolved_client_ip = client_ip if not isinstance(client_ip, str) or client_ip.strip() else None
+            resolved_price = get_pricing_for_model(actual_model or model)
+            price = resolved_price[1] if resolved_price is not None else None
             log = RequestLog(
                 sticky_key_source=sticky_key_source,
                 sticky_kind=sticky_kind,
@@ -1072,6 +1088,13 @@ class RequestLogsRepository:
                 request_id=resolved_request_id,
                 archive_request_id=resolved_archive_request_id,
                 model=model,
+                actual_model=actual_model,
+                pricing_version=(
+                    get_pricing_version(actual_model or model, price)
+                    if model_source_id is None
+                    else MODEL_SOURCE_PRICING_VERSION
+                ),
+                cache_write_tokens=cache_write_tokens,
                 plan_type=resolved_plan_type,
                 source=source,
                 transport=transport,
@@ -1120,9 +1143,9 @@ class RequestLogsRepository:
             log.cost_usd = (
                 cost_usd
                 if cost_usd is not None
-                else 0.0
+                else None
                 if model_source_id is not None
-                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                else calculated_cost_from_log(typing_cast(RequestLogLike, log), price=price)
             )
             # Core insert instead of unit-of-work: the row is fully built
             # above, so the ORM flush (relationship cascade scan,
@@ -1200,6 +1223,15 @@ class RequestLogsRepository:
 
         Returns the number of rows that were updated.
         """
+        return await self._update_accounting_for_request(request_id, model)
+
+    async def update_usage_for_request(self, request_id: str, model: str, usage: RequestLogUsageUpdate) -> int:
+        """Atomically replace host-model accounting with public image usage."""
+        return await self._update_accounting_for_request(request_id, model, usage=usage)
+
+    async def _update_accounting_for_request(
+        self, request_id: str, model: str, *, usage: RequestLogUsageUpdate | None = None
+    ) -> int:
         async with sqlite_writer_section():
             resolved_request_id = ensure_request_id(request_id)
             try:
@@ -1240,7 +1272,22 @@ class RequestLogsRepository:
                     return 0
                 for log in logs:
                     log.model = model
-                    log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    log.actual_model = model if usage is None else usage.actual_model
+                    log.pricing_version = (
+                        usage.pricing_version
+                        if usage is not None and usage.pricing_version is not None
+                        else get_pricing_version(log.actual_model or model)
+                    )
+                    if usage is None:
+                        log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
+                    else:
+                        log.input_tokens = usage.input_tokens
+                        log.output_tokens = usage.output_tokens
+                        log.cached_input_tokens = usage.cached_input_tokens
+                        log.cache_write_tokens = usage.cache_write_tokens
+                        log.reasoning_tokens = None
+                        # None explicitly clears host-model cost when image evidence is incomplete.
+                        log.cost_usd = usage.cost_usd
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0

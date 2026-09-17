@@ -186,6 +186,17 @@ describe("RequestLogsResponseSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it.each(["estimated", "incomplete_usage", "unknown_model", "unknown_pricing", "missing_usage", "historical"] as const)("preserves cost status %s", (costStatus) => {
+    const parsed = RequestLogsResponseSchema.parse({
+      requests: [{ requestedAt: ISO, accountId: null, requestId: "pricing-status-fixture", model: "gpt-5.6-sol",
+        status: "ok", errorCode: null, errorMessage: null, tokens: 100, cachedInputTokens: 0,
+        reasoningEffort: null, costUsd: null, latencyMs: 1, costStatus, pricingVersion: "catalog:fixture-prices-v1" }],
+      total: 1, hasMore: false,
+    });
+    expect(parsed.requests[0]?.costStatus).toBe(costStatus);
+    expect(parsed.requests[0]?.costUsd).toBeNull();
+  });
+
   it("parses request rows including apiKeyName", () => {
     const parsed = RequestLogsResponseSchema.parse({
       requests: [
@@ -199,6 +210,10 @@ describe("RequestLogsResponseSchema", () => {
           archiveRequestId: "archive-req-1",
           connectionRequestKind: "prewarm",
           model: "gpt-5.1",
+          actualModel: "gpt-6-astra",
+          cacheWriteTokens: 3,
+          pricingVersion: "catalog:fixture-prices-v1",
+          costStatus: "estimated",
           transport: "websocket",
           upstreamProxyRouteMode: "account_bound",
           upstreamProxyPoolId: "pool-1",
@@ -230,6 +245,7 @@ describe("RequestLogsResponseSchema", () => {
             cachedInputUsd: 0,
             outputUsd: 0.0006,
             totalUsd: 0.001,
+            cacheWriteUsd: 0.0001,
           },
           latencyMs: 42,
         },
@@ -243,6 +259,11 @@ describe("RequestLogsResponseSchema", () => {
     expect(parsed.requests[0]?.archiveRequestId).toBe("archive-req-1");
     expect(parsed.requests[0]?.requestKind).toBe("normal");
     expect(parsed.requests[0]?.connectionRequestKind).toBe("prewarm");
+    expect(parsed.requests[0]?.actualModel).toBe("gpt-6-astra");
+    expect(parsed.requests[0]?.cacheWriteTokens).toBe(3);
+    expect(parsed.requests[0]?.pricingVersion).toBe("catalog:fixture-prices-v1");
+    expect(parsed.requests[0]?.costStatus).toBe("estimated");
+    expect(parsed.requests[0]?.costBreakdown?.cacheWriteUsd).toBe(0.0001);
     expect(parsed.requests[0]?.planType).toBe("plus");
     expect(parsed.requests[0]?.transport).toBe("websocket");
     expect(parsed.requests[0]?.upstreamProxyRouteMode).toBe("account_bound");
