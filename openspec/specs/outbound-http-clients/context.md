@@ -178,3 +178,10 @@ The Python `websockets` fallback uses a separate private `_shared_system_ssl_con
 Normal outbound-client initialization warms this context. Direct callers before initialization fill the same cache lazily, and shared HTTP-client refresh retains it. Full close/reinitialization rebuilds it from the then-current trust inputs; restarting the process also picks up changed roots. Plain `ws://` receives no server-TLS context. Proxy TLS, routed/native selection and cancellation ownership retain their existing behavior.
 
 This removes repeated default trust loading when separate Python WSS connections open. It does not save that work on every retained turn: those turns already reuse an upstream connection. The real TLS lifecycle regression checks repeated opens and refresh, trusted success, wrong-host and untrusted rejection, and full lifecycle reset. It does not attribute historical multi-second or minute-scale waits to TLS loading.
+
+
+## Rustls handshake-boundary security update (2026-09-17)
+
+The [native TLS boundary requirement](spec.md#requirement-native-tls-enforces-handshake-encryption-boundaries) is implemented by rustls 0.23.45 with AWS-LC wrapper 1.18.0. The wrapper update is required by the patched TLS dependency; only four TLS lock entries change. Existing native root verification, TLS features, fork pins and replay policy remain in force.
+
+Controlled old/new ClientHellos retain supported groups `[4588, 29, 23, 24]`, hybrid/classical key-share groups `[4588, 29]`, and cipher suites. Signature IDs `[2308, 2309, 2310]` (ML-DSA 44/65/87) are newly advertised, so this does not promise full direct-Codex fingerprint parity. The unchanged Ubuntu native suite passed all 361 cases on the fixed code. See the [archived verification and platform limits](../../changes/archive/2026-09-17-fix-rustls-handshake-boundary/verification.md).
