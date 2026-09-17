@@ -8,6 +8,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import ResourceClosedError
 
+from app.core.usage.logs import cost_breakdown_from_log, cost_status_from_log
+from app.core.usage.pricing import MODEL_SOURCE_PRICING_VERSION
 from app.db.models import ModelSource, RequestLog
 from app.db.session import SessionLocal
 from app.modules.request_logs import repository as repository_module
@@ -220,7 +222,14 @@ async def test_aggregate_activity_counts_only_nonblank_conversation_requests(db_
 
 
 @pytest.mark.asyncio
-async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup) -> None:
+@pytest.mark.parametrize(
+    ("source_cost", "expected_status"),
+    [(None, "unknown_pricing"), (0.0, "estimated")],
+    ids=["unknown-source-price", "explicit-zero-source-price"],
+)
+async def test_add_log_preserves_unknown_and_zero_model_source_cost(
+    db_setup, source_cost: float | None, expected_status: str
+) -> None:
     del db_setup
     async with SessionLocal() as session:
         session.add(
@@ -243,12 +252,20 @@ async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup)
             latency_ms=1,
             status="success",
             error_code=None,
-            cost_usd=None,
+            cost_usd=source_cost,
         )
 
         persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
         assert persisted is not None
-        assert persisted.cost_usd == 0.0
+        assert persisted.cost_usd == source_cost
+        assert persisted.pricing_version == MODEL_SOURCE_PRICING_VERSION
+        assert cost_status_from_log(persisted) == expected_status
+        breakdown = cost_breakdown_from_log(persisted)
+        assert breakdown.total_usd == source_cost
+        assert breakdown.input_usd is None
+        assert breakdown.cached_input_usd is None
+        assert breakdown.cache_write_usd is None
+        assert breakdown.output_usd is None
 
 
 @pytest.mark.asyncio

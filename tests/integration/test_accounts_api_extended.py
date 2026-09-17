@@ -809,7 +809,14 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
 
 
 @pytest.mark.asyncio
-async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(async_client, db_setup):
+@pytest.mark.parametrize(
+    ("input_tokens", "expected_cost", "expected_status"),
+    [(200_000, 31.0, "estimated"), (1_000_000, None, "unknown_pricing")],
+    ids=["priced-short-context", "unpublished-long-context"],
+)
+async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(
+    async_client, db_setup, input_tokens: int, expected_cost: float | None, expected_status: str
+):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -821,8 +828,10 @@ async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(asy
             request_id="req_priority_cost_1",
             model="gpt-5.4",
             service_tier="priority",
-            input_tokens=1_000_000,
+            input_tokens=input_tokens,
             output_tokens=1_000_000,
+            cached_input_tokens=0,
+            cache_write_tokens=0,
             latency_ms=200,
             status="success",
             error_code=None,
@@ -836,9 +845,19 @@ async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(asy
     request_usage = accounts["acc_priority_cost"]["requestUsage"]
     assert request_usage is not None
     assert request_usage["requestCount"] == 1
-    assert request_usage["totalTokens"] == 2_000_000
+    assert request_usage["totalTokens"] == input_tokens + 1_000_000
     assert request_usage["cachedInputTokens"] == 0
-    assert request_usage["totalCostUsd"] == pytest.approx(35.0, abs=1e-6)
+    assert request_usage["totalCostUsd"] == pytest.approx(expected_cost or 0.0, abs=1e-6)
+
+    logs_response = await async_client.get("/api/request-logs?limit=10")
+    assert logs_response.status_code == 200
+    log = next(row for row in logs_response.json()["requests"] if row["requestId"] == "req_priority_cost_1")
+    assert log["costUsd"] == expected_cost
+    assert log["costStatus"] == expected_status
+    async with SessionLocal() as session:
+        persisted = await session.scalar(select(RequestLog).where(RequestLog.request_id == "req_priority_cost_1"))
+        assert persisted is not None
+        assert persisted.cost_usd == expected_cost
 
 
 @pytest.mark.asyncio

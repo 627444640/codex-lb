@@ -17,7 +17,7 @@ import {
 
 const evidenceDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../openspec/changes/integrate-official-token-pricing/evidence",
+  "../../openspec/changes/archive/2026-09-17-integrate-official-token-pricing/evidence",
 );
 const phase = process.env.PRICING_UI_PHASE === "before" ? "before" : "after";
 const account = createAccountSummary({
