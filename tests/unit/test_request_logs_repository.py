@@ -222,7 +222,9 @@ async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup)
 
         persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
         assert persisted is not None
-        assert persisted.cost_usd == 0.0
+        # Missing custom pricing is unknown, not a free request. Do not fall
+        # back to the built-in model rate or silently persist a zero cost.
+        assert persisted.cost_usd is None
 
 
 @pytest.mark.asyncio
