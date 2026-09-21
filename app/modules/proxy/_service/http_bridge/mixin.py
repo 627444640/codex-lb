@@ -99,6 +99,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_previous_response_owner_unavailable_error,
     _http_bridge_reconnect_connect_failure,
     _http_bridge_reconnect_selection_failure,
+    _http_bridge_reconnect_turn_state,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_needs_unanchored_handoff,
     _http_bridge_session_account_active,
@@ -118,7 +119,6 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _persist_http_bridge_replacement_account,
     _persistent_http_bridge_affinity,
     _plan_http_bridge_lru_capacity_closes,
-    _preferred_http_bridge_reconnect_turn_state,
     _raise_if_http_bridge_creation_superseded,
     _record_bridge_drain_recovery_allowed,
     _record_bridge_first_turn_timeout,
@@ -543,6 +543,7 @@ class _HTTPBridgeMixin(
             preserve_internal_fork_key = key.affinity_kind in {
                 "internal_unanchored_parallel",
                 "internal_model_parallel",
+                "internal_request_parallel",
             }
             require_preferred_account = preferred_account_id is not None and (
                 previous_response_id is not None
@@ -2273,8 +2274,7 @@ class _HTTPBridgeMixin(
                 if force_refresh and request_state.force_refresh_account_id == account.id:
                     request_state.force_refresh_account_id = None
                 connect_headers = _websocket_safe_headers_with_turn_state(
-                    session.headers,
-                    None if owner_rebind_affinity is not None else _preferred_http_bridge_reconnect_turn_state(session),
+                    session.headers, _http_bridge_reconnect_turn_state(session, account.id, owner_rebind_affinity)
                 )
                 upstream = await open_replacement_upstream(account, connect_headers)
                 _copy_websocket_route_metadata_to_session(session, request_state)
@@ -2292,12 +2292,7 @@ class _HTTPBridgeMixin(
                         timeout_seconds=_remaining_budget_seconds(deadline),
                     )
                     connect_headers = _websocket_safe_headers_with_turn_state(
-                        session.headers,
-                        (
-                            None
-                            if owner_rebind_affinity is not None
-                            else _preferred_http_bridge_reconnect_turn_state(session)
-                        ),
+                        session.headers, _http_bridge_reconnect_turn_state(session, account.id, owner_rebind_affinity)
                     )
                     upstream = await open_replacement_upstream(account, connect_headers)
                     _copy_websocket_route_metadata_to_session(session, request_state)

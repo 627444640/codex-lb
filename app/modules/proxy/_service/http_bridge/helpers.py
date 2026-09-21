@@ -209,6 +209,8 @@ T = TypeVar("T")
 
 _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR = "_codex_lb_started_at"
 _HTTP_BRIDGE_STALE_INFLIGHT_MIN_SECONDS = 120.0
+# Shared request sweeps skip a busy detached session and retry on a later pass.
+_HTTP_BRIDGE_DETACHED_RETIRE_LOCK_WAIT_SECONDS = 5.0
 _HTTP_BRIDGE_STALE_INFLIGHT_TIMEOUT_MULTIPLIER = 6.0
 
 
@@ -677,15 +679,16 @@ def _normalize_http_bridge_error_event(
                     error_message_value = stripped
             param_value = payload_error.get("param")
             if isinstance(param_value, str):
-                stripped = param_value.strip()
-                if stripped:
-                    error_param_value = stripped
+                error_param_value = param_value.strip()
 
     if isinstance(payload, dict):
         raw_error = payload.get("error")
         if not isinstance(raw_error, dict):
             raw_error = _websocket_top_level_error_payload(payload)
         if isinstance(raw_error, dict):
+            if "param" in raw_error:
+                raw_param = raw_error.get("param")
+                error_param_value = raw_param.strip() if isinstance(raw_param, str) else ""
             plan_type = raw_error.get("plan_type")
             if isinstance(plan_type, str):
                 rate_limit_metadata["plan_type"] = plan_type
@@ -1473,6 +1476,26 @@ def _preferred_http_bridge_reconnect_turn_state(session: "_HTTPBridgeSession") -
     return session.upstream_turn_state
 
 
+def _http_bridge_reconnect_turn_state(
+    session: "_HTTPBridgeSession",
+    account_id: str,
+    owner_rebind_affinity: _AffinityPolicy | None,
+) -> str | None:
+    """Return the turn state the replacement handshake for ``account_id`` may carry.
+
+    The turn state was learned from the retired socket and belongs to the
+    account that issued it. Only a reconnect to that same account offers it
+    again; a replacement account (or an owner rebind) opens its socket with no
+    turn state -- the same condition under which the reconnect clears the
+    session's turn state once the replacement socket is open, so the handshake
+    cannot leak what the session-side cleanup is about to drop
+    (``responses-api-compat``: "Cross-account bridge retries clear turn-state").
+    """
+    if owner_rebind_affinity is not None or account_id != session.account.id:
+        return None
+    return _preferred_http_bridge_reconnect_turn_state(session)
+
+
 def _http_bridge_turn_state_alias_key(turn_state: str, api_key_id: str | None) -> tuple[str, str | None]:
     return (turn_state, api_key_id)
 
@@ -2162,7 +2185,12 @@ async def _release_http_bridge_unanchored_handoffs_for_request(
         # cannot leave a fully drained predecessor owning a socket and cap slot.
         detached_sessions = tuple(service._http_bridge_detached_sessions.values())
     for session in detached_sessions:
-        await service._retire_http_bridge_after_drain_if_ready(session)
+        # Bounded: this sweep is on every request's path, so one detached
+        # session whose lock stays busy (or wedged) must not stall the fleet.
+        await service._retire_http_bridge_after_drain_if_ready(
+            session,
+            lock_wait_timeout_seconds=_HTTP_BRIDGE_DETACHED_RETIRE_LOCK_WAIT_SECONDS,
+        )
 
 
 def _track_alias_registration(session: _HTTPBridgeSession, alias: str, *, turn_state: bool) -> int:
@@ -2795,7 +2823,32 @@ def _http_bridge_should_attempt_local_previous_response_recovery(exc: ProxyRespo
             "server_indefinite_recovery",
         }
     param_value = error.get("param")
-    param = param_value.strip() if isinstance(param_value, str) and param_value.strip() else None
+    if "param" in error and not isinstance(param_value, str):
+        return False
+    param = param_value.strip() if isinstance(param_value, str) else None
+    message_value = error.get("message")
+    message = message_value.strip() if isinstance(message_value, str) and message_value.strip() else None
+    return _is_previous_response_not_found_error(code=code, param=param, message=message)
+
+
+def _http_bridge_is_explicit_previous_response_rejection(exc: ProxyResponseError) -> bool:
+    payload = exc.payload
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    code_value = error.get("code")
+    raw_code = code_value.strip() if isinstance(code_value, str) and code_value.strip() else None
+    type_value = error.get("type")
+    error_type = type_value.strip() if isinstance(type_value, str) and type_value.strip() else None
+    code = _normalize_error_code(raw_code, error_type)
+    if code == "bridge_previous_response_not_found":
+        return True
+    param_value = error.get("param")
+    if "param" in error and not isinstance(param_value, str):
+        return False
+    param = param_value.strip() if isinstance(param_value, str) else None
     message_value = error.get("message")
     message = message_value.strip() if isinstance(message_value, str) and message_value.strip() else None
     return _is_previous_response_not_found_error(code=code, param=param, message=message)
@@ -3091,6 +3144,7 @@ for _helper_name in (
     "_http_bridge_session_retiring_with_visible_requests",
     "_http_bridge_payload_looks_like_full_resend",
     "_preferred_http_bridge_reconnect_turn_state",
+    "_http_bridge_reconnect_turn_state",
     "_http_bridge_turn_state_alias_key",
     "_http_bridge_previous_response_alias_key",
     "_http_bridge_session_allows_api_key",
@@ -3131,6 +3185,7 @@ for _helper_name in (
     "_http_bridge_continuity_lost_error_envelope",
     "_http_bridge_owner_lookup_unavailable_error_envelope",
     "_http_bridge_should_attempt_local_previous_response_recovery",
+    "_http_bridge_is_explicit_previous_response_rejection",
     "_http_bridge_is_previous_response_owner_unavailable",
     "_http_bridge_should_attempt_soft_affinity_reroute",
     "_http_bridge_is_context_overflow_error",

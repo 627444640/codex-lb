@@ -30,7 +30,7 @@ from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.core.usage.pricing import UsageCostBreakdown
 from app.core.utils.sse import sse_event_type_from_block
-from app.db.models import Account
+from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyRequestUsageBudget,
@@ -75,6 +75,22 @@ _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE = {
 _PENDING_TOOL_CALL_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE)
 _PENDING_TOOL_CALL_OUTPUT_ITEM_TYPES = frozenset(_PENDING_TOOL_CALL_OUTPUT_ITEM_TYPE_BY_CALL_TYPE.values())
 _TTFT_OUTPUT_ITEM_TYPES = _PENDING_TOOL_CALL_ITEM_TYPES - {"function_call"}
+# Upstream ``response.*`` events that prove the model already ran for a turn.
+# Both relay surfaces flip ``upstream_model_output_seen`` on them; in the
+# Responses protocol the first one is always ``response.output_item.added``.
+_MODEL_OUTPUT_EVENT_TYPES = frozenset(
+    {
+        "response.output_item.added",
+        "response.output_item.done",
+        "response.output_text.delta",
+        "response.refusal.delta",
+        "response.reasoning_text.delta",
+        "response.reasoning_summary_text.delta",
+        "response.reasoning_summary_text.done",
+        "response.function_call_arguments.delta",
+        "response.output_tool_call.delta",
+    }
+)
 _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS = 20
 _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS = 0.05
 _HARD_HTTP_BRIDGE_AFFINITY_KINDS = frozenset(
@@ -912,6 +928,15 @@ class _DeferredAccountBackoffTracker:
     current_lifecycle: _DeferredAccountBackoffLifecycle | None = None
 
 
+@dataclass(slots=True)
+class _DeferredKeyedStreamHealthPenalty:
+    """Classified account-health write deferred until reservation settlement."""
+
+    account: Account
+    error: UpstreamError
+    code: str
+
+
 @dataclass(eq=False, slots=True)
 class _HTTPBridgeResponseCreateAttempt:
     ordinal: int
@@ -1063,6 +1088,18 @@ class _WebSocketRequestState:
     # on, and dropping the anchor there would silently turn a continuation into
     # a context-free fresh turn.
     fresh_upstream_request_is_retry_safe: bool = False
+    # Set only on the internally constructed one-shot request that replaces an
+    # explicitly rejected stale anchor with a verified full-history payload.
+    # It may bypass an older hard-key retry circuit without deleting that
+    # circuit or weakening admission for ordinary client retries.
+    verified_stale_anchor_replay: bool = False
+    # Snapshot of the hard-key circuit observed when the stale-anchor replay
+    # was authorized. ``captured=True`` with ``generation=None`` proves that no
+    # circuit existed; a newer local/durable failure must suppress submit.
+    verified_stale_anchor_retry_circuit_generation_captured: bool = False
+    verified_stale_anchor_retry_circuit_key: _HTTPBridgeSessionKey | None = None
+    verified_stale_anchor_retry_circuit_generation: tuple[int, float, int, float, int, float, float] | None = None
+    verified_stale_anchor_quarantine_generation: int | None = None
     # Stable fingerprint used by the durable recovery-attempt journal. It is
     # populated only for a proof-gated fresh replay candidate.
     recovery_attempt_fingerprint: str | None = None
@@ -1093,6 +1130,11 @@ class _WebSocketRequestState:
     # pre-dispatch admission failure may remove that row; an existing row
     # represents an ambiguous upstream attempt and must remain fenced.
     operation_created: bool = False
+    operation_rebound: bool = False
+    operation_rebound_from_session_id: str | None = None
+    operation_rebound_from_account_id: str | None = None
+    operation_rebound_from_model: str | None = None
+    operation_rebound_from_parent_response_id: str | None = None
     operation_replay: bool = False
     operation_dispatched: bool = False
     # Immutable durable attempt generation. Recovery claims increment the
@@ -1172,8 +1214,15 @@ class _WebSocketRequestState:
     deferred_account_error_backoffs: dict[str, Account] = field(default_factory=dict)
     deferred_account_backoff_tracker: _DeferredAccountBackoffTracker | None = None
     deferred_account_backoff_lifecycle: _DeferredAccountBackoffLifecycle | None = None
+    # Classified health writes (mark_rate_limit / mark_quota_exceeded /
+    # record_error) deferred by keyed pre-created retry branches until this
+    # request's API-key reservation settles or its fallback release commits
+    # (settlement-ordering invariant). Entries drop unapplied when neither
+    # confirms.
+    deferred_keyed_stream_health: list[_DeferredKeyedStreamHealthPenalty] = field(default_factory=list)
     deferred_reasoning_downstream_texts: list[str] = field(default_factory=list)
     suppress_next_created_downstream: bool = False
+    suppress_next_in_progress_downstream: bool = False
     replay_downstream_response_id: str | None = None
     draining_until_terminal: bool = False
     # Delivery overflow is a local failure; retain upstream usage ownership
@@ -1544,13 +1593,24 @@ def _websocket_request_can_replay_before_visible_output(
         return False
     if request_state.transport == _REQUEST_TRANSPORT_WEBSOCKET and request_state.response_create_sent_at is None:
         return False
+    # The bounded clean-close retry is a pre-created affordance. An accepted
+    # lifecycle (``replay_downstream_response_id`` captured) is re-sent exactly
+    # once; a clean close of the replacement socket before its
+    # ``response.created`` surfaces one terminal under the visible id instead
+    # of a third send (openspec: retry-accepted-output-free-capacity-failures).
     if request_state.replay_count >= 1 and not (
         allow_clean_close_retry
         and request_state.replay_count == 1
         and request_state.response_event_count == 0
         and request_state.clean_close_replay_count == 0
+        and request_state.replay_downstream_response_id is None
     ):
         return False
+    # A sequenced downstream frame pins the request to its socket: a fresh
+    # upstream generation restarts ``sequence_number`` from zero (openspec
+    # requirement "Direct WebSocket replay never mixes numeric response
+    # sequences"). The accepted-lifecycle replay does not widen this; the
+    # created-only ``generate: false`` prewarm keeps its watermark-0 exception.
     sequenced_created_only_prewarm = (
         request_state.generate_false_prewarm
         and request_state.last_downstream_sequence_number == 0
@@ -1571,15 +1631,67 @@ def _websocket_request_can_replay_before_visible_output(
     precreated_pending = request_state.response_id is None and request_state.awaiting_response_created
     if precreated_pending and request_state.previous_response_id is not None and not has_retry_safe_fresh_payload:
         return False
-    created_only_pending = (
-        request_state.response_id is not None
-        and not request_state.awaiting_response_created
-        and request_state.response_event_count <= 1
-        and (request_state.previous_response_id is None or has_retry_safe_fresh_payload)
+    accepted_lifecycle_only_pending = _websocket_request_is_accepted_lifecycle_only(request_state) and (
+        request_state.previous_response_id is None or has_retry_safe_fresh_payload
     )
     if precreated_pending and request_state.response_event_count > 0:
         return False
-    return precreated_pending or created_only_pending
+    return precreated_pending or accepted_lifecycle_only_pending
+
+
+def _websocket_request_is_accepted_lifecycle_only(request_state: _WebSocketRequestState) -> bool:
+    """Return whether upstream accepted the request without producing any output.
+
+    True only while the accepted response consists of its lifecycle prelude:
+    ``response.created`` and optionally ``response.in_progress``. In the
+    Responses protocol every other counted ``response.*`` event follows
+    ``response.output_item.added``, which is a model-output event
+    (``_MODEL_OUTPUT_EVENT_TYPES``) that both the HTTP bridge and the direct
+    websocket relay record in ``upstream_model_output_seen``, so "at most two
+    counted events and no output marker" is equivalent to "lifecycle only"
+    even when upstream skips ``response.in_progress``. A buffered reasoning
+    prelude or a pending tool call disqualifies the request. Such a turn has
+    no client-observable or conversational side effect, which is what makes
+    its single-lifecycle replay safe.
+
+    This predicate describes the upstream lifecycle only. Downstream sequence
+    exposure (``last_downstream_sequence_number``) is judged by the callers:
+    ``_websocket_request_can_replay_before_visible_output`` and the accepted
+    capacity classifier both keep refusing a sequenced request, so the direct
+    websocket surface never replays after a finite ``sequence_number`` frame
+    was forwarded.
+    """
+    if request_state.response_id is None or request_state.awaiting_response_created:
+        return False
+    if not 1 <= request_state.response_event_count <= 2:
+        return False
+    if request_state.downstream_visible or request_state.upstream_model_output_seen:
+        return False
+    if request_state.deferred_reasoning_downstream_texts:
+        return False
+    return not (request_state.pending_function_call_ids or request_state.pending_tool_call_types)
+
+
+def _affinity_may_resolve_hard_owner(affinity_policy: _AffinityPolicy) -> bool:
+    """Return whether sticky selection may bind this affinity to one owner account.
+
+    A resolved hard ``CODEX_SESSION`` row narrows selection to its owner
+    (``hard_sticky`` in ``sticky_selection``): turn-state ownership, or the raw
+    compatibility row an old replica persisted for a bare session or thread
+    header, which every policy exposing ``legacy_selection_key`` consults and
+    which wins over the namespaced soft row. The owner is not a request-state
+    pin -- it is read from the database at selection time -- so neither the
+    direct websocket request nor the HTTP bridge session can tell whether its
+    affinity resolves to a hard owner. Any policy that may is treated as
+    owner-bound: excluding that owner would leave every re-selection at
+    ``hard_affinity_saturated`` until the connect budget runs out. Shared by
+    the direct websocket accepted-replay exclusion and the HTTP bridge one.
+    """
+    return (
+        affinity_policy.kind == StickySessionKind.CODEX_SESSION
+        or affinity_policy.legacy_selection_key is not None
+        or affinity_policy.legacy_continuity_source is not None
+    )
 
 
 def _record_websocket_route_metadata(
@@ -1774,8 +1886,8 @@ def _openai_error_envelope_from_response_failed_payload(
 
     envelope = openai_error(code, message, error_type)
     param_value = error_payload.get("param")
-    if isinstance(param_value, str) and param_value.strip():
-        envelope["error"]["param"] = param_value.strip()
+    if "param" in error_payload:
+        envelope["error"]["param"] = param_value.strip() if isinstance(param_value, str) else ""
     error_detail = envelope["error"]
     plan_type = error_payload.get("plan_type")
     if plan_type is not None:

@@ -34,6 +34,7 @@ classifiers = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "anyio>=4.14.0",
     "aiohttp>=3.13.4",
     "aiohttp-retry>=2.9.1",
     "alembic>=1.16.5",
@@ -120,7 +121,7 @@ select = ["E", "F", "I"]
 [tool.ty.src]
 # Standalone macOS maintenance tools retain their Python 3.12 contract and
 # have dedicated lint and executable regression coverage.
-exclude = [".agents/hooks/", "deploy/macos/"]
+exclude = [".agents/hooks/", "deploy/macos/", ".release-evidence/", ".venv-*/"]
 
 [tool.ty.environment]
 python-version = "3.13"

@@ -75,6 +75,10 @@ from app.modules.proxy._service.compact import (
 from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
+from app.modules.proxy._service.http_bridge.accepted_replay import (
+    _claim_websocket_replay_create_gate,
+    _http_bridge_accepted_replay_may_exclude_account,
+)
 from app.modules.proxy._service.http_bridge.helpers import (
     _await_task_deferring_cancellation,
     _build_http_bridge_prewarm_text,
@@ -944,12 +948,12 @@ class _HTTPBridgeRequestSubmitMixin:
             and request_state.response_event_count == 0
             and request_state.replay_count == 0
         )
-        allow_server_anchored_replay = _http_bridge_server_anchored_replay_enabled(request_state)
-        if not await self._http_bridge_precreated_retry_allowed(
+        retry_allowed = await self._http_bridge_precreated_retry_allowed(
             session,
-            allow_proof_gated_continuity_replay=allow_proof_gated_continuity_replay or allow_server_anchored_replay,
+            allow_proof_gated_continuity_replay=allow_proof_gated_continuity_replay,
             allow_operation_fenced_continuity_replay=allow_operation_fenced_continuity_replay,
-        ):
+        )
+        if not retry_allowed:
             retry_after_seconds = max(
                 1,
                 math.ceil(await self._http_bridge_precreated_retry_cooldown_seconds(session)),
@@ -1298,7 +1302,7 @@ class _HTTPBridgeRequestSubmitMixin:
                         "The recovery checkpoint was already consumed; retry the request.",
                     ),
                 )
-            if not operation.created:
+            if not operation.created and not getattr(operation, "rebound", False):
                 if operation.state in {"completed", "incomplete"}:
                     if getattr(operation, "event_spool_complete", False):
                         get_operation_events = getattr(self._durable_bridge, "get_operation_events", None)
@@ -1419,6 +1423,13 @@ class _HTTPBridgeRequestSubmitMixin:
             request_state.operation_registered = True
             request_state.operation_rebind_required = False
             request_state.operation_created = operation.created
+            request_state.operation_rebound = getattr(operation, "rebound", False)
+            request_state.operation_rebound_from_session_id = getattr(operation, "rebound_from_session_id", None)
+            request_state.operation_rebound_from_account_id = getattr(operation, "rebound_from_account_id", None)
+            request_state.operation_rebound_from_model = getattr(operation, "rebound_from_model", None)
+            request_state.operation_rebound_from_parent_response_id = getattr(
+                operation, "rebound_from_parent_response_id", None
+            )
             request_state.operation_persisted_response_id = (
                 None if request_state.operation_recovery_claimed else getattr(operation, "response_id", None)
             )
@@ -1427,7 +1438,9 @@ class _HTTPBridgeRequestSubmitMixin:
 
         async def _cleanup_unsubmitted_recovery_claim() -> None:
             if (
-                not request_state.operation_recovery_claimed and not request_state.operation_created
+                not request_state.operation_recovery_claimed
+                and not request_state.operation_created
+                and not request_state.operation_rebound
             ) or request_state.operation_dispatched:
                 return
             await self._cleanup_http_bridge_submit_interruption(
@@ -1891,6 +1904,48 @@ class _HTTPBridgeRequestSubmitMixin:
                                     "bridge_continuity_persistence_failed",
                                     "The recovery checkpoint was consumed before dispatch; retry the request.",
                                 ),
+                            )
+                    if (
+                        request_state.verified_stale_anchor_replay
+                        and request_state.verified_stale_anchor_retry_circuit_generation_captured
+                    ):
+                        circuit_key = request_state.verified_stale_anchor_retry_circuit_key
+                        generation_claimed = bool(
+                            circuit_key is not None
+                            and await self._claim_http_bridge_retry_circuit_generation(
+                                key=circuit_key,
+                                captured=request_state.verified_stale_anchor_retry_circuit_generation_captured,
+                                generation=request_state.verified_stale_anchor_retry_circuit_generation,
+                            )
+                        )
+                        if not generation_claimed:
+                            suppressed_retry_after_seconds = max(
+                                1,
+                                math.ceil(
+                                    await self._http_bridge_retry_circuit_cooldown_seconds_for_key(
+                                        circuit_key or session.key,
+                                    )
+                                ),
+                            )
+                            _log_http_bridge_event(
+                                "stale_anchor_replay_generation_suppressed",
+                                circuit_key or session.key,
+                                account_id=session.account.id,
+                                model=session.request_model,
+                                detail="circuit_generation_advanced_before_dispatch_claim",
+                                cache_key_family=(circuit_key or session.key).affinity_kind,
+                                model_class=(
+                                    _extract_model_class(session.request_model) if session.request_model else None
+                                ),
+                            )
+                            raise ProxyResponseError(
+                                503,
+                                openai_error(
+                                    "upstream_request_timeout",
+                                    "HTTP responses session bridge is cooling down after repeated upstream "
+                                    "timeouts; retry shortly.",
+                                ),
+                                retry_after_seconds=suppressed_retry_after_seconds,
                             )
                     async with session.pending_lock:
                         session.pending_requests.append(request_state)
@@ -2414,7 +2469,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 request_state.operation_fingerprint = None
                 request_state.operation_parent_response_id = None
         elif (
-            request_state.operation_created
+            (request_state.operation_created or request_state.operation_rebound)
             and request_state.operation_registered
             and request_state.operation_id is not None
             and not request_state.operation_dispatched
@@ -2424,7 +2479,15 @@ class _HTTPBridgeRequestSubmitMixin:
             rollback_operation = getattr(self._durable_bridge, "rollback_operation_before_dispatch", None)
             if callable(rollback_operation):
                 try:
-                    rolled_back = await rollback_operation(
+                    rolled_back = await _call_with_supported_optional_kwargs(
+                        rollback_operation,
+                        optional_kwargs={
+                            "restore_rebound": request_state.operation_rebound,
+                            "rebound_from_session_id": request_state.operation_rebound_from_session_id,
+                            "rebound_from_account_id": request_state.operation_rebound_from_account_id,
+                            "rebound_from_model": request_state.operation_rebound_from_model,
+                            "rebound_from_parent_response_id": request_state.operation_rebound_from_parent_response_id,
+                        },
                         operation_id=request_state.operation_id,
                         session_id=session.durable_session_id,
                         instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
@@ -2440,9 +2503,16 @@ class _HTTPBridgeRequestSubmitMixin:
                 if rolled_back:
                     request_state.operation_registered = False
                     request_state.operation_created = False
-                    request_state.operation_id = None
-                    request_state.operation_fingerprint = None
-                    request_state.operation_parent_response_id = None
+                    if request_state.operation_rebound:
+                        # The failed durable row was restored rather than
+                        # deleted. Preserve its identity so a capacity/gate
+                        # retry must rebind that exact fence before send.
+                        request_state.operation_rebind_required = True
+                        request_state.operation_rebound = False
+                    else:
+                        request_state.operation_id = None
+                        request_state.operation_fingerprint = None
+                        request_state.operation_parent_response_id = None
         self._cancel_request_state_api_key_reservation_heartbeat(request_state)
         if request_state.response_create_gate is not None:
             if gate_acquired or request_state.response_create_gate_acquired:
@@ -2778,10 +2848,13 @@ class _HTTPBridgeRequestSubmitMixin:
                 ),
             )
 
-    async def _retire_http_bridge_after_drain_if_ready(self: Any, session: "_HTTPBridgeSession") -> bool:
+    async def _retire_http_bridge_after_drain_if_ready(
+        self: Any, session: "_HTTPBridgeSession", *, lock_wait_timeout_seconds: float | None = None
+    ) -> bool:
         if not (session.upstream_control.reconnect_requested and session.upstream_control.retire_after_drain):
             return False
-        async with session.pending_lock:
+
+        def decide_locked() -> bool:
             has_visible_pending = any(
                 _http_bridge_request_counts_against_queue(request_state) for request_state in session.pending_requests
             )
@@ -2797,6 +2870,28 @@ class _HTTPBridgeRequestSubmitMixin:
             if should_reconnect:
                 session.pending_requests.clear()
                 session.upstream_close_attempted = True
+            return should_reconnect
+
+        if lock_wait_timeout_seconds is None:
+            async with session.pending_lock:
+                should_reconnect = decide_locked()
+        else:
+            try:
+                # Keep acquisition and release in the same task: AnyIO locks
+                # enforce task ownership, unlike asyncio.Lock.
+                async with asyncio.timeout(lock_wait_timeout_seconds):
+                    await session.pending_lock.acquire()
+            except TimeoutError:
+                logger.warning(
+                    "Skipping detached HTTP bridge retire check: pending_lock busy for %.1fs session_key=%s",
+                    lock_wait_timeout_seconds,
+                    _hash_identifier(session.key.affinity_key),
+                )
+                return False
+            try:
+                should_reconnect = decide_locked()
+            finally:
+                session.pending_lock.release()
         if not should_reconnect:
             return False
 
@@ -3019,10 +3114,25 @@ class _HTTPBridgeRequestSubmitMixin:
         )
 
         def request_is_retryable(request_state: _WebSocketRequestState) -> bool:
+            transport_only_unanchored_replay = bool(
+                request_state.precreated_replay_reason is None
+                and (
+                    request_state.verified_stale_anchor_replay
+                    or (
+                        request_state.previous_response_id is not None
+                        and not request_state.proxy_injected_previous_response_id
+                        and request_state.fresh_upstream_request_is_retry_safe
+                        and request_state.fresh_upstream_request_text
+                    )
+                )
+            )
+            if transport_only_unanchored_replay:
+                return False
             if _websocket_request_can_replay_before_visible_output(request_state):
                 return True
             if (
                 clean_close_retry_max_count <= 0
+                or request_state.verified_stale_anchor_replay
                 or request_state.replay_count != 1
                 or request_state.response_event_count != 0
                 or request_state.clean_close_replay_count >= clean_close_retry_max_count
@@ -3040,7 +3150,6 @@ class _HTTPBridgeRequestSubmitMixin:
 
         fresh_hard_request_account_switch_candidate = False
         proof_gated_continuity_replay_candidate = False
-        server_anchored_replay_candidate = False
         if session.key.strength == "hard":
             async with session.pending_lock:
                 retryable_candidates = [
@@ -3065,13 +3174,10 @@ class _HTTPBridgeRequestSubmitMixin:
                         and candidate.response_event_count == 0
                         and candidate.replay_count == 0
                     )
-                    server_anchored_replay_candidate = _http_bridge_server_anchored_replay_enabled(candidate)
         if not await self._http_bridge_precreated_retry_allowed(
             session,
             allow_fresh_hard_account_switch=fresh_hard_request_account_switch_candidate,
-            allow_proof_gated_continuity_replay=(
-                proof_gated_continuity_replay_candidate or server_anchored_replay_candidate
-            ),
+            allow_proof_gated_continuity_replay=proof_gated_continuity_replay_candidate,
         ):
             return False
 
@@ -3099,6 +3205,14 @@ class _HTTPBridgeRequestSubmitMixin:
                 if len(retryable_requests) != 1:
                     return False
                 request_state = retryable_requests[0]
+                if (
+                    request_state.response_id is not None
+                    and not request_state.awaiting_response_created
+                    and any(pending_request is not request_state for pending_request in session.pending_requests)
+                ):
+                    return False
+            if not await _claim_websocket_replay_create_gate(request_state, session.response_create_gate):
+                return False
             model_fallback_replay = request_state.precreated_replay_reason == _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
             if request_state.previous_response_id is not None and not (
                 request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
@@ -3202,7 +3316,15 @@ class _HTTPBridgeRequestSubmitMixin:
                         request_state.preferred_account_id = session.account.id
                     else:
                         request_state.preferred_account_id = None
-                        request_state.excluded_account_ids.add(session.account.id)
+                        # An accepted replay whose session affinity may resolve
+                        # a hard sticky owner reconnects unexcluded: the owner
+                        # is the only account selection can return, so the
+                        # exclusion would spin on ``hard_affinity_saturated``
+                        # until the bridge request budget ran out.
+                        if model_fallback_replay or _http_bridge_accepted_replay_may_exclude_account(
+                            request_state, session
+                        ):
+                            request_state.excluded_account_ids.add(session.account.id)
             if session.account.id in request_state.excluded_account_ids:
                 session.upstream_turn_state = None
                 session.downstream_turn_state = None
@@ -3226,6 +3348,7 @@ class _HTTPBridgeRequestSubmitMixin:
             session.key,
             account_id=session.account.id,
             model=session.request_model,
+            detail="accepted_lifecycle_replay" if request_state.replay_downstream_response_id is not None else None,
             pending_count=1,
             cache_key_family=session.key.affinity_kind,
             model_class=_extract_model_class(session.request_model) if session.request_model else None,

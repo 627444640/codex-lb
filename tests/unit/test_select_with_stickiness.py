@@ -690,8 +690,8 @@ async def test_paused_pinned_account_persists_fallback():
 
 
 @pytest.mark.asyncio
-async def test_reauth_required_pinned_account_persists_fallback():
-    """REAUTH_REQUIRED is hard-blocked — same rebind behaviour as PAUSED."""
+async def test_reauth_required_pinned_account_retains_ttl_mapping_without_selection():
+    """A recoverable TTL owner stays blocked while a sibling serves this turn."""
     acc_a = AccountState("a", AccountStatus.REAUTH_REQUIRED, deactivation_reason="token expired")
     acc_b = _active("b")
     repo = _make_sticky_repo(existing_account_id="a")
@@ -705,7 +705,9 @@ async def test_reauth_required_pinned_account_persists_fallback():
 
     assert result.account is not None
     assert result.account.account_id == "b"
-    repo.upsert.assert_called_once_with("key1", "b", kind=StickySessionKind.PROMPT_CACHE)
+    repo.upsert.assert_not_awaited()
+    repo.delete.assert_not_awaited()
+    assert acc_a.status == AccountStatus.REAUTH_REQUIRED
 
 
 # ---------------------------------------------------------------------------
