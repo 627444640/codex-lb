@@ -64,3 +64,7 @@ DECISIONS.md
 
 # Private deployment snapshots are never public source.
 /deployment/macos/
+
+# Local verification captures and isolated test environments
+.release-evidence/
+.venv-*/
