@@ -1710,3 +1710,47 @@ async def test_close_db_bounds_the_wedged_teardown_drain(monkeypatch, caplog) ->
         session_module._wedged_teardown_cleanup_tasks.discard(stuck)
         never.set()
         await stuck
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+async def test_slow_writer_wait_is_observable_and_cancellation_releases_queue(
+    monkeypatch,
+    tmp_path,
+    caplog,
+    cancel_waiter: bool,
+) -> None:
+    monkeypatch.setattr(
+        session_module, "_settings", _FakeSettings(database_url=f"sqlite+aiosqlite:///{tmp_path / 'store.db'}")
+    )
+    monkeypatch.setattr(session_module, "_sqlite_writer_lock", None)
+    monkeypatch.setattr(session_module, "_SQLITE_WRITER_WAIT_WARNING_SECONDS", 0.01)
+    caplog.set_level("WARNING", logger=session_module.__name__)
+    entered = asyncio.Event()
+
+    async def waiter() -> None:
+        async with session_module.sqlite_writer_section():
+            entered.set()
+
+    async with session_module.sqlite_writer_section():
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0.02)
+        assert not entered.is_set()
+        if cancel_waiter:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert session_module._sqlite_writer_lock is not None
+            assert session_module._sqlite_writer_lock.locked()
+            assert session_module._sqlite_writer_lock.statistics().tasks_waiting == 0
+    if not cancel_waiter:
+        await asyncio.wait_for(task, timeout=1)
+        assert entered.is_set()
+    expected = "outcome=not_acquired" if cancel_waiter else "outcome=acquired"
+    events = [record.getMessage() for record in caplog.records if "sqlite_writer_wait" in record.getMessage()]
+    assert len(events) == 1
+    assert expected in events[0] and "scope=process_local" in events[0]
+    assert session_module._sqlite_writer_lock is not None
+    assert not session_module._sqlite_writer_lock.locked()
+    async with session_module.sqlite_writer_section():
+        pass

@@ -341,6 +341,7 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSe
 _background_engine: AsyncEngine | None = None
 _background_session_factory: async_sessionmaker[AsyncSession] | None = None
 _sqlite_writer_lock: anyio.Lock | None = None
+_SQLITE_WRITER_WAIT_WARNING_SECONDS = 0.1
 
 _T = TypeVar("_T")
 
@@ -822,8 +823,29 @@ async def sqlite_writer_section() -> AsyncIterator[None]:
         return
     if _sqlite_writer_lock is None:
         _sqlite_writer_lock = anyio.Lock()
-    async with _sqlite_writer_lock:
-        yield
+    writer_lock = _sqlite_writer_lock
+    started = time.perf_counter()
+    acquired = False
+    try:
+        async with writer_lock:
+            acquired = True
+            waited = time.perf_counter() - started
+            if waited >= _SQLITE_WRITER_WAIT_WARNING_SECONDS:
+                logger.warning(
+                    "sqlite_writer_wait wait_seconds=%.6f outcome=acquired queue_depth=%d scope=process_local",
+                    waited,
+                    writer_lock.statistics().tasks_waiting,
+                )
+            yield
+    finally:
+        if not acquired:
+            waited = time.perf_counter() - started
+            if waited >= _SQLITE_WRITER_WAIT_WARNING_SECONDS:
+                logger.warning(
+                    "sqlite_writer_wait wait_seconds=%.6f outcome=not_acquired queue_depth=%d scope=process_local",
+                    waited,
+                    writer_lock.statistics().tasks_waiting,
+                )
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
