@@ -34,7 +34,15 @@ from app.core.clients.proxy_websocket import (
 )
 from app.core.config.settings_cache import get_settings_cache
 from app.core.utils.request_id import get_request_id
-from app.db.models import Account, AccountStatus, ApiKeyUsageReservation, RequestLog
+from app.db.models import (
+    Account,
+    AccountStatus,
+    ApiKeyLimit,
+    ApiKeyUsageReservation,
+    LimitType,
+    LimitWindow,
+    RequestLog,
+)
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
@@ -13058,24 +13066,89 @@ def test_backend_responses_websocket_trusted_capability_pending_conflict_keeps_o
     ]
 
 
-def test_cost_limited_websocket_rejects_unknown_pricing_before_upstream(app_instance, monkeypatch):
+def test_websocket_ignores_legacy_cost_limit_and_settles_tokens_without_pricing(app_instance, monkeypatch):
+    upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            [
+                _ws_event(
+                    {"type": "response.created", "response": {"id": "resp_legacy_cost", "status": "in_progress"}}
+                ),
+                _ws_event(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp_legacy_cost",
+                            "status": "completed",
+                            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                        },
+                    }
+                ),
+            ]
+        ],
+    )
+
+    class _FakeSettingsCache:
+        async def get(self):
+            return _websocket_settings()
+
+    async def fake_connect_proxy_websocket(self, headers, **kwargs):
+        return SimpleNamespace(id="synthetic-legacy-cost-account", codex_installation_id=None), upstream
+
     async def create_key():
         async with SessionLocal() as session:
-            service = ApiKeysService(ApiKeysRepository(session))
+            repository = ApiKeysRepository(session)
+            service = ApiKeysService(repository)
             created = await service.create_key(
                 ApiKeyCreateData(
-                    name="websocket-pricing-gate",
+                    name="websocket-legacy-money",
                     allowed_models=None,
-                    limits=[
-                        LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000),
-                    ],
+                    limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000)],
                 )
             )
-            return created.key, await service.get_key_by_id(created.id)
+            [token_limit] = await repository.get_limits_by_key(created.id)
+            token_limit.current_value = 100
+            # Historical monetary rules can still exist, but new rules cannot
+            # be created through the API. Seed an already-exceeded legacy row.
+            legacy = ApiKeyLimit(
+                api_key_id=created.id,
+                limit_type=LimitType.COST_USD,
+                limit_window=LimitWindow.WEEKLY,
+                max_value=1,
+                current_value=37,
+                reset_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=7),
+            )
+            session.add(legacy)
+            await session.commit()
+            historical = (legacy.max_value, legacy.current_value, legacy.reset_at)
+            return created.key, await service.get_key_by_id(created.id), historical
 
+    async def assert_settled(key_id, historical):
+        for _ in range(100):
+            async with SessionLocal() as session:
+                limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
+                token = next(item for item in limits if item.limit_type == LimitType.TOTAL_TOKENS)
+                legacy = next(item for item in limits if item.limit_type == LimitType.COST_USD)
+                statuses = list(
+                    (
+                        await session.scalars(
+                            select(ApiKeyUsageReservation.status).where(ApiKeyUsageReservation.api_key_id == key_id)
+                        )
+                    ).all()
+                )
+                assert (legacy.max_value, legacy.current_value, legacy.reset_at) == historical
+                if statuses == ["finalized"]:
+                    assert token.current_value == 105
+                    return
+            await asyncio.sleep(0.01)
+        pytest.fail("Successful WebSocket usage did not finalize its token reservation")
+
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
     with TestClient(app_instance) as client:
         assert client.portal is not None
-        key, api_key = client.portal.call(create_key)
+        key, api_key, historical = client.portal.call(create_key)
+        assert api_key is not None
 
         async def allow_proxy_api_key(_authorization, *, request=None):
             return api_key
@@ -13086,13 +13159,21 @@ def test_cost_limited_websocket_rejects_unknown_pricing_before_upstream(app_inst
             headers={"Authorization": f"Bearer {key}"},
         ) as websocket:
             websocket.send_json(
-                {"type": "response.create", "model": "gpt-5.6-sol", "input": "hi", "service_tier": "ultrafast"}
+                {
+                    "type": "response.create",
+                    "model": "gpt-5.6-sol",
+                    "input": "hi",
+                    "service_tier": "ultrafast",
+                    "max_output_tokens": 10,
+                }
             )
-            event = websocket.receive_json()
-        assert event["type"] == "error"
-        assert event["status"] == 429
-        assert event["error"]["code"] == "pricing_unavailable"
-        assert "retrying alone" in event["error"]["message"]
+            created = websocket.receive_json()
+            completed = websocket.receive_json()
+            assert created["type"] == "response.created"
+            assert completed["type"] == "response.completed"
+            assert completed["response"]["usage"]["total_tokens"] == 5
+        assert len(upstream.sent_text) == 1
+        client.portal.call(assert_settled, api_key.id, historical)
 
 
 def _ws_event(payload: dict[str, object]) -> _FakeUpstreamMessage:

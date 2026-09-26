@@ -1,4 +1,12 @@
 {
+  "usage.unknown": "알 수 없음",
+  "usage.statusLabel": "사용량 완전성",
+  "usage.status.complete": "완전한 사용량",
+  "usage.status.partial": "일부 사용량",
+  "usage.status.missing": "사용량 누락",
+  "usage.partialNotice": "사용량의 일부만 보고되었습니다. 알려진 합계는 하한이며, 알 수 없는 출력은 그대로 유지됩니다.",
+  "usage.missingNotice": "입력, 출력 또는 추론 사용량이 보고되지 않았습니다. 측정된 0이 아니라 알 수 없는 사용량입니다.",
+  "usage.knownTotalNotice": "토큰 합계는 보고된 입력과 출력, 또는 출력이 없을 때 보고된 추론을 합산합니다. 누락된 사용량은 제외되며 부분 합계는 하한입니다.",
   "dashboard.requests.columns.clientIp": "출처 IP",
   "apiKeys.overview.requestsByKey": "API Key별 요청",
   "apiKeys.overview.requestsByKeySubtitle": "전체 키의 요청 비율",

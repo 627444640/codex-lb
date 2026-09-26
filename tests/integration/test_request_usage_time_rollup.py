@@ -477,7 +477,7 @@ async def test_hourly_fold_folds_dimensions_and_measures(db_setup):
         await AccountsRepository(session).upsert(_make_account("acc_f", "fold-ts@example.com"))
         logs = RequestLogsRepository(session)
         # hour0, slot 0: success with cached tokens (clamped to input).
-        await _add_log(
+        historical = await _add_log(
             logs,
             account_id="acc_f",
             request_id="r_a",
@@ -487,9 +487,13 @@ async def test_hourly_fold_folds_dimensions_and_measures(db_setup):
             cached_input_tokens=120,
             cost_usd=0.01,
         )
+        # New writes ignore monetary overrides. Seed a persisted historical
+        # amount explicitly so this still verifies preservation during folding.
+        historical.cost_usd = 0.01
+        await session.commit()
         # hour0, slot 1: reasoning-only error row with NULL cost/cached.
-        # Inserted directly: add_log always derives a cost, and a true NULL
-        # cost row is what exercises the cost_count fold semantics.
+        # Together with the historical amount above, this true NULL exercises
+        # the distinction between cost_count and request_count.
         session.add(
             RequestLog(
                 account_id="acc_f",
@@ -1027,8 +1031,11 @@ async def test_model_rewrite_skips_folded_rows(db_setup, rewrite_usage):
     async with SessionLocal() as session:
         await AccountsRepository(session).upsert(_make_account("acc_rw", "rewrite-ts@example.com"))
         logs = RequestLogsRepository(session)
-        await _add_log(logs, account_id="acc_rw", request_id="r_rw", requested_at=old_at)
-        await _add_log(logs, account_id="acc_rw", request_id="r_rw", requested_at=now)
+        historical = await _add_log(logs, account_id="acc_rw", request_id="r_rw", requested_at=old_at)
+        live = await _add_log(logs, account_id="acc_rw", request_id="r_rw", requested_at=now)
+        historical.cost_usd = 0.01
+        live.cost_usd = 0.025
+        await session.commit()
 
     assert await run_hourly_fold_pass(now=now) >= 1
     # Make the watermarks DIVERGE (lifetime two hours ahead) and add a row
@@ -1073,15 +1080,17 @@ async def test_model_rewrite_skips_folded_rows(db_setup, rewrite_usage):
     assert models_by_age[between_at] == "gpt-5.1-codex"  # below the lifetime watermark
     assert models_by_age[at_lifetime] == "gpt-5.1-codex"  # AT the inclusive lifetime watermark
     assert models_by_age[now] == "gpt-image-1"
-    if rewrite_usage:
-        async with SessionLocal() as session:
-            row = await session.scalar(select(RequestLog).where(RequestLog.requested_at == now))
-            assert row is not None
-            assert (row.input_tokens, row.output_tokens, row.reasoning_tokens, row.cost_usd) == (7, 13, None, 0.000555)
+    async with SessionLocal() as session:
+        row = await session.scalar(select(RequestLog).where(RequestLog.requested_at == now))
+        assert row is not None
+        assert row.cost_usd == 0.025  # Preserve history, never apply the incoming monetary override.
+        expected_usage = (7, 13, None) if rewrite_usage else (100, 50, None)
+        assert (row.input_tokens, row.output_tokens, row.reasoning_tokens) == expected_usage
 
     # The folded hourly bucket still carries the original model dimension.
     hourly, _, _, _ = await _dump_all_rollups()
     assert {r.model for r in hourly} == {"gpt-5.1-codex"}
+    assert sum(row.cost_usd for row in hourly) == pytest.approx(0.01)
 
     # A rewrite matching nothing must release the fold-state lock cleanly
     # (regression guard for the early-return path).

@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { KnownUsageNote } from "@/components/known-usage-note";
 
 import type { ApiKey } from "@/features/api-keys/schemas";
 import { formatCompactNumber } from "@/utils/formatters";
@@ -183,6 +184,7 @@ export function ApiKeysOverview({ apiKeys }: ApiKeysOverviewProps) {
           apiKeys={apiKeys}
         />
       </div>
+      <KnownUsageNote />
     </section>
   );
 }

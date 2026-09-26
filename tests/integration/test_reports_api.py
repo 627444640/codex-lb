@@ -1510,7 +1510,8 @@ async def test_reports_api_includes_unpriced_models_in_model_breakdown(async_cli
 
     payload = response.json()
     assert payload["summary"]["totalRequests"] == 2
-    assert payload["byModel"] == [
+    # Request-count ties have no promised order; historical amounts remain readable.
+    assert sorted(payload["byModel"], key=lambda item: item["model"]) == [
         {"model": "gpt-priced", "costUsd": 0.8, "requests": 1, "percentage": 100.0},
         {"model": "gpt-unpriced", "costUsd": 0.0, "requests": 1, "percentage": 0.0},
     ]
@@ -1649,12 +1650,15 @@ async def test_reports_api_supports_useragent_group_filter_and_breakdown(async_c
     assert response.status_code == 200
 
     payload = response.json()
-    assert payload["byUseragent"] == [
-        {"useragent": "opencode", "costUsd": 0.8, "requests": 1, "percentage": 33.3},
-        {"useragent": "CodexCLI", "costUsd": 0.7, "requests": 1, "percentage": 29.2},
-        {"useragent": "Missing User-Agent", "costUsd": 0.5, "requests": 1, "percentage": 20.8},
-        {"useragent": "Unknown", "costUsd": 0.4, "requests": 1, "percentage": 16.7},
-    ]
+    assert sorted(payload["byUseragent"], key=lambda item: item["useragent"]) == sorted(
+        [
+            {"useragent": "opencode", "costUsd": 0.8, "requests": 1, "percentage": 33.3},
+            {"useragent": "CodexCLI", "costUsd": 0.7, "requests": 1, "percentage": 29.2},
+            {"useragent": "Missing User-Agent", "costUsd": 0.5, "requests": 1, "percentage": 20.8},
+            {"useragent": "Unknown", "costUsd": 0.4, "requests": 1, "percentage": 16.7},
+        ],
+        key=lambda item: item["useragent"],
+    )
 
     filtered_response = await async_client.get(
         "/api/reports",

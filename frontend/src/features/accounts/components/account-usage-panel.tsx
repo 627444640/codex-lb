@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { Clock, Flame, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { KnownUsageNote } from "@/components/known-usage-note";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -283,6 +284,7 @@ export function AccountUsagePanel({
         ) : (
           <p className="mt-1 text-xs text-muted-foreground">{t("accounts.usage.noRequestUsage")}</p>
         )}
+        <KnownUsageNote />
       </div>
       {account.additionalQuotas.length > 0 ? (
         <div className="space-y-3">

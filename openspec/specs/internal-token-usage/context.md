@@ -25,3 +25,13 @@ See [requirements](spec.md), [API keys](../api-keys/spec.md), [observability](..
 ## Historical migration imports
 
 Historical migration `20260325` imports `get_pricing_for_model` and `calculate_cost_from_usage`. The internal build retains these two inert compatibility entry points, both returning `None`, so the unchanged migration graph remains importable for fresh databases. They contain neither a ratebook nor a calculation path. Their presence does not restore billing.
+
+## Accounting evidence and partial usage
+
+Use upstream non-negative integer counters as evidence. Invalid values are unknown rather than measured zero and cannot refund consumption from earlier requests. This does not forbid negative reservation adjustments: reserving 30 for a valid 15-token request must refund the unused 15, while settling that reservation twice remains a no-op.
+
+Request-log usage status is derived from raw nullable fields: complete requires input and output (including explicit zero); partial means only some of input/output/reasoning are known; missing means none are known. A known total combines reported input with output, falling back to known reasoning only when output is absent. Cache subsets and reasoning are never counted twice. For example, input 100, missing output and reasoning 20 gives a known lower bound of 120, with output still unknown. Input 100 and output 40 (including reasoning 20) gives a complete total of 140. Dashboard cards/trends use the same rule for raw and folded data through the existing output-or-reasoning measure, without a historical rewrite.
+
+Aggregate figures describe known reported usage; they cannot prove the total consumed on requests without usage. Window, filters, soft deletion and raw-log retention can still affect cross-page comparisons. This change does not redesign long-term report retention or recover historical missing usage.
+
+Model-source Responses outcome is independent of transport status. HTTP 200 followed by response.failed remains a failed request. Failed/incomplete/unterminated responses release the reservation under the existing success-only limit policy while retaining valid reported usage in logs. Consequently observed consumption and successful-request quota remain distinct metrics. No route, account selection or pricing policy changes are implied.

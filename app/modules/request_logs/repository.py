@@ -240,7 +240,7 @@ class RequestLogsRepository:
     def _conversation_id_expr() -> ColumnElement:
         return conversation_id_expr()
 
-    def _conversation_output_expr(self) -> ColumnElement:
+    def _output_tokens_expr(self) -> ColumnElement:
         return func.coalesce(RequestLog.output_tokens, RequestLog.reasoning_tokens, 0)
 
     def _conversation_cached_expr(self) -> ColumnElement:
@@ -306,7 +306,7 @@ class RequestLogsRepository:
         else:
             conditions = base_conditions
 
-        output = self._conversation_output_expr()
+        output = self._output_tokens_expr()
         cached = self._conversation_cached_expr()
         summary_conditions = [*conditions]
         summary_stmt = (
@@ -460,7 +460,7 @@ class RequestLogsRepository:
             )
         ).scalar_one_or_none()
 
-        output = self._conversation_output_expr()
+        output = self._output_tokens_expr()
         cached = self._conversation_cached_expr()
         model_rows = (
             await self._session.execute(
@@ -629,7 +629,7 @@ class RequestLogsRepository:
                         rollup.error_count,
                         rollup.cancelled_count,
                         rollup.input_tokens,
-                        rollup.output_tokens,
+                        rollup.output_or_reasoning_tokens,
                         rollup.cached_input_tokens,
                         rollup.reasoning_tokens,
                         rollup.cost_usd,
@@ -646,7 +646,7 @@ class RequestLogsRepository:
                     func.sum(cast(RequestLog.status.not_in(NON_ERROR_STATUSES), Integer)).label("error_count"),
                     func.sum(cast(RequestLog.status == CANCELLED_STATUS, Integer)).label("cancelled_count"),
                     func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
-                    func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
+                    func.coalesce(func.sum(self._output_tokens_expr()), 0).label("output_tokens"),
                     func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
                     func.coalesce(func.sum(RequestLog.reasoning_tokens), 0).label("reasoning_tokens"),
                     func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
@@ -753,7 +753,7 @@ class RequestLogsRepository:
             request_count += rollup.request_count
             error_count += rollup.error_count
             input_tokens += rollup.input_tokens
-            output_tokens += rollup.output_tokens
+            output_tokens += rollup.output_or_reasoning_tokens
             cached_input_tokens += rollup.cached_input_tokens
             cost_usd += rollup.cost_usd
         if raw_windows:
@@ -764,7 +764,7 @@ class RequestLogsRepository:
                     0,
                 ).label("error_count"),
                 func.coalesce(func.sum(RequestLog.input_tokens), 0).label("input_tokens"),
-                func.coalesce(func.sum(RequestLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(self._output_tokens_expr()), 0).label("output_tokens"),
                 func.coalesce(func.sum(RequestLog.cached_input_tokens), 0).label("cached_input_tokens"),
                 func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
             ).where(

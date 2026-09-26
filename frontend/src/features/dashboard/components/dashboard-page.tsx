@@ -30,6 +30,7 @@ import { OverviewTimeframeSelect } from "@/features/dashboard/components/filters
 import { RequestFilters } from "@/features/dashboard/components/filters/request-filters";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 import { StatsGrid } from "@/features/dashboard/components/stats-grid";
+import { KnownUsageNote } from "@/components/known-usage-note";
 import { UsageDonuts } from "@/features/dashboard/components/usage-donuts";
 import { WeeklyCreditsPaceCard } from "@/features/dashboard/components/weekly-credits-pace-card";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
@@ -396,6 +397,7 @@ export function DashboardPage() {
       ) : (
         <>
           <StatsGrid stats={view.stats} />
+          <KnownUsageNote />
 
           {view.weeklyCreditPace ? (
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">

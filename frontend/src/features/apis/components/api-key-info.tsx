@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { KnownUsageNote } from "@/components/known-usage-note";
 
 import type { ApiKey, LimitType } from "@/features/api-keys/schemas";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
@@ -180,6 +181,7 @@ export function ApiKeyInfo({
 					})}
 				</div>
 			</dl>
+			<KnownUsageNote />
 		</div>
 	);
 }

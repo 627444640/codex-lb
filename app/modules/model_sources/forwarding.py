@@ -8,7 +8,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from json import JSONDecodeError
 from math import isfinite
-from typing import cast
+from typing import Literal, cast
 
 import aiohttp
 import anyio
@@ -16,6 +16,7 @@ import anyio
 from app.core.clients.http import lease_http_session
 from app.core.crypto import TokenEncryptor
 from app.core.types import JsonValue
+from app.core.usage.validation import parse_token_count
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import parse_sse_data_json
 from app.db.models import ModelSource
@@ -113,6 +114,27 @@ class SourceResponsesStream:
 class SourceUsageHolder:
     usage: SourceUsage | None = None
     timings: SourceTimings | None = None
+    response_shape: Literal["chat", "responses"] = "chat"
+    terminal: SourceResponsesTerminal | None = None
+
+    def responses_stream_failure(self) -> SourceResponsesTerminal | None:
+        """Resolve the final accounting outcome after the stream stops."""
+        if self.response_shape != "responses":
+            return None
+        if self.terminal is None:
+            return SourceResponsesTerminal(
+                outcome="incomplete",
+                error_code="stream_incomplete",
+                error_message="Model-source Responses stream ended without a terminal event",
+            )
+        return self.terminal if self.terminal.outcome != "completed" else None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceResponsesTerminal:
+    outcome: Literal["completed", "failed", "incomplete"]
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 async def _await_cleanup_deferring_cancellation(awaitable: Awaitable[object]) -> None:
@@ -363,6 +385,8 @@ async def stream_responses(
             async for chunk in response.content.iter_chunked(4096):
                 usage_parser.feed(chunk)
                 yield chunk
+                if usage_holder.terminal is not None:
+                    break
         finally:
             # A plain ``async with stack`` unwinds unshielded: repeated
             # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
@@ -690,11 +714,7 @@ def _timings_from_metrics(metrics: Mapping[str, JsonValue]) -> SourceTimings | N
 
 
 def _nonnegative_token_count(value: JsonValue) -> int | None:
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_REQUEST_LOG_INTEGER
-        else None
-    )
+    return parse_token_count(value)
 
 
 def _reasoning_tokens_from_details(usage: Mapping[str, JsonValue], details_field: str) -> int | None:
@@ -711,8 +731,11 @@ def _usage_from_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
         return None
     cached_tokens = 0
     details = usage.get("prompt_tokens_details")
-    if is_json_mapping(details):
-        cached_tokens = _nonnegative_token_count(details.get("cached_tokens")) or 0
+    if is_json_mapping(details) and details.get("cached_tokens") is not None:
+        parsed_cached = _nonnegative_token_count(details.get("cached_tokens"))
+        if parsed_cached is None:
+            return None
+        cached_tokens = parsed_cached
     return SourceUsage(
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
@@ -730,8 +753,11 @@ def _usage_from_responses_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage
         return None
     cached_tokens = 0
     details = usage.get("input_tokens_details")
-    if is_json_mapping(details):
-        cached_tokens = _nonnegative_token_count(details.get("cached_tokens")) or 0
+    if is_json_mapping(details) and details.get("cached_tokens") is not None:
+        parsed_cached = _nonnegative_token_count(details.get("cached_tokens"))
+        if parsed_cached is None:
+            return None
+        cached_tokens = parsed_cached
     return SourceUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -759,9 +785,9 @@ class SourceStreamUsageParser:
     # parser must not buffer the whole stream in memory.
     _MAX_BUFFER_CHARS = 1_048_576
 
-    def __init__(self, usage_holder: SourceUsageHolder, *, response_shape: str) -> None:
+    def __init__(self, usage_holder: SourceUsageHolder, *, response_shape: Literal["chat", "responses"]) -> None:
         self._usage_holder = usage_holder
-        self._response_shape = response_shape
+        self._usage_holder.response_shape = response_shape
         self._buffer = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._skip_leading_lf = False
@@ -788,11 +814,19 @@ class SourceStreamUsageParser:
         except ValueError:
             # JSON integers exceeding Python's parser limit are not usage.
             return
-        if parsed is None:
+        if not is_json_mapping(parsed):
             return
-        if self._response_shape == "responses":
+        if self._usage_holder.response_shape == "responses":
+            if self._usage_holder.terminal is not None:
+                return
             usage = _usage_from_responses_event(parsed)
             timings = _timings_from_responses_event(parsed)
+            terminal = _responses_terminal_from_event(parsed)
+            if terminal is not None:
+                self._usage_holder.terminal = terminal
+                # Terminal usage is authoritative. In particular, invalid or
+                # absent terminal counters must not reuse an earlier estimate.
+                self._usage_holder.usage = usage
         else:
             usage = _usage_from_chat_payload(parsed)
             timings = _timings_from_payload(parsed)
@@ -800,6 +834,55 @@ class SourceStreamUsageParser:
             self._usage_holder.usage = usage
         if timings is not None:
             self._usage_holder.timings = timings
+
+
+def _responses_terminal_from_event(payload: Mapping[str, JsonValue]) -> SourceResponsesTerminal | None:
+    event_type = payload.get("type")
+    if not isinstance(event_type, str) or event_type not in {
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+        "error",
+    }:
+        return None
+    response = payload.get("response")
+    response = response if is_json_mapping(response) else {}
+    status = response.get("status")
+    if event_type == "response.completed":
+        if status is None or status == "completed":
+            return SourceResponsesTerminal(outcome="completed")
+        if not isinstance(status, str) or status not in {"failed", "incomplete"}:
+            return SourceResponsesTerminal(
+                outcome="incomplete",
+                error_code="source_response_status_mismatch",
+                error_message="Model-source completed event carried a non-completed response status",
+            )
+    if event_type == "response.incomplete" or status == "incomplete":
+        details = response.get("incomplete_details")
+        reason = details.get("reason") if is_json_mapping(details) else None
+        return SourceResponsesTerminal(
+            outcome="incomplete",
+            error_code=(
+                reason
+                if isinstance(reason, str) and reason in ("max_output_tokens", "content_filter")
+                else "source_response_incomplete"
+            ),
+            error_message="Model-source response was incomplete",
+        )
+    # Terminal frames remain verbatim on the wire, but arbitrary upstream
+    # errors must not become a new unredacted credential persistence path.
+    return SourceResponsesTerminal(
+        outcome="failed",
+        error_code="source_response_failed",
+        error_message="Model-source response failed",
+    )
+
+
+def responses_terminal_from_payload(payload: dict[str, JsonValue]) -> SourceResponsesTerminal:
+    """Use explicit JSON response status; retain missing-status compatibility."""
+    terminal = _responses_terminal_from_event({"type": "response.completed", "response": payload})
+    assert terminal is not None
+    return terminal
 
 
 def _usage_from_responses_event(payload: Mapping[str, JsonValue]) -> SourceUsage | None:

@@ -1,4 +1,12 @@
 {
+  "usage.unknown": "Unknown",
+  "usage.statusLabel": "Usage completeness",
+  "usage.status.complete": "Complete usage",
+  "usage.status.partial": "Partial usage",
+  "usage.status.missing": "Usage missing",
+  "usage.partialNotice": "Only part of the usage was reported. The known total is a lower bound; unknown output remains unknown.",
+  "usage.missingNotice": "No input, output or reasoning usage was reported. This is unknown usage, not measured zero.",
+  "usage.knownTotalNotice": "Token totals include reported input and output, or reported reasoning when output is unknown. Missing usage is not counted; partial totals are lower bounds.",
   "dashboard.requests.columns.clientIp": "Source IP",
   "apiKeys.overview.requestsByKey": "Requests by API Key",
   "apiKeys.overview.requestsByKeySubtitle": "Relative requests across all keys",

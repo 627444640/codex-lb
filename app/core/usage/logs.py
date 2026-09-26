@@ -18,6 +18,7 @@ CostStatus = Literal[
     "historical",
     "not_applicable",
 ]
+UsageStatus = Literal["complete", "partial", "missing"]
 
 
 class RequestLogLike(Protocol):
@@ -113,6 +114,20 @@ def total_tokens_from_log(log: RequestLogLike) -> int | None:
     if input_tokens is None and output_tokens is None:
         return None
     return (input_tokens or 0) + (output_tokens or 0)
+
+
+def usage_status_from_log(log: RequestLogLike) -> UsageStatus:
+    """Describe total-token completeness using reported base counters.
+
+    Cache and reasoning details are subsets, so their absence does not make
+    a measured input/output total partial. Reasoning without output remains
+    useful lower-bound evidence, but never substitutes for complete output.
+    """
+    if log.input_tokens is not None and log.output_tokens is not None:
+        return "complete"
+    if log.input_tokens is None and log.output_tokens is None and log.reasoning_tokens is None:
+        return "missing"
+    return "partial"
 
 
 def cost_status_from_log(log: RequestLogLike) -> CostStatus:

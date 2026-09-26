@@ -208,6 +208,7 @@ export const RequestLogSchema = z.object({
   upstreamErrorCode: z.string().nullable().optional().default(null),
   bridgeStage: z.string().nullable().optional().default(null),
   tokens: z.number().nullable(),
+  usageStatus: z.enum(["complete", "partial", "missing"]).optional(),
   inputTokens: z.number().nullable().optional().default(null),
   outputTokens: z.number().nullable().optional().default(null),
   outputTokensRaw: z.number().nullable().optional().default(null),

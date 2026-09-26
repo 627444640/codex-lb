@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { KnownUsageNote } from "@/components/known-usage-note";
 
 import type { ReportComparison, ReportSummary } from "../schemas";
 
@@ -68,7 +69,8 @@ export function ReportsSummaryCards({ summary, comparison }: ReportsSummaryCards
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
       {cards.map((card) => (
         <div
           key={card.id}
@@ -94,6 +96,8 @@ export function ReportsSummaryCards({ summary, comparison }: ReportsSummaryCards
           ) : null}
         </div>
       ))}
+      </div>
+      <KnownUsageNote />
     </div>
   );
 }

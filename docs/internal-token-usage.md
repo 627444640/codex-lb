@@ -10,6 +10,18 @@ New request logs store `cost_usd=null` and `pricing_version=null`. A model witho
 
 The dashboard shows tokens, requests, cache use, latency, errors and request source IP. It has no monetary summary, currency chart, price editor or monetary-limit control. Reports retain token and timing charts, request-based model/User-Agent distributions, and a CSV with operational and token columns.
 
+## Complete, partial and missing usage
+
+Request logs distinguish complete usage (both input and output reported), partial usage (only some values known), and missing usage. Explicit zero is a valid measurement. An unknown output remains unknown; reasoning tokens are not relabeled as a complete measured output.
+
+Known totals are input plus output, or input plus known reasoning when output is absent. For example, input 100 with missing output and reasoning 20 is shown as partial usage with a known lower bound of 120. Input 100 and output 40, including reasoning 20, is a complete total of 140. Cache reads and writes are input subsets and are not added again. Dashboard cards, trends and reports follow this same known-token rule, including after hourly aggregation. Unknown portions are excluded, so these figures do not guarantee complete actual upstream consumption.
+
+Malformed or negative upstream counters are not valid usage and cannot reduce earlier settled consumption. Normal reservation refunds still apply: reserving 30 for a successful 15-token request refunds the unused 15.
+
+A model-source Responses stream ending in failure or incompleteness is recorded accordingly even if its HTTP status is 200. Known usage is retained in the log; the reservation is released under the existing successful-request quota policy. A stream ending without a terminal response is not considered completed. Reported consumption and API-key limit consumption can therefore differ on failed requests.
+
+When comparing pages, match their time windows and filters. Existing raw-log retention and account visibility rules still apply; this change does not reconstruct unknown historical usage or extend the retention period.
+
 ## Existing records and limits
 
 Previously stored amounts, pricing-version strings and source-model prices are preserved. Compatible API fields may return stored historical amounts or their sums; reading them does not reprice old rows or estimate a value for missing amounts. Model-source edits that omit price fields preserve existing values.

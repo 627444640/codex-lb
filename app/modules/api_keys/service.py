@@ -16,6 +16,7 @@ from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.usage.pricing import UsageCostBreakdown
 from app.core.usage.types import UsageWindowRow
+from app.core.usage.validation import require_token_count
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, ApiKey, ApiKeyLimit, LimitType, LimitWindow, ModelSource, UsageHistory
 from app.db.session import sqlite_writer_section
@@ -1073,6 +1074,14 @@ class ApiKeysService:
             if reservation is None or reservation.status != "reserved":
                 return
 
+            _validate_settlement_usage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=cached_input_tokens,
+                cache_write_tokens=cache_write_tokens,
+                require_complete=status == "finalized",
+            )
+
             claimed = await self._repository.transition_usage_reservation_status(
                 reservation_id,
                 expected_status="reserved",
@@ -1209,6 +1218,13 @@ class ApiKeysService:
         cache_write_tokens: int = 0,
         actual_model: str | None = None,
     ) -> None:
+        _validate_settlement_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_input_tokens=cached_input_tokens,
+            cache_write_tokens=cache_write_tokens,
+            require_complete=True,
+        )
         await self._repository.increment_limit_usage(
             key_id,
             model=model,
@@ -1719,6 +1735,22 @@ def _reserve_budget_for_limit_type(
     if limit_type == LimitType.OUTPUT_TOKENS:
         return output_tokens
     return 0
+
+
+def _validate_settlement_usage(
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input_tokens: int | None,
+    cache_write_tokens: int | None,
+    require_complete: bool,
+) -> None:
+    for field_name, value in (("input_tokens", input_tokens), ("output_tokens", output_tokens)):
+        if require_complete or value is not None:
+            require_token_count(value, field_name=field_name)
+    for field_name, value in (("cached_input_tokens", cached_input_tokens), ("cache_write_tokens", cache_write_tokens)):
+        if value is not None:
+            require_token_count(value, field_name=field_name)
 
 
 def _compute_increment_for_limit_type(

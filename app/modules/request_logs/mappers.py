@@ -9,8 +9,8 @@ from app.core.usage.logs import (
     cached_input_tokens_from_log,
     cost_breakdown_from_log,
     cost_status_from_log,
-    output_tokens_from_log,
     total_tokens_from_log,
+    usage_status_from_log,
 )
 from app.core.usage.speed import generation_speed_from_log
 from app.db.models import RequestLog
@@ -87,8 +87,9 @@ def to_request_log_entry(
         upstream_error_code=log.upstream_error_code,
         bridge_stage=log.bridge_stage,
         tokens=total_tokens_from_log(log_like),
+        usage_status=usage_status_from_log(log_like),
         input_tokens=log.input_tokens,
-        output_tokens=output_tokens_from_log(log_like),
+        output_tokens=log.output_tokens,
         output_tokens_raw=log.output_tokens,
         reasoning_tokens=log.reasoning_tokens,
         cached_input_tokens=cached_input_tokens_from_log(log_like),

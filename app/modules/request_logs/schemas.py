@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import Field
 
-from app.core.usage.logs import CostStatus
+from app.core.usage.logs import CostStatus, UsageStatus
 from app.core.usage.speed import GenerationTpsStatus
 from app.modules.shared.schemas import DashboardModel
 
@@ -58,6 +58,7 @@ class RequestLogEntry(DashboardModel):
     upstream_error_code: str | None = None
     bridge_stage: str | None = None
     tokens: int | None = None
+    usage_status: UsageStatus = "missing"
     input_tokens: int | None = None
     output_tokens: int | None = None
     output_tokens_raw: int | None = None

@@ -1,4 +1,12 @@
 {
+  "usage.unknown": "未知",
+  "usage.statusLabel": "用量完整性",
+  "usage.status.complete": "用量完整",
+  "usage.status.partial": "用量不完整",
+  "usage.status.missing": "用量缺失",
+  "usage.partialNotice": "上游仅报告了部分用量。已知总量是下限；未知的输出 Token 仍标为未知。",
+  "usage.missingNotice": "上游未报告输入、输出或推理用量。这表示用量未知，不代表实测为零。",
+  "usage.knownTotalNotice": "Token 总量仅累计已报告的输入、输出，以及输出未知时已报告的推理用量。缺失用量不计入；不完整记录的总量是下限。",
   "dashboard.requests.columns.clientIp": "来源 IP",
   "apiKeys.overview.requestsByKey": "按 API Key 统计请求量",
   "apiKeys.overview.requestsByKeySubtitle": "所有 Key 的请求量占比",

@@ -445,7 +445,14 @@ export function RecentRequestsTable({
                   </TableCell> : null}
                   {isColumnVisible("tokens") ? <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     <div className="leading-tight">
-                      <div>{formatCompactNumber(request.tokens)}</div>
+                      <div>{request.tokens == null
+                        ? t("usage.unknown")
+                        : `${request.usageStatus === "partial" ? "≥ " : ""}${formatCompactNumber(request.tokens)}`}</div>
+                      {request.usageStatus === "partial" ? (
+                        <div className="text-[11px] text-muted-foreground" title={t("usage.partialNotice")}>
+                          {t("usage.status.partial")}
+                        </div>
+                      ) : null}
                       {request.cachedInputTokens != null && request.cachedInputTokens > 0 && (
                         <div className="text-[11px] text-muted-foreground">
                           {t("common.units.cachedShort", { count: formatCompactNumber(request.cachedInputTokens) })}
@@ -534,6 +541,9 @@ export function RecentRequestsTable({
                 compactCopy
               />
               <div className="grid gap-3 sm:grid-cols-3">
+                {selectedRequest?.usageStatus ? (
+                  <RequestDetailField label={t("usage.statusLabel")} value={t(`usage.status.${selectedRequest.usageStatus}`)} />
+                ) : null}
                 <RequestDetailField label={t("dashboard.requests.columns.status")} value={selectedRequest ? t(`dashboard.requestStatus.${selectedRequest.status}`, { defaultValue: REQUEST_STATUS_LABELS[selectedRequest.status] ?? selectedRequest.status }) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.model")} value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
                 {selectedRequest?.actualModel ? <RequestDetailField label={t("dashboard.requestDetails.actualModel")} value={selectedRequest.actualModel} mono /> : null}
@@ -555,8 +565,13 @@ export function RecentRequestsTable({
                 {selectedRequest?.inputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.inputTokensIncluded")} value={String(selectedRequest.inputTokens)} mono /> : null}
                 {selectedRequest?.cachedInputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cachedTokensIncluded")} value={String(selectedRequest.cachedInputTokens)} mono /> : null}
                 {selectedRequest?.cacheWriteTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cacheWriteTokensIncluded")} value={String(selectedRequest.cacheWriteTokens)} mono /> : null}
-                {selectedRequest?.outputTokensRaw != null ? <RequestDetailField label={t("dashboard.requestDetails.outputTokensIncluded")} value={String(selectedRequest.outputTokensRaw)} mono /> : null}
+                <RequestDetailField label={t("dashboard.requestDetails.outputTokensIncluded")} value={selectedRequest?.outputTokensRaw == null ? t("usage.unknown") : String(selectedRequest.outputTokensRaw)} mono />
               </div>
+              {selectedRequest?.usageStatus === "partial" ? (
+                <p className="text-xs text-muted-foreground">{t("usage.partialNotice")}</p>
+              ) : selectedRequest?.usageStatus === "missing" ? (
+                <p className="text-xs text-muted-foreground">{t("usage.missingNotice")}</p>
+              ) : null}
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt, dateDisplayFormat) : "—"} />

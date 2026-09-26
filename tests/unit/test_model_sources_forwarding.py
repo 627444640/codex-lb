@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
@@ -370,14 +370,14 @@ def test_source_usage_rejects_boolean_cached_tokens_without_inventing_reasoning(
         {"usage": {"prompt_tokens": 8, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": True}}}
     )
 
-    assert usage is not None
-    assert usage.cached_input_tokens == 0
-    assert usage.reasoning_tokens is None
+    assert usage is None
 
 
 @pytest.mark.parametrize("shape", ["chat", "responses"])
 @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"])
-def test_source_multiline_sse_usage_survives_every_chunk_boundary(shape: str, line_ending: str) -> None:
+def test_source_multiline_sse_usage_survives_every_chunk_boundary(
+    shape: Literal["chat", "responses"], line_ending: str
+) -> None:
     if shape == "chat":
         usage = {"prompt_tokens": 8, "completion_tokens": 5, "completion_tokens_details": {"reasoning_tokens": 3}}
     else:
