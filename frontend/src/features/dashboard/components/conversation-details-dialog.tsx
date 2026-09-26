@@ -23,15 +23,14 @@ import {
 import { useConversationDetails } from "@/features/dashboard/hooks/use-conversation-details";
 import type { ConversationModelStat } from "@/features/dashboard/schemas";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
-import { formatCompactNumber, formatCurrency, formatDateTimeInline, formatElapsed, formatModelLabel } from "@/utils/formatters";
+import { formatCompactNumber, formatDateTimeInline, formatElapsed, formatModelLabel } from "@/utils/formatters";
 
 type DetailSortKey =
   | "modelEffort"
   | "reqs"
   | "totalElapsedTime"
   | "totalInputTokens"
-  | "totalOutputTokens"
-  | "totalCostUsd";
+  | "totalOutputTokens";
 
 type SortState = { key: DetailSortKey; direction: "asc" | "desc" };
 
@@ -138,7 +137,6 @@ export function ConversationDetailsDialog({
                         <SortableHead label={t("dashboard.conversations.details.columns.totalElapsed")} sortKey="totalElapsedTime" sort={sort} onSort={setSortKey} />
                         <SortableHead label={t("dashboard.conversations.details.columns.totalInput")} sortKey="totalInputTokens" sort={sort} onSort={setSortKey} />
                         <SortableHead label={t("dashboard.conversations.details.columns.totalOutput")} sortKey="totalOutputTokens" sort={sort} onSort={setSortKey} />
-                        <SortableHead label={t("dashboard.conversations.details.columns.totalCost")} sortKey="totalCostUsd" sort={sort} onSort={setSortKey} />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -154,7 +152,6 @@ export function ConversationDetailsDialog({
                             </div>
                           </TableCell>
                           <TableCell className="font-mono text-xs tabular-nums">{formatCompactNumber(stat.totalOutputTokens)}</TableCell>
-                          <TableCell className="font-mono text-xs tabular-nums">{formatCurrency(stat.totalCostUsd)}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

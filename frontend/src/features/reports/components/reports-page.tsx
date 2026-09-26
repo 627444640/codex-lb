@@ -11,7 +11,6 @@ import { useReportChartVisibility } from "@/features/reports/hooks/use-report-ch
 import { getErrorMessageOrNull } from "@/utils/errors";
 import { ReportsFilters, type ReportsFiltersState } from "./reports-filters";
 import { ReportsSummaryCards } from "./reports-summary-cards";
-import type { CostPerDayChartProps } from "./cost-per-day-chart";
 import type { TokensPerDayChartProps } from "./tokens-per-day-chart";
 import type { TimeToFirstTokenChartProps } from "./time-to-first-token-chart";
 import type { TokensPerSecondChartProps } from "./tokens-per-second-chart";
@@ -26,11 +25,6 @@ import {
   localDateISO,
 } from "../date";
 
-const CostPerDayChart = lazy(() =>
-  import("./cost-per-day-chart").then((module) => ({
-    default: (props: CostPerDayChartProps) => <module.CostPerDayChart {...props} />,
-  })),
-);
 const TokensPerDayChart = lazy(() =>
   import("./tokens-per-day-chart").then((module) => ({
     default: (props: TokensPerDayChartProps) => <module.TokensPerDayChart {...props} />,
@@ -316,15 +310,6 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
           />
           {visibleChartIds.length > 0 ? (
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {visibleChartIds.includes("costByDay") ? (
-                <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
-                  <CostPerDayChart
-                    startDate={filters.startDate}
-                    endDate={filters.endDate}
-                    data={reportsQuery.data.daily}
-                  />
-                </Suspense>
-              ) : null}
               {visibleChartIds.includes("tokensByDay") ? (
                 <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
                   <TokensPerDayChart

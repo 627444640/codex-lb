@@ -35,24 +35,14 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
   raw affinity keys, account emails, and other high-cardinality identifiers.
 
 
-## Request cost evidence
+## Token evidence and historical amounts
 
-Request cost figures are retail API estimates. Input tokens include cached
-reads and cache writes; output tokens include reasoning. Request logs preserve
-the original model alongside the reported actual model, cache-write evidence
-and a pricing version. Missing metadata is never manufactured by migration.
+The internal distribution records tokens and model/tier metadata without estimating money. New `cost_usd` and `pricing_version` values are null. Cached reads and writes remain input subsets; reasoning remains included in output. Failed terminal usage remains diagnostic evidence without weakening success-only settlement.
 
-Stored historical amounts remain unchanged when the price table changes.
-Previously unpriced rows may show a current estimate, with incomplete-usage
-status when cache writes are unreported; this display does not backfill stored
-or folded totals. Aggregate amounts therefore identify their known portion.
-Unknown public models have no invented price, and explicitly unknown image
-costs remain unknown after reads and later pricing-table updates.
+Stored historical amounts and price-version strings remain readable for response compatibility and are not repriced. A null old cost stays null. Monetary fields are not shown in the internal dashboard. See [internal token usage](../internal-token-usage/spec.md).
 
-For a concrete example, 16,280 input tokens (15,104 cached reads and 100 writes)
-and 63 output tokens total 16,343 tokens. At the Luna standard short-context
-2026-09-14 snapshot, the estimate is $0.00061788, displayed as $0.000618.
+## Client source addresses
 
-Prices are verified from the [official pricing table](https://developers.openai.com/api/docs/pricing)
-and [cache usage documentation](https://developers.openai.com/api/docs/guides/prompt-caching#monitor-cache-performance).
-They represent API estimates, not subscription credit charges or an invoice.
+Use the existing trusted-proxy resolver at each client entry, then pass its result explicitly through the service and log writer. Six auxiliary operation families now follow the same contract as Responses: transcription, file registration/finalization, thread goals, control operations and explicit warmup. Purely scheduled work has no client address. HTTP bridge forwarding retains its authenticated original-IP context. Arbitrary forwarded headers from untrusted peers cannot override the socket address.
+
+An IP describes the observed network source, which may be a NAT or trusted ingress address rather than a device's private interface. Admins can inspect it; guest views and search keep the existing redaction boundary. No historical IP backfill or additional migration is needed.

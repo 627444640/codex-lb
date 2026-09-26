@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 
 export const REPORT_CHART_DEFINITIONS = [
-  { id: "costByDay", labelKey: "reports.charts.costByDay" },
   { id: "tokensByDay", labelKey: "reports.charts.tokensByDay" },
   { id: "timeToFirstToken", labelKey: "reports.charts.timeToFirstToken" },
   { id: "tokensPerSecond", labelKey: "reports.charts.tokensPerSecond" },

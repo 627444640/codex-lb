@@ -121,60 +121,6 @@ export function ModelSourceFormFields({
         </div>
       </div>
 
-      <div className="space-y-2">
-	        <div className="text-sm font-medium">{t("modelSources.fields.pricing")}</div>
-	        <p className="text-xs text-muted-foreground">
-	          {t("modelSources.fields.pricingDescription")}
-	        </p>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="space-y-1">
-	            <label className="text-xs text-muted-foreground">{t("common.units.input")}</label>
-            <Input
-              value={draft.inputPer1M}
-              onChange={(event) => updateDraft({ inputPer1M: event.target.value })}
-              placeholder="0.00"
-              inputMode="decimal"
-            />
-          </div>
-          <div className="space-y-1">
-	            <label className="text-xs text-muted-foreground">{t("common.units.cached")}</label>
-            <Input
-              value={draft.cachedInputPer1M}
-              onChange={(event) => updateDraft({ cachedInputPer1M: event.target.value })}
-              placeholder="0.00"
-              inputMode="decimal"
-            />
-          </div>
-          <div className="space-y-1">
-	            <label className="text-xs text-muted-foreground">{t("common.units.output")}</label>
-            <Input
-              value={draft.outputPer1M}
-              onChange={(event) => updateDraft({ outputPer1M: event.target.value })}
-              placeholder="0.00"
-              inputMode="decimal"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-	        <div className="text-sm font-medium">{t("modelSources.fields.audioPricing")}</div>
-	        <p className="text-xs text-muted-foreground">
-	          {t("modelSources.fields.audioPricingDescription")}
-	        </p>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="space-y-1">
-	            <label className="text-xs text-muted-foreground">{t("modelSources.fields.perMinute")}</label>
-            <Input
-              value={draft.audioPerMinute}
-              onChange={(event) => updateDraft({ audioPerMinute: event.target.value })}
-              placeholder="0.00"
-              inputMode="decimal"
-            />
-          </div>
-        </div>
-      </div>
-
       <div className="grid gap-2 sm:grid-cols-2">
 	        {CAPABILITY_TOGGLES.map(([key, labelKey]) => (
           <label key={key} className="flex items-center gap-2 rounded-md border p-2 text-sm">

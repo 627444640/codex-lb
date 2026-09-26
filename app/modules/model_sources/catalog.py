@@ -240,57 +240,6 @@ def source_model_supported_tool_types(source: ModelSource, model: str) -> frozen
     return frozenset(supported)
 
 
-def source_model_cost_usd(
-    source: ModelSource,
-    model: str,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int = 0,
-) -> float | None:
-    """Price usage against the source's per-model rates.
-
-    Returns ``None`` when the source has no catalog entry for the model or
-    the entry declares no pricing, so callers can fall back to their default
-    cost handling. Mirrors the subscription pricing semantics: cached input
-    tokens are billed at the cached rate and subtracted from billable input.
-    """
-    entry = next(
-        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
-        None,
-    )
-    if entry is None:
-        return None
-    if entry.input_per_1m is None and entry.cached_input_per_1m is None and entry.output_per_1m is None:
-        return None
-    input_rate = entry.input_per_1m or 0.0
-    cached_rate = entry.cached_input_per_1m if entry.cached_input_per_1m is not None else input_rate
-    output_rate = entry.output_per_1m or 0.0
-    billable_input = max(0, input_tokens - cached_input_tokens)
-    return (
-        (billable_input / 1_000_000) * input_rate
-        + (cached_input_tokens / 1_000_000) * cached_rate
-        + (output_tokens / 1_000_000) * output_rate
-    )
-
-
-def source_model_audio_cost_usd(source: ModelSource, model: str, audio_seconds: float) -> float | None:
-    """Price transcribed audio against the source model's per-minute rate.
-
-    Returns ``None`` when the model has no ``audio_per_minute`` rate so the
-    caller can fall back to token pricing (or fail closed for limited keys).
-    """
-    entry = next(
-        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
-        None,
-    )
-    if entry is None or entry.audio_per_minute is None:
-        return None
-    if audio_seconds <= 0:
-        return 0.0
-    return (audio_seconds / 60.0) * entry.audio_per_minute
-
-
 def _raw_metadata(source_model: ModelSourceModel) -> dict[str, JsonValue]:
     if source_model.raw_metadata_json is None:
         return {}

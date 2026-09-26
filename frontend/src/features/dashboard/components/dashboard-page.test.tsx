@@ -717,21 +717,21 @@ describe("DashboardPage", () => {
 
     renderWithProviders(<DashboardPage />);
 
-    // Summary sentence contains count and cost — text split by Trans/code elements
+    // Summary keeps the conversation and request count without historical money.
     const summaryEls = screen.getAllByText((_, el) => el?.textContent?.includes("The conversation conv_page_summary") ?? false);
     const summaryEl = summaryEls[summaryEls.length - 1];
     expect(summaryEl).toBeInTheDocument();
 
-    // Rendered text contains cost = with no literal backticks
-    expect(summaryEl.textContent).toMatch(/\bcost = /);
+    // Internal dashboards do not display historical costs.
+    expect(summaryEl.textContent).not.toMatch(/\bcost = /);
     expect(summaryEl.textContent).not.toMatch(/`cost =`/);
 
-    // Exactly three <code> elements with expected values
+    // Exactly two <code> elements identify the conversation and request count.
     const codeElements = summaryEl.querySelectorAll("code");
-    expect(codeElements).toHaveLength(3);
+    expect(codeElements).toHaveLength(2);
     expect(codeElements[0].textContent).toBe("conv_page_summary");
     expect(codeElements[1].textContent).toBe("42");
-    expect(codeElements[2].textContent).toBe("$3.14");
+    expect(summaryEl.textContent).not.toContain("$3.14");
 
     // Prove summary is between filters and table via DOM order
     const requestLogsSection = screen.getByRole("heading", { name: "Request Logs" }).closest("section");
@@ -891,7 +891,7 @@ describe("DashboardPage", () => {
     expect(summaryEl).toBeInTheDocument();
     // No filter suffix separator
     expect(summaryEl.textContent).not.toMatch(/filters:/i);
-    expect(summaryEl.textContent).toMatch(/request\(s\), cost =/);
+    expect(summaryEl.textContent).toMatch(/request\(s\)/);
   });
 
   it("dismiss button clears conversationId and resets offset, preserving other filters", () => {

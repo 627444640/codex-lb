@@ -15,7 +15,7 @@ describe("useReportChartVisibility", () => {
     localStorage.clear();
   });
 
-  it("defaults to all five charts and writes the default", () => {
+  it("defaults to all four charts and writes the default", () => {
     const { result } = renderHook(() => useReportChartVisibility());
 
     expect(result.current.visibleChartIds).toEqual(ALL_IDS);
@@ -30,7 +30,7 @@ describe("useReportChartVisibility", () => {
 
     const { result } = renderHook(() => useReportChartVisibility());
 
-    expect(result.current.visibleChartIds).toEqual(["costByDay", "queueWait"]);
+    expect(result.current.visibleChartIds).toEqual(["queueWait"]);
   });
 
   it("discards unknown IDs and preserves an empty array", () => {

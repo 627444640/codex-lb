@@ -25,8 +25,7 @@ export const modelSourceFormSchema = z.object({
 export type ModelSourceFormValues = z.infer<typeof modelSourceFormSchema>;
 
 // Per-model settings the dialogs apply uniformly across every model ID entered
-// for the source. Pricing is USD per 1M tokens; blank means "unknown" (cost
-// settles at $0 for that model).
+// for the source. Historical pricing is not edited by this internal dashboard.
 export type ModelSourceDraft = {
   supportsChatCompletions: boolean;
   supportsResponses: boolean;
@@ -41,10 +40,6 @@ export type ModelSourceDraft = {
   defaultReasoningEffort: string;
   contextWindow: string;
   maxOutputTokens: string;
-  inputPer1M: string;
-  cachedInputPer1M: string;
-  outputPer1M: string;
-  audioPerMinute: string;
 };
 
 export const initialModelSourceDraft: ModelSourceDraft = {
@@ -61,10 +56,6 @@ export const initialModelSourceDraft: ModelSourceDraft = {
   defaultReasoningEffort: "",
   contextWindow: "",
   maxOutputTokens: "",
-  inputPer1M: "",
-  cachedInputPer1M: "",
-  outputPer1M: "",
-  audioPerMinute: "",
 };
 
 export function modelSourceDraftReducer(
@@ -79,13 +70,6 @@ function parsePositiveInt(value: string): number | undefined {
   if (!trimmed) return undefined;
   const parsed = Number.parseInt(trimmed, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function parseNonNegativeFloat(value: string): number | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const parsed = Number.parseFloat(trimmed);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 // The backend has no first-class reasoning column; the flag lives in the
@@ -170,10 +154,6 @@ export function modelInputsFromForm(
 ): ModelSourceModelInput[] {
   const contextWindow = parsePositiveInt(draft.contextWindow);
   const maxOutputTokens = parsePositiveInt(draft.maxOutputTokens);
-  const inputPer1M = parseNonNegativeFloat(draft.inputPer1M);
-  const cachedInputPer1M = parseNonNegativeFloat(draft.cachedInputPer1M);
-  const outputPer1M = parseNonNegativeFloat(draft.outputPer1M);
-  const audioPerMinute = parseNonNegativeFloat(draft.audioPerMinute);
   return values.models
     .split(/[\n,]/)
     .map((model) => model.trim())
@@ -186,10 +166,6 @@ export function modelInputsFromForm(
       supportsStreaming: draft.supportsStreaming,
       supportsTools: draft.supportsTools,
       supportsVision: draft.supportsVision,
-      inputPer1M: inputPer1M ?? null,
-      cachedInputPer1M: cachedInputPer1M ?? null,
-      outputPer1M: outputPer1M ?? null,
-      audioPerMinute: audioPerMinute ?? null,
       rawMetadataJson: mergeReasoningMetadata(
         existingRawMetadata[model],
         draft.supportsReasoning,
@@ -273,10 +249,6 @@ export function draftFromSource(source: ModelSource): ModelSourceDraft {
     defaultReasoningEffort: reasoningMetadata.defaultReasoningEffort,
     contextWindow: numberToInput(firstModel?.contextWindow),
     maxOutputTokens: numberToInput(firstModel?.maxOutputTokens),
-    inputPer1M: numberToInput(firstModel?.inputPer1M),
-    cachedInputPer1M: numberToInput(firstModel?.cachedInputPer1M),
-    outputPer1M: numberToInput(firstModel?.outputPer1M),
-    audioPerMinute: numberToInput(firstModel?.audioPerMinute),
   };
 }
 

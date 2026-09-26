@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/table";
 import type { ApiKey, LimitRule, LimitType } from "@/features/api-keys/schemas";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
-import { formatCompactNumber, formatCurrency, formatTimeLong } from "@/utils/formatters";
+import { formatCompactNumber, formatTimeLong } from "@/utils/formatters";
 
 function formatExpiry(value: string | null, neverLabel: string, displayFormat: DateDisplayFormat): string {
   if (!value) {
@@ -31,29 +31,19 @@ function formatExpiry(value: string | null, neverLabel: string, displayFormat: D
   return `${parsed.date} ${parsed.time}`;
 }
 
-const LIMIT_TYPE_SHORT: Record<LimitType, string> = {
+const LIMIT_TYPE_SHORT: Partial<Record<LimitType, string>> = {
   total_tokens: "Tokens",
   input_tokens: "Input",
   output_tokens: "Output",
-  cost_usd: "Cost",
-  credits: "Credits",
 };
 
 function formatLimitSummary(limits: LimitRule[], t: ReturnType<typeof useTranslation>["t"]): string {
   if (limits.length === 0) return "-";
   return limits
+    .filter((l) => l.limitType !== "cost_usd" && l.limitType !== "credits")
     .map((l) => {
       const type = t(`apiKeys.limitTypes.${l.limitType}`, { defaultValue: LIMIT_TYPE_SHORT[l.limitType] });
-      const isCost = l.limitType === "cost_usd";
-      const isCredits = l.limitType === "credits";
-      const current = isCost
-        ? `$${(l.currentValue / 1_000_000).toFixed(2)}`
-        : formatCompactNumber(l.currentValue);
-      const max = isCost
-        ? `$${(l.maxValue / 1_000_000).toFixed(2)}`
-        : formatCompactNumber(l.maxValue);
-      const suffix = isCost ? l.limitWindow : isCredits ? `${l.limitWindow}` : l.limitWindow;
-      return `${type}: ${current}/${max} ${suffix}`;
+      return `${type}: ${formatCompactNumber(l.currentValue)}/${formatCompactNumber(l.maxValue)} ${l.limitWindow}`;
     })
     .join(" | ");
 }
@@ -62,14 +52,12 @@ function formatUsageSummary(
   requestCount: number,
   totalTokens: number,
   cachedInputTokens: number,
-  totalCostUsd: number,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
   const total = formatCompactNumber(totalTokens);
   const cached = formatCompactNumber(cachedInputTokens);
   const requests = formatCompactNumber(requestCount);
-  const cost = formatCurrency(totalCostUsd);
-  return t("apiKeys.table.usageSummary", { total, cached, requests, cost });
+  return t("apiKeys.table.usageSummary", { total, cached, requests });
 }
 
 function getUsageValue(apiKey: ApiKey, t: ReturnType<typeof useTranslation>["t"]): string {
@@ -81,13 +69,12 @@ function getUsageValue(apiKey: ApiKey, t: ReturnType<typeof useTranslation>["t"]
     apiKey.usageSummary.requestCount,
     apiKey.usageSummary.totalTokens,
     apiKey.usageSummary.cachedInputTokens,
-    apiKey.usageSummary.totalCostUsd,
     t,
   );
 }
 
 function getLimitValue(apiKey: ApiKey, t: ReturnType<typeof useTranslation>["t"]): string {
-  if (apiKey.limits.length === 0) {
+  if (!apiKey.limits.some((limit) => limit.limitType !== "cost_usd" && limit.limitType !== "credits")) {
     return t("apiKeys.table.noLimit");
   }
 

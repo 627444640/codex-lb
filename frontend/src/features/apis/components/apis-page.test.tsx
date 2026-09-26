@@ -185,10 +185,10 @@ describe("ApisPage", () => {
 		});
 
 		expect(screen.getByText("Overview")).toBeInTheDocument();
-		expect(screen.getByText("Lifetime Cost by API Key")).toBeInTheDocument();
+		expect(screen.getByText("Requests by API Key")).toBeInTheDocument();
 		expect(screen.getByText("Lifetime Tokens by API Key")).toBeInTheDocument();
 		expect(
-			within(screen.getByTestId("api-keys-overview-cost-panel")).getByText("Secondary key"),
+			within(screen.getByTestId("api-keys-overview-requests-panel")).getByText("Secondary key"),
 		).toBeInTheDocument();
 	});
 });

@@ -1,3 +1,5 @@
+> **Status: superseded.** This historical delta is replaced for the internal distribution by [internal-token-only-usage](../../../internal-token-only-usage/proposal.md) and the active [telemetry retirement requirements](../../../../specs/telemetry/spec.md). It does not authorize or require any new opt-out send.
+
 ## ADDED Requirements
 
 ### Requirement: Snapshot payload declares active consent

@@ -174,6 +174,7 @@ class _WarmupMixin:
         mode: str,
         headers: Mapping[str, str],
         api_key: ApiKeyData | None = None,
+        client_ip: str | None = None,
     ) -> WarmupExecutionData:
         normalized_mode = mode.strip().lower()
         if normalized_mode not in _WARMUP_MODES:
@@ -248,6 +249,7 @@ class _WarmupMixin:
                     headers=filtered_headers,
                     warmup_model=effective_model,
                     prohibit_fast_mode=prohibit_fast_mode,
+                    client_ip=client_ip,
                 )
 
         submission_results = await asyncio.gather(*(_submit_account_warmup(account) for account in accounts_to_submit))
@@ -299,6 +301,7 @@ class _WarmupMixin:
         headers: Mapping[str, str],
         warmup_model: str,
         prohibit_fast_mode: bool,
+        client_ip: str | None = None,
     ) -> _WarmupSubmitResult:
         started_at = time.monotonic()
         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
@@ -460,6 +463,7 @@ class _WarmupMixin:
                     useragent=useragent,
                     useragent_group=useragent_group,
                     conversation_id=conversation_id,
+                    client_ip=client_ip,
                 )
             finally:
                 await proxy._release_websocket_reservation(reservation)

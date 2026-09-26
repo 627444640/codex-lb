@@ -51,7 +51,6 @@ import {
   formatDateTimeInline,
   formatDateTimeLines,
   formatCompactNumber,
-  formatRequestCost,
   formatModelLabel,
   formatElapsed,
   formatSlug,
@@ -230,66 +229,6 @@ function RequestLogTableHead({
   );
 }
 
-function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<typeof useTranslation>["t"]): string | null {
-  if (!request || request.status !== "ok") {
-    return null;
-  }
-
-  const totalUsd = request.costBreakdown?.totalUsd ?? request.costUsd;
-  const segments: string[] = [];
-  const cachedInputTokens = request.cachedInputTokens ?? 0;
-  const nonCachedInputTokens =
-    request.inputTokens == null ? null : Math.max(0, request.inputTokens - cachedInputTokens - (request.cacheWriteTokens ?? 0));
-
-  if (nonCachedInputTokens != null && request.costBreakdown?.inputUsd != null) {
-    segments.push(
-      t("dashboard.requestDetails.costSegment", {
-        count: formatCompactNumber(nonCachedInputTokens),
-        label: t("common.units.input"),
-        cost: formatRequestCost(request.costBreakdown.inputUsd),
-      }),
-    );
-  }
-
-  if (request.cachedInputTokens != null && request.costBreakdown?.cachedInputUsd != null) {
-    segments.push(
-      t("dashboard.requestDetails.costSegment", {
-        count: formatCompactNumber(request.cachedInputTokens),
-        label: t("common.units.cached"),
-        cost: formatRequestCost(request.costBreakdown.cachedInputUsd),
-      }),
-    );
-  }
-
-  if (request.cacheWriteTokens != null && request.costBreakdown?.cacheWriteUsd != null) {
-    segments.push(t("dashboard.requestDetails.costSegment", {
-      count: formatCompactNumber(request.cacheWriteTokens),
-      label: t("dashboard.requestDetails.cacheWrite"),
-      cost: formatRequestCost(request.costBreakdown.cacheWriteUsd),
-    }));
-  }
-
-  if (request.outputTokens != null && request.costBreakdown?.outputUsd != null) {
-    segments.push(
-      t("dashboard.requestDetails.costSegment", {
-        count: formatCompactNumber(request.outputTokens),
-        label: t("common.units.output"),
-        cost: formatRequestCost(request.costBreakdown.outputUsd),
-      }),
-    );
-  }
-
-  if (segments.length === 0) {
-    return null;
-  }
-
-  if (totalUsd == null) {
-    return segments.join(" + ");
-  }
-
-  return `${formatRequestCost(totalUsd)} = ${segments.join(" + ")}`;
-}
-
 function formatGenerationSpeed(request: RequestLog): string | null {
   return request.generationTps == null ? null : `≈${request.generationTps.toFixed(1)}`;
 }
@@ -324,7 +263,6 @@ export function RecentRequestsTable({
   const blurred = usePrivacyStore((s) => s.blurred);
   const isAdmin = useAuthStore((state) => state.role === "admin");
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
-  const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
   const visibleColumns = configuredVisibleColumns ?? ALL_REQUEST_LOG_COLUMNS;
   const visibleColumnSet = useMemo(() => new Set(visibleColumns), [visibleColumns]);
   const hasConfiguredLayout =
@@ -404,7 +342,7 @@ export function RecentRequestsTable({
               {isColumnVisible("ttft") ? <RequestLogTableHead column="ttft" label={t("dashboard.requests.columns.ttft")} description={t("dashboard.requestDetails.ttftExplanation")} resizeLabel={resizeLabel(t("dashboard.requests.columns.ttft"))} className="text-right" width={columnWidths?.ttft} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("tps") ? <RequestLogTableHead column="tps" label={t("dashboard.requests.columns.tps")} description={t("dashboard.requestDetails.tpsExplanation")} resizeLabel={resizeLabel(t("dashboard.requests.columns.tps"))} className="text-right" width={columnWidths?.tps} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("tokens") ? <RequestLogTableHead column="tokens" label={t("dashboard.requests.columns.tokens")} resizeLabel={resizeLabel(t("dashboard.requests.columns.tokens"))} className="text-right" width={columnWidths?.tokens} onWidthChange={onColumnWidthChange} /> : null}
-              {isColumnVisible("cost") ? <RequestLogTableHead column="cost" label={t("dashboard.requests.columns.cost")} resizeLabel={resizeLabel(t("dashboard.requests.columns.cost"))} className="text-right" width={columnWidths?.cost} onWidthChange={onColumnWidthChange} /> : null}
+              {isColumnVisible("clientIp") ? <RequestLogTableHead column="clientIp" label={t("dashboard.requests.columns.clientIp")} resizeLabel={resizeLabel(t("dashboard.requests.columns.clientIp"))} width={columnWidths?.clientIp} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("details") ? <RequestLogTableHead column="details" label={t("dashboard.requests.columns.details")} resizeLabel={resizeLabel(t("dashboard.requests.columns.details"))} className="pr-4" width={columnWidths?.details} onWidthChange={onColumnWidthChange} /> : null}
             </TableRow>
           </TableHeader>
@@ -507,7 +445,14 @@ export function RecentRequestsTable({
                   </TableCell> : null}
                   {isColumnVisible("tokens") ? <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     <div className="leading-tight">
-                      <div>{formatCompactNumber(request.tokens)}</div>
+                      <div>{request.tokens == null
+                        ? t("usage.unknown")
+                        : `${request.usageStatus === "partial" ? "≥ " : ""}${formatCompactNumber(request.tokens)}`}</div>
+                      {request.usageStatus === "partial" ? (
+                        <div className="text-[11px] text-muted-foreground" title={t("usage.partialNotice")}>
+                          {t("usage.status.partial")}
+                        </div>
+                      ) : null}
                       {request.cachedInputTokens != null && request.cachedInputTokens > 0 && (
                         <div className="text-[11px] text-muted-foreground">
                           {t("common.units.cachedShort", { count: formatCompactNumber(request.cachedInputTokens) })}
@@ -522,13 +467,8 @@ export function RecentRequestsTable({
                       ) : null}
                     </div>
                   </TableCell> : null}
-                  {isColumnVisible("cost") ? <TableCell className="whitespace-normal text-right align-top font-mono text-xs tabular-nums">
-                    <div className="break-all">{formatRequestCost(request.costUsd)}</div>
-                    {request.costStatus ? (
-                      <div className="break-words font-sans text-[11px] leading-tight text-muted-foreground">
-                        {t(`dashboard.requestCost.status.${request.costStatus}`)}
-                      </div>
-                    ) : null}
+                  {isColumnVisible("clientIp") ? <TableCell className="break-all align-top font-mono text-xs">
+                    {isAdmin ? request.clientIp ?? "—" : "—"}
                   </TableCell> : null}
                   {isColumnVisible("details") ? <TableCell className="pr-4 align-top whitespace-normal">
                     {hasError ? (
@@ -601,6 +541,9 @@ export function RecentRequestsTable({
                 compactCopy
               />
               <div className="grid gap-3 sm:grid-cols-3">
+                {selectedRequest?.usageStatus ? (
+                  <RequestDetailField label={t("usage.statusLabel")} value={t(`usage.status.${selectedRequest.usageStatus}`)} />
+                ) : null}
                 <RequestDetailField label={t("dashboard.requests.columns.status")} value={selectedRequest ? t(`dashboard.requestStatus.${selectedRequest.status}`, { defaultValue: REQUEST_STATUS_LABELS[selectedRequest.status] ?? selectedRequest.status }) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.model")} value={selectedRequest ? formatModelLabel(selectedRequest.model, selectedRequest.reasoningEffort, selectedRequest.actualServiceTier ?? selectedRequest.serviceTier) : "—"} mono />
                 {selectedRequest?.actualModel ? <RequestDetailField label={t("dashboard.requestDetails.actualModel")} value={selectedRequest.actualModel} mono /> : null}
@@ -622,8 +565,13 @@ export function RecentRequestsTable({
                 {selectedRequest?.inputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.inputTokensIncluded")} value={String(selectedRequest.inputTokens)} mono /> : null}
                 {selectedRequest?.cachedInputTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cachedTokensIncluded")} value={String(selectedRequest.cachedInputTokens)} mono /> : null}
                 {selectedRequest?.cacheWriteTokens != null ? <RequestDetailField label={t("dashboard.requestDetails.cacheWriteTokensIncluded")} value={String(selectedRequest.cacheWriteTokens)} mono /> : null}
-                {selectedRequest?.outputTokensRaw != null ? <RequestDetailField label={t("dashboard.requestDetails.outputTokensIncluded")} value={String(selectedRequest.outputTokensRaw)} mono /> : null}
+                <RequestDetailField label={t("dashboard.requestDetails.outputTokensIncluded")} value={selectedRequest?.outputTokensRaw == null ? t("usage.unknown") : String(selectedRequest.outputTokensRaw)} mono />
               </div>
+              {selectedRequest?.usageStatus === "partial" ? (
+                <p className="text-xs text-muted-foreground">{t("usage.partialNotice")}</p>
+              ) : selectedRequest?.usageStatus === "missing" ? (
+                <p className="text-xs text-muted-foreground">{t("usage.missingNotice")}</p>
+              ) : null}
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt, dateDisplayFormat) : "—"} />
@@ -725,20 +673,6 @@ export function RecentRequestsTable({
                 requestedAt={selectedRequest?.requestedAt}
               />
             ) : null}
-
-            {selectedRequestCostSummary || selectedRequest?.costStatus ? (
-              <div className="space-y-2">
-                <h3 className="text-sm font-medium">{t("dashboard.requests.columns.cost")}</h3>
-                <div className="rounded-md bg-muted/50 p-3">
-                  <p className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{selectedRequestCostSummary ?? formatRequestCost(selectedRequest?.costUsd)}</p>
-                  {selectedRequest?.costStatus ? (
-                    <p className="mt-2 text-xs text-muted-foreground">{t(`dashboard.requestCost.explanation.${selectedRequest.costStatus}`)}</p>
-                  ) : null}
-                  {selectedRequest?.pricingVersion ? <RequestDetailField label={t("dashboard.requestDetails.pricingVersion")} value={selectedRequest.pricingVersion} mono /> : null}
-                </div>
-              </div>
-            ) : null}
-
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-medium">{t("dashboard.requestDetails.fullError")}</h3>

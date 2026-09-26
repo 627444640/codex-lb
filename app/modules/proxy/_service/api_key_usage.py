@@ -120,11 +120,7 @@ class _ApiKeyUsageMixin:
                         request_usage_budget=request_usage_budget,
                     )
                 except ApiKeyRateLimitExceededError as exc:
-                    message = (
-                        str(exc)
-                        if exc.code == "pricing_unavailable"
-                        else f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-                    )
+                    message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
                     raise ProxyRateLimitError(message, code=exc.code) from exc
                 except ApiKeyInvalidError as exc:
                     raise ProxyAuthError(str(exc)) from exc

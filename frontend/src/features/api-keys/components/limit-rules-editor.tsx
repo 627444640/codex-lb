@@ -33,7 +33,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
     // If any non-standard rule exists, start in advanced mode
     return rules.some(
       (r) =>
-        (r.limitType !== "total_tokens" && r.limitType !== "cost_usd") ||
+        r.limitType !== "total_tokens" ||
         r.limitWindow !== "weekly" ||
         (r.modelFilter !== null && r.modelFilter !== undefined),
     );
@@ -43,10 +43,6 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
   const weeklyTokenRule = rules.find(
     (r) => r.limitType === "total_tokens" && r.limitWindow === "weekly" && !r.modelFilter,
   );
-  const weeklyCostRule = rules.find(
-    (r) => r.limitType === "cost_usd" && r.limitWindow === "weekly" && !r.modelFilter,
-  );
-
   const handleBasicTokenChange = (raw: string) => {
     const val = raw ? parseInt(raw, 10) : 0;
     const otherRules = rules.filter(
@@ -56,26 +52,6 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
       onChange([
         ...otherRules,
         { limitType: "total_tokens", limitWindow: "weekly", maxValue: val, modelFilter: null },
-      ]);
-    } else {
-      onChange(otherRules);
-    }
-  };
-
-  const handleBasicCostChange = (raw: string) => {
-    const usd = raw ? parseFloat(raw) : 0;
-    const otherRules = rules.filter(
-      (r) => !(r.limitType === "cost_usd" && r.limitWindow === "weekly" && !r.modelFilter),
-    );
-    if (usd > 0) {
-      onChange([
-        ...otherRules,
-        {
-          limitType: "cost_usd",
-          limitWindow: "weekly",
-          maxValue: Math.round(usd * 1_000_000),
-          modelFilter: null,
-        },
       ]);
     } else {
       onChange(otherRules);
@@ -122,22 +98,6 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
               min={1}
               value={weeklyTokenRule ? String(weeklyTokenRule.maxValue) : ""}
               onChange={(e) => handleBasicTokenChange(e.target.value)}
-              placeholder={t("apiKeys.limitRules.noLimit")}
-            />
-          </div>
-          <div>
-            <label htmlFor="weekly-cost-limit" className="text-xs text-muted-foreground">{t("apiKeys.limitRules.weeklyCostLimit")}</label>
-            <Input
-              id="weekly-cost-limit"
-              type="number"
-              min={0.01}
-              step={0.01}
-              value={
-                weeklyCostRule && weeklyCostRule.maxValue > 0
-                  ? String(weeklyCostRule.maxValue / 1_000_000)
-                  : ""
-              }
-              onChange={(e) => handleBasicCostChange(e.target.value)}
               placeholder={t("apiKeys.limitRules.noLimit")}
             />
           </div>

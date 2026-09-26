@@ -99,7 +99,9 @@ class ModelSourcesService:
         models_replaced = False
         try:
             if "models" in fields and payload.models is not None:
-                await self._repository.replace_models(row, _model_inputs_to_rows(payload.models), commit=False)
+                await self._repository.replace_models(
+                    row, _model_inputs_to_rows(payload.models, existing_models=row.models), commit=False
+                )
                 models_replaced = True
             await self._repository.commit()
         except Exception:
@@ -157,7 +159,10 @@ def _validate_raw_metadata_json(value: str | None) -> str | None:
     return json.dumps(parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _model_inputs_to_rows(models: list[ModelSourceModelInput]) -> list[ModelSourceModel]:
+def _model_inputs_to_rows(
+    models: list[ModelSourceModelInput], *, existing_models: list[ModelSourceModel] | None = None
+) -> list[ModelSourceModel]:
+    existing_by_model = {entry.model: entry for entry in existing_models or []}
     seen: set[str] = set()
     rows: list[ModelSourceModel] = []
     for item in models:
@@ -165,6 +170,7 @@ def _model_inputs_to_rows(models: list[ModelSourceModelInput]) -> list[ModelSour
         if model in seen:
             raise ModelSourceValidationError(f"Duplicate model source model: {model}")
         seen.add(model)
+        historical = existing_by_model.get(model)
         rows.append(
             ModelSourceModel(
                 model=model,
@@ -174,10 +180,12 @@ def _model_inputs_to_rows(models: list[ModelSourceModelInput]) -> list[ModelSour
                 supports_streaming=item.supports_streaming,
                 supports_tools=item.supports_tools,
                 supports_vision=item.supports_vision,
-                input_per_1m=item.input_per_1m,
-                cached_input_per_1m=item.cached_input_per_1m,
-                output_per_1m=item.output_per_1m,
-                audio_per_minute=item.audio_per_minute,
+                # Price inputs are retired. Preserve old values through
+                # ordinary model edits; newly added models have no prices.
+                input_per_1m=historical.input_per_1m if historical else None,
+                cached_input_per_1m=historical.cached_input_per_1m if historical else None,
+                output_per_1m=historical.output_per_1m if historical else None,
+                audio_per_minute=historical.audio_per_minute if historical else None,
                 raw_metadata_json=_validate_raw_metadata_json(item.raw_metadata_json),
                 is_enabled=item.is_enabled,
             )

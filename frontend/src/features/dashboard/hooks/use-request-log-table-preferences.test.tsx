@@ -23,6 +23,16 @@ describe("useRequestLogTablePreferences", () => {
     expect(result.current.columnWidths).toEqual({});
   });
 
+  it("replaces a retired cost column with source IP without resetting other preferences", () => {
+    window.localStorage.setItem(
+      REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ visibleColumns: ["time", "cost"], columnWidths: { time: 240, cost: 64 } }),
+    );
+    const { result } = renderHook(() => useRequestLogTablePreferences());
+    expect(result.current.visibleColumns).toEqual(["time", "clientIp"]);
+    expect(result.current.columnWidths).toEqual({ time: 240 });
+  });
+
   it("persists visible columns and individual widths across remounts", () => {
     const { result, unmount } = renderHook(() => useRequestLogTablePreferences());
 

@@ -216,8 +216,9 @@ class QuotaPlannerRepository:
         """Atomically claim a planned warmup decision within the daily budgets.
 
         The planned -> executing transition is the single authoritative budget
-        enforcement point: one conditional UPDATE whose WHERE clause embeds both
-        daily guards. The count budget includes in-flight ``executing`` decisions
+        enforcement point: one conditional UPDATE whose WHERE clause enforces
+        the daily count. Historical monetary budgets are inactive. The count
+        budget includes in-flight ``executing`` decisions
         in addition to ``executed`` ones so a probe reserves budget the moment it
         is claimed. The claim stamps its own timestamp into ``executed_at``
         (overwritten with the completion time when the probe finishes), and
@@ -241,24 +242,12 @@ class QuotaPlannerRepository:
         active_warmups = (
             select(func.count(QuotaPlannerDecision.id)).where(_active_warmup_budget_clause(since)).scalar_subquery()
         )
-        warmup_cost = (
-            select(func.coalesce(func.sum(RequestLog.cost_usd), 0.0))
-            .where(
-                and_(
-                    RequestLog.request_kind == "warmup",
-                    RequestLog.requested_at >= since,
-                    RequestLog.deleted_at.is_(None),
-                )
-            )
-            .scalar_subquery()
-        )
         stmt = (
             update(QuotaPlannerDecision)
             .where(
                 QuotaPlannerDecision.id == decision_id,
                 QuotaPlannerDecision.status == "planned",
                 active_warmups < max_warmups,
-                warmup_cost < max_credits,
             )
             .values(status="executing", reason="warmup_executing", executed_at=to_utc_naive(utcnow()))
             .returning(QuotaPlannerDecision.id)

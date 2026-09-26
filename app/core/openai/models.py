@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from app.core.types import JsonValue
+from app.core.usage.validation import parse_token_count
 
 type ModelLikeInput = JsonValue | BaseModel
 
@@ -51,10 +52,10 @@ class ResponseUsageDetails(BaseModel):
     cache_write_tokens: StrictInt | None = None
     reasoning_tokens: StrictInt | None = None
 
-    @field_validator("cache_write_tokens", mode="before")
+    @field_validator("cached_tokens", "cache_write_tokens", "reasoning_tokens", mode="before")
     @classmethod
-    def _normalize_cache_write_tokens(cls, value: object) -> int | None:
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    def _normalize_token_count(cls, value: object) -> int | None:
+        return parse_token_count(value)
 
 
 class ResponseUsage(BaseModel):
@@ -65,6 +66,16 @@ class ResponseUsage(BaseModel):
     total_tokens: StrictInt | None = None
     input_tokens_details: ResponseUsageDetails | None = None
     output_tokens_details: ResponseUsageDetails | None = None
+
+    @field_validator("input_tokens", "output_tokens", "total_tokens", mode="before")
+    @classmethod
+    def _normalize_token_count(cls, value: object) -> int | None:
+        return parse_token_count(value)
+
+    @field_validator("input_tokens_details", "output_tokens_details", mode="before")
+    @classmethod
+    def _normalize_details(cls, value: ModelLikeInput | None) -> ResponseUsageDetails | None:
+        return _normalize_model_value(ResponseUsageDetails, value)
 
 
 class OpenAIResponse(BaseModel):

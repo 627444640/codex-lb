@@ -14,6 +14,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from alembic.script.revision import RevisionError
 from anyio import to_thread
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy import exc as sa_exc
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 _ALEMBIC_VERSION_TABLE = "alembic_version"
 _ALEMBIC_VERSION_COLUMN = "version_num"
 _LEGACY_MIGRATIONS_TABLE = "schema_migrations"
+_REQUEST_LOG_COST_BACKFILL_REVISION = "20260325_000000_add_request_log_cost"
 _REQUIRED_TABLES_FOR_LEGACY_STAMP = frozenset(
     {
         "accounts",
@@ -665,6 +667,65 @@ def _schema_ahead_error(state: MigrationState) -> MigrationBootstrapError:
     )
 
 
+def _protect_historical_request_log_costs(
+    config: Config,
+    target_revision: str,
+    *,
+    bootstrap_legacy: bool,
+    auto_remap_legacy_revisions: bool,
+) -> None:
+    """Reject a destructive old backfill before any bootstrap or revision writes."""
+    with _sync_connection(_required_sqlalchemy_url(config)) as connection:
+        tables = _read_table_names(connection)
+        if "request_logs" not in tables:
+            return
+        if "cost_usd" not in {column["name"] for column in inspect(connection).get_columns("request_logs")}:
+            return
+        if connection.scalar(text("SELECT 1 FROM request_logs WHERE cost_usd IS NOT NULL LIMIT 1")) is None:
+            return
+
+        current_revisions = (
+            _read_current_revisions_from_connection(connection) if _ALEMBIC_VERSION_TABLE in tables else ()
+        )
+        if auto_remap_legacy_revisions:
+            effective_revisions = {OLD_TO_NEW_REVISION_MAP.get(revision, revision) for revision in current_revisions}
+            if (
+                _BRANCHED_ENFORCEMENT_LEGACY_REVISION in current_revisions
+                and effective_revisions & _BRANCHED_ENFORCEMENT_DESCENDANT_REVISIONS
+            ):
+                effective_revisions.discard(_BRANCHED_ENFORCEMENT_REPAIR_ANCESTOR)
+            current_revisions = tuple(sorted(effective_revisions))
+
+        # Match the prospective legacy stamp without executing it. All legacy
+        # prefix revisions predate the cost backfill, but relative targets
+        # such as +1 still need the same starting revision as the real upgrade.
+        if (
+            bootstrap_legacy
+            and _ALEMBIC_VERSION_TABLE not in tables
+            and _LEGACY_MIGRATIONS_TABLE in tables
+            and not _missing_required_legacy_tables_for_stamp(tables)
+        ):
+            prefix_count = _contiguous_prefix_count(_read_legacy_migration_names(connection))
+            if prefix_count:
+                current_revisions = (LEGACY_TO_REVISION[LEGACY_MIGRATION_ORDER[prefix_count - 1]],)
+
+    scripts = ScriptDirectory.from_config(config)
+    try:
+        pending_revisions = scripts.iterate_revisions(target_revision, current_revisions, implicit_base=True)
+        cost_backfill_pending = any(step.revision == _REQUEST_LOG_COST_BACKFILL_REVISION for step in pending_revisions)
+    except RevisionError as exc:
+        raise MigrationBootstrapError(
+            "Cannot verify the upgrade path while preserving historical request-log amounts"
+        ) from exc
+    if cost_backfill_pending:
+        raise MigrationBootstrapError(
+            f"Refusing upgrade through {_REQUEST_LOG_COST_BACKFILL_REVISION}: "
+            "request_logs.cost_usd already contains historical amounts, including possible zero values. "
+            "This retired backfill would overwrite them because this build does not calculate monetary usage. "
+            "No migration or revision changes were made; a reviewed schema-compatibility plan is required."
+        )
+
+
 def run_upgrade(
     database_url: str,
     revision: str = "head",
@@ -714,6 +775,13 @@ def _run_upgrade_locked(
             current_revision=state_before.current_revision,
             bootstrap=_NO_LEGACY_BOOTSTRAP,
         )
+
+    _protect_historical_request_log_costs(
+        config,
+        revision,
+        bootstrap_legacy=bootstrap_legacy,
+        auto_remap_legacy_revisions=auto_remap_legacy_revisions,
+    )
 
     config.attributes["codex_lb_fresh_install"] = (
         state_before.current_revision is None

@@ -75,7 +75,7 @@ The service MUST expose metrics and structured logs for HTTP bridge routing deci
 
 ### Requirement: Responses concurrency pressure is observable
 
-The service MUST expose low-cardinality logs and metrics for account-local in-flight create count, active stream count, leased token/cost pressure, cap rejections, lease stale reclaims, soft-affinity reroutes, and local-vs-upstream 429 classification. Observability MUST avoid raw prompt text, raw affinity keys, API keys, emails, request ids, session ids, and request payload content.
+The service MUST expose low-cardinality logs and metrics for account-local in-flight create count, active stream count, leased token pressure, cap rejections, lease stale reclaims, soft-affinity reroutes, and local-vs-upstream 429 classification. Observability MUST avoid raw prompt text, raw affinity keys, API keys, emails, request ids, session ids, and request payload content.
 
 The service MUST expose a Prometheus gauge named `codex_lb_account_inflight_leases` labeled by `account_id` and `kind`, where `kind` is either `stream` or `response_create`. The gauge value MUST equal the current in-process account lease count for that account and kind. The gauge MUST update when a lease is acquired, explicitly released, or reclaimed as stale. Gauge labels MUST NOT include raw prompt text, raw affinity keys, API keys, emails, request ids, session ids, or request payload content.
 
@@ -360,9 +360,9 @@ logging MUST preserve the same value derived from the inbound request headers.
 - **WHEN** the model-source path persists its request log
 - **THEN** the persisted log contains the detected conversation ID
 
-### Requirement: Request logs persist client IP for Responses traffic
+### Requirement: Request logs persist trusted client IP for client-originated traffic
 
-The proxy MUST persist the resolved edge client IP on `request_logs.client_ip` for HTTP, SSE, and WebSocket Responses request-log rows when a client IP is available. The proxy MUST resolve the value using the existing trusted-proxy policy, including configured trusted proxy CIDRs and supported forwarded-client-IP headers. When no client IP is available, the persisted value MUST be `null`.
+The proxy MUST persist the resolved edge client IP on `request_logs.client_ip` for client-originated request-log rows when a client IP is available, including HTTP/SSE/WebSocket Responses, compact, image and source-routed requests, transcription, file creation/finalization, thread goals, control operations and explicit client warmup. The proxy MUST resolve the value using the existing trusted-proxy policy, including configured trusted proxy CIDRs and supported forwarded-client-IP headers. When no client IP is available, the persisted value MUST be `null`.
 
 #### Scenario: Direct Responses request stores socket client IP
 
@@ -385,9 +385,28 @@ The proxy MUST persist the resolved edge client IP on `request_logs.client_ip` f
 - **AND** the ambient request id still references the old session request
 - **THEN** the upstream request payload is archived under the retried request's archive id
 
+#### Scenario: Auxiliary client operations retain IP on success and failure
+
+- **WHEN** a client invokes transcription, file creation/finalization, thread goals, control operations or explicit warmup
+- **THEN** each resulting request-log row retains the trusted ingress IP through success and failure paths
+- **AND** an untrusted socket peer cannot override its source IP using a forged forwarded header
+
+#### Scenario: Background and historical rows have no inferred device address
+
+- **WHEN** scheduled warmup or automation creates a request log without a client
+- **THEN** its client IP is null
+- **AND** historical null IP values are not guessed or backfilled
+
+#### Scenario: Client IP retains dashboard role boundaries
+
+- **WHEN** an administrator reads request logs
+- **THEN** available IP values are exposed as `clientIp` and shown in the default request-log table
+- **WHEN** a guest reads or searches request logs
+- **THEN** IP fields remain redacted and IP search does not disclose hidden rows
+
 ### Requirement: Request-log search matches client IP
 
-Request-log search MUST match persisted `client_ip` values.
+Administrator request-log search MUST match persisted `client_ip` values. Guest search MUST NOT match hidden client IP fields.
 
 #### Scenario: Search by client IP returns matching rows
 
@@ -799,40 +818,38 @@ When Prometheus support is available the service MUST expose a gauge named `code
 - **WHEN** the warning is logged
 - **THEN** it includes the requester's `api_key_id`, key in-flight count, fair share, pool in-flight, pool capacity, and active-key count and no other key's identifier
 
-### Requirement: Request costs retain pricing and usage evidence
-Request logs MUST preserve the upstream input, output, cache-read, and reported cache-write token counts, actual response model, and pricing version. Cached and cache-write tokens MUST be treated as disjoint subsets of input, and reasoning tokens as a subset of output. Terminal failed responses that carry usage MUST retain that usage without changing the existing success-only quota settlement policy.
+### Requirement: Request logs retain token evidence without monetary estimates
+
+Request logs MUST preserve upstream input, output, cache-read, reported cache-write and reasoning token evidence and both requested and actual model identities. Cached reads and writes MUST be treated as disjoint input subsets, and reasoning as included in output. New logs MUST store null `cost_usd` and `pricing_version`; neither log creation nor model/usage correction may estimate a price. Failed terminal responses carrying usage MUST retain that usage without changing success-only quota settlement.
 
 #### Scenario: Terminal failure contains usage
+
 - **WHEN** a failed Responses event carries valid usage
-- **THEN** the request log retains those tokens and the failure status
+- **THEN** the request log retains the tokens and failure status
+- **AND** no monetary cost is generated
 
 #### Scenario: Upstream selects a different model
+
 - **WHEN** the response reports a model different from the requested model
-- **THEN** the log preserves both identities and uses the actual model for its API cost estimate
+- **THEN** both identities are preserved
+- **AND** reported usage is recorded without looking up either model's price
 
-### Requirement: Request cost precision and provenance
-The request-log API and dashboard MUST preserve positive sub-cent costs. The dashboard MUST distinguish unknown models, unknown service-tier or context prices, missing usage, incomplete usage, historical stored estimates, and current estimates. A known model with complete usage but no verified tier/context price MUST have null cost and the `unknown_pricing` status. It MUST identify aggregate costs as sums of known estimates. Migration MUST preserve existing token counts and stored costs and leave newly unavailable metadata null; reading historical rows MUST NOT rewrite their persisted costs.
+### Requirement: Historical monetary evidence is preserved without repricing
 
-#### Scenario: Positive sub-cent cost
-- **WHEN** a request costs 0.00061288 USD
-- **THEN** its displayed amount is positive and is not rounded to 0.00 USD
+Existing stored request costs and pricing versions MUST remain unchanged. Legacy API cost fields MAY expose stored historical values and aggregates of those values. Missing historical costs MUST remain unavailable; new request costs MUST remain null and MAY expose `not_applicable` in a compatible cost-status field. Reads MUST NOT compute estimates, manufacture price metadata or rewrite history. The dashboard MUST NOT render monetary totals or breakdowns.
 
-#### Scenario: Unknown public model
-- **WHEN** no verified pricing exists for a model and no stored estimate is available
-- **THEN** its cost is unknown rather than zero or a guessed alias price
+#### Scenario: Historical stored amount survives a read
 
-#### Scenario: Historical rate changes
-- **WHEN** a historical row contains an estimate calculated before the current pricing version
-- **THEN** the stored amount is retained and identified as historical
+- **GIVEN** an old row stores a positive sub-cent amount and pricing version
+- **WHEN** an operator reads its request-log API representation
+- **THEN** the stored amount remains unrounded and unchanged
+- **AND** no price lookup or write is performed
 
-#### Scenario: Cache writes were not reported
-- **WHEN** a model charges separately for cache writes and the upstream omits that count
-- **THEN** an available base estimate is identified as incomplete
+#### Scenario: New and historical null amounts stay unpriced
 
-#### Scenario: Tier has no public rate
-- **WHEN** Sol reports complete usage on ultrafast without a stored estimate
-- **THEN** the request-log API returns null cost and unknown_pricing
-- **AND** the dashboard labels the price as unknown
+- **WHEN** usage is read for a row with no stored cost
+- **THEN** a known model, tier or complete token count does not cause a price estimate
+- **AND** the monetary amount remains null
 
 ### Requirement: Generation latency ends at upstream completion
 

@@ -20,7 +20,6 @@ import { usePrivacyStore } from "@/hooks/use-privacy";
 import {
   formatCompactNumber,
   formatConversationDuration,
-  formatCurrency,
   formatNumber,
   formatDateTimeLines,
 } from "@/utils/formatters";
@@ -122,7 +121,6 @@ export function ConversationTable({
                 <TableHead className={`w-[12%] ${headerClass}`}>{t("dashboard.conversations.columns.models")}</TableHead>
                 <TableHead className={`w-[8%] text-right ${headerClass}`}>{t("dashboard.conversations.columns.requests")}</TableHead>
                 <TableHead className={`w-[9%] text-right ${headerClass}`}>{t("dashboard.conversations.columns.tokens")}</TableHead>
-                <TableHead className={`w-[6%] text-right ${headerClass}`}>{t("dashboard.conversations.columns.cost")}</TableHead>
                 <TableHead className={`w-[7%] pr-4 ${headerClass}`}>{t("dashboard.conversations.columns.details")}</TableHead>
               </TableRow>
             </TableHeader>
@@ -181,9 +179,6 @@ export function ConversationTable({
                           count: formatCachedTokenCount(conversation.cachedInputTokens),
                         })}
                       </div>
-                    </TableCell>
-                    <TableCell className="text-right align-top font-mono text-xs tabular-nums">
-                      {formatCurrency(conversation.totalCostUsd)}
                     </TableCell>
                     <TableCell className="pr-4 align-top">
                       <Button

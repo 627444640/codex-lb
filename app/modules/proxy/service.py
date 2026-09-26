@@ -984,6 +984,7 @@ class ProxyService(
         method: str = "POST",
         codex_session_affinity: bool = True,
         api_key: ApiKeyData | None = None,
+        client_ip: str | None = None,
     ) -> dict[str, JsonValue]:
         filtered = filter_inbound_headers(headers)
         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
@@ -1269,6 +1270,7 @@ class ProxyService(
                 useragent=useragent,
                 useragent_group=useragent_group,
                 conversation_id=conversation_id,
+                client_ip=client_ip,
             )
 
     async def _acquire_request_state_response_create_admission(

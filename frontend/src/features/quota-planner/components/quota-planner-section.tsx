@@ -309,21 +309,6 @@ export function QuotaPlannerSection({ disabled = false }: QuotaPlannerSectionPro
                     onChange={(event) => patchDraft({ minExpectedGain: Number.parseFloat(event.target.value || "0") })}
                   />
                 </label>
-	                <label htmlFor="quota-planner-daily-warmup-credits" className="space-y-1 text-xs font-medium">
-	                  {t("quotaPlanner.fields.dailyWarmupCredits")}
-                  <Input
-                    id="quota-planner-daily-warmup-credits"
-                    className="h-8 text-xs"
-                    type="number"
-                    min={0}
-                    step="0.1"
-                    value={effectiveDraft.maxWarmupCreditsPerDay}
-                    disabled={settingsBusy}
-                    onChange={(event) =>
-                      patchDraft({ maxWarmupCreditsPerDay: Number.parseFloat(event.target.value || "0") })
-                    }
-                  />
-                </label>
 	                <label htmlFor="quota-planner-warmup-model" className="space-y-1 text-xs font-medium">
 	                  {t("quotaPlanner.fields.warmupModel")}
                   <Input
@@ -431,7 +416,9 @@ export function QuotaPlannerSection({ disabled = false }: QuotaPlannerSectionPro
                 if (!effectiveDraft) {
                   return;
                 }
-                updateSettingsMutation.mutate(effectiveDraft, { onSuccess: () => setDraft(null) });
+                const payload: Partial<QuotaPlannerSettings> = { ...effectiveDraft };
+                delete payload.maxWarmupCreditsPerDay;
+                updateSettingsMutation.mutate(payload, { onSuccess: () => setDraft(null) });
               }}
             >
 	              {t("quotaPlanner.actions.save")}
@@ -457,7 +444,7 @@ export function QuotaPlannerSection({ disabled = false }: QuotaPlannerSectionPro
                       : null;
                     const warmupCycle = detailValue(decision.details, "warmup_cycle");
                     const expectedGain = detailValue(decision.details, "expected_gain");
-                    const expectedCost = detailValue(decision.details, "expected_cost");
+                    const schedulingPenalty = detailValue(decision.details, "expected_cost");
                     const skipReason =
                       detailValue(decision.details, "skip_reason") || detailValue(decision.details, "noop_reason");
                     return (
@@ -472,7 +459,7 @@ export function QuotaPlannerSection({ disabled = false }: QuotaPlannerSectionPro
                           <span className="block truncate text-muted-foreground">
 	                            {targetPeak ? t("quotaPlanner.decisions.peak", { value: targetPeak }) : decision.reason ?? t("quotaPlanner.decisions.noReason")}
 	                            {expectedGain ? ` · ${t("quotaPlanner.decisions.gain", { value: expectedGain })}` : ""}
-	                            {expectedCost ? ` · ${t("quotaPlanner.decisions.cost", { value: expectedCost })}` : ""}
+                            {schedulingPenalty ? ` · ${t("quotaPlanner.decisions.schedulingPenalty", { value: schedulingPenalty })}` : ""}
                             {warmupCycle ? ` · ${warmupCycle}` : ""}
                             {skipReason ? ` · ${skipReason}` : ""}
                           </span>

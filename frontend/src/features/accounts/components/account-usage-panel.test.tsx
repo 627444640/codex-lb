@@ -111,7 +111,7 @@ describe("AccountUsagePanel", () => {
     render(<AccountUsagePanel account={account} trends={null} />);
 
     expect(screen.getByText("Request logs total")).toBeInTheDocument();
-    expect(screen.getByText(/\$0\.13/)).toBeInTheDocument();
+    expect(screen.queryByText(/\$0\.13/)).not.toBeInTheDocument();
     expect(screen.getByText(/51\.48K tok/)).toBeInTheDocument();
   });
 

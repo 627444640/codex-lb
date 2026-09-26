@@ -49,8 +49,9 @@ model_context_window = 872000
   the resolved window — 784,800 tokens here — and clamps any larger configured
   value down to that, so setting `900000` is a no-op. Set it only to compact
   *earlier*.
-- Cost: input beyond the 272,000-token threshold is metered at the upstream
-  long-context rate. That threshold is why 272,000 stays the default.
+- Larger context windows consume more upstream capacity. This internal proxy
+  records token usage and does not calculate monetary estimates. Provider-side
+  limits remain independent of the proxy; see [Internal Usage](internal-token-usage.md).
 
 These keys are Codex-CLI-only. The OpenCode / OpenClaw / SDK examples below
 stay at 272000 because `/v1/models` reports the default input budget, not the

@@ -17,16 +17,6 @@ function tokenRule(overrides: Partial<LimitRuleCreate> = {}): LimitRuleCreate {
   };
 }
 
-function costRule(overrides: Partial<LimitRuleCreate> = {}): LimitRuleCreate {
-  return {
-    limitType: "cost_usd",
-    limitWindow: "weekly",
-    maxValue: 5_000_000,
-    modelFilter: null,
-    ...overrides,
-  };
-}
-
 describe("LimitRuleCard", () => {
   it("renders token-type rule with correct label and value", () => {
     renderWithProviders(
@@ -35,15 +25,6 @@ describe("LimitRuleCard", () => {
 
     expect(screen.getByText("Max value (tokens)")).toBeInTheDocument();
     expect(screen.getByDisplayValue("100000")).toBeInTheDocument();
-  });
-
-  it("renders cost-type rule with USD label and converted value", () => {
-    renderWithProviders(
-      <LimitRuleCard rule={costRule()} onChange={vi.fn()} onRemove={vi.fn()} />,
-    );
-
-    expect(screen.getByText("Max value (USD)")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("5")).toBeInTheDocument();
   });
 
   it("displays empty string when maxValue is zero", () => {
@@ -67,20 +48,6 @@ describe("LimitRuleCard", () => {
 
     expect(onChange).toHaveBeenCalledWith(
       expect.objectContaining({ maxValue: 0 }),
-    );
-  });
-
-  it("converts cost input to micro-USD", () => {
-    const onChange = vi.fn();
-    renderWithProviders(
-      <LimitRuleCard rule={costRule({ maxValue: 0 })} onChange={onChange} onRemove={vi.fn()} />,
-    );
-
-    const input = screen.getByRole("spinbutton");
-    fireEvent.change(input, { target: { value: "2.5" } });
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ maxValue: 2_500_000 }),
     );
   });
 
@@ -148,15 +115,6 @@ it("omits unsupported credits from new choices", async () => {
   renderWithProviders(<LimitRuleCard rule={tokenRule()} onChange={vi.fn()} onRemove={vi.fn()} />);
   await user.click(screen.getByLabelText("Type"));
   expect(screen.queryByRole("option", { name: "Credits" })).not.toBeInTheDocument();
-  expect(screen.getByRole("option", { name: "Cost" })).toBeInTheDocument();
-});
-
-it("explains a legacy credits rule and allows its removal", async () => {
-  const user = userEvent.setup();
-  const onRemove = vi.fn();
-  renderWithProviders(<LimitRuleCard rule={tokenRule({ limitType: "credits" })} onChange={vi.fn()} onRemove={onRemove} />);
-  expect(screen.getByRole("alert")).toHaveTextContent("Credits limits are unsupported and block this key");
-  const remove = screen.getAllByRole("button").find((button) => button.getAttribute("data-variant") === "ghost");
-  await user.click(remove!);
-  expect(onRemove).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("option", { name: "Cost" })).not.toBeInTheDocument();
+  expect(screen.getByRole("option", { name: "Tokens" })).toBeInTheDocument();
 });

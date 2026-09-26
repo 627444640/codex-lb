@@ -569,55 +569,64 @@ async def test_codex_usage_accepts_api_key_callers(async_client, db_setup):
 
 
 @pytest.mark.asyncio
-async def test_codex_usage_api_key_does_not_convert_monthly_cost_limits_to_credits(async_client, db_setup):
+@pytest.mark.parametrize("limit_type", [LimitType.COST_USD, LimitType.CREDITS])
+@pytest.mark.parametrize("expired", [False, True])
+async def test_codex_usage_excludes_retired_exhausted_limits_but_keeps_admin_history(
+    async_client, db_setup, limit_type, expired
+):
     key_id, plain_key = await _create_api_key(
-        name="codex-usage-api-key-monthly",
-        limits=[
-            LimitRuleInput(limit_type="cost_usd", limit_window="monthly", max_value=1000),
-        ],
+        name="codex-usage-legacy-money",
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="daily", max_value=1000)],
     )
-    now = utcnow()
-
+    legacy_reset_at = utcnow() + timedelta(days=-1 if expired else 1)
     async with SessionLocal() as session:
         repo = ApiKeysRepository(session)
-        await repo.replace_limits(
-            key_id,
-            [
-                ApiKeyLimit(
-                    api_key_id=key_id,
-                    limit_type=LimitType.COST_USD,
-                    limit_window=LimitWindow.MONTHLY,
-                    max_value=1000,
-                    current_value=250,
-                    model_filter=None,
-                    reset_at=now + timedelta(days=30),
-                ),
-            ],
+        [token_limit] = await repo.get_limits_by_key(key_id)
+        token_limit.current_value = 25
+        session.add(
+            ApiKeyLimit(
+                api_key_id=key_id,
+                limit_type=limit_type,
+                limit_window=LimitWindow.DAILY,
+                max_value=1,
+                current_value=100,
+                model_filter=None,
+                reset_at=legacy_reset_at,
+            )
         )
         await session.commit()
 
-    response = await async_client.get(
-        "/api/codex/usage",
-        headers={"Authorization": f"Bearer {plain_key}"},
-    )
+    headers = {"Authorization": f"Bearer {plain_key}"}
+    for endpoint in ("/api/codex/usage", "/api/codex/usage/"):
+        response = await async_client.get(endpoint, headers=headers)
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["plan_type"] == "api_key"
+        assert payload["rate_limit"] is None
+        assert payload["credits"] is None
+        assert not any(name.startswith("x-codex-credits") for name in response.headers)
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["rate_limit"] is None
-    assert payload["credits"] is None
-    self_usage = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+    self_usage = await async_client.get("/v1/usage", headers=headers)
     assert self_usage.status_code == 200
-    [monthly] = self_usage.json()["limits"]
-    assert monthly == {
-        "limit_type": "cost_usd",
-        "limit_window": "monthly",
-        "max_value": 1000,
-        "current_value": 250,
-        "remaining_value": 750,
-        "model_filter": None,
-        "reset_at": (now + timedelta(days=30)).isoformat() + "Z",
-        "source": "api_key_limit",
-    }
+    [active_limit] = self_usage.json()["limits"]
+    assert active_limit["limit_type"] == "total_tokens"
+    assert active_limit["current_value"] == 25
+    assert active_limit["remaining_value"] == 975
+
+    # Administrator history retains the old amount; only active self-service
+    # quota surfaces exclude it. Neither GET may reset an expired money row.
+    listed = await async_client.get("/api/api-keys/")
+    assert listed.status_code == 200
+    [admin_key] = listed.json()
+    assert {limit["limitType"] for limit in admin_key["limits"]} == {"total_tokens", limit_type.value}
+    historical = next(limit for limit in admin_key["limits"] if limit["limitType"] == limit_type.value)
+    assert historical["currentValue"] == 100
+    assert historical["maxValue"] == 1
+    async with SessionLocal() as session:
+        limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
+        legacy = next(limit for limit in limits if limit.limit_type == limit_type)
+        assert legacy.current_value == 100
+        assert legacy.reset_at == legacy_reset_at
 
 
 @pytest.mark.asyncio

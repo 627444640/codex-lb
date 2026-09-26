@@ -240,11 +240,12 @@ async def test_source_audio_transcription_routes_multipart_and_settles_usage(
 
 
 @pytest.mark.asyncio
-async def test_source_audio_transcription_bills_by_duration(async_client, source_upstream):
+@pytest.mark.parametrize("token_limited", [False, True])
+async def test_source_audio_duration_does_not_substitute_for_tokens(async_client, source_upstream, token_limited):
     await _enable_api_key_auth(async_client)
 
     async def transcribe(_request: web.Request) -> web.Response:
-        # No token usage, only a duration — the duration-priced path must settle cost.
+        # A duration and legacy price input cannot supply missing token evidence.
         return web.json_response({"text": "labas", "duration": 120.0})
 
     base_url = await source_upstream(transcribe)
@@ -260,11 +261,13 @@ async def test_source_audio_transcription_bills_by_duration(async_client, source
     created = await async_client.post(
         "/api/api-keys/",
         json={
-            "name": "asr-cost-key",
+            "name": "asr-token-key",
             "assignedSourceIds": [source_id],
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
-            ],
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000},
+            ]
+            if token_limited
+            else [],
         },
     )
     assert created.status_code == 200
@@ -277,20 +280,22 @@ async def test_source_audio_transcription_bills_by_duration(async_client, source
         data={"model": model},
         files={"file": ("sample.wav", b"\x01\x02", "audio/wav")},
     )
-    assert response.status_code == 200
+    assert response.status_code == (502 if token_limited else 200)
+    if token_limited:
+        assert response.json()["error"]["code"] == "usage_unavailable"
 
-    # 120s == 2 min @ $0.30/min == $0.60 == 600_000 microdollars
+    # Monetary inputs never turn a duration into fabricated token usage.
     async with SessionLocal() as session:
         limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
-        assert len(limits) == 1
-        assert limits[0].current_value == 600_000
+        assert len(limits) == (1 if token_limited else 0)
+        assert all(limit.current_value == 0 for limit in limits)
 
         result = await session.execute(select(RequestLog).where(RequestLog.model == model))
         log = result.scalar_one()
-        assert log.input_tokens == 0
-        assert log.output_tokens == 0
-        assert log.cost_usd == pytest.approx(0.60)
-        assert log.status == "success"
+        assert log.input_tokens is None
+        assert log.output_tokens is None
+        assert log.cost_usd is None
+        assert log.status == ("error" if token_limited else "success")
 
 
 @pytest.mark.asyncio
@@ -724,7 +729,7 @@ async def test_chat_source_selector_can_require_streaming(async_client):
 
 
 @pytest.mark.asyncio
-async def test_source_usage_settles_cost_from_source_pricing(async_client, source_upstream):
+async def test_source_usage_settles_tokens_without_using_source_pricing(async_client, source_upstream):
     await _enable_api_key_auth(async_client)
 
     async def completion(_request: web.Request) -> web.Response:
@@ -767,7 +772,7 @@ async def test_source_usage_settles_cost_from_source_pricing(async_client, sourc
             "name": "priced-source-key",
             "assignedSourceIds": [source_id],
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000},
             ],
         },
     )
@@ -782,27 +787,25 @@ async def test_source_usage_settles_cost_from_source_pricing(async_client, sourc
     )
     assert response.status_code == 200
 
-    # billable input 800 @ $2/1M + cached 200 @ $1/1M + output 500 @ $10/1M
-    expected_cost_usd = 0.0068
-    expected_microdollars = 6_800
+    # Cached tokens remain a subset of input, not an extra billable quantity.
+    expected_total_tokens = 1_500
 
     async with SessionLocal() as session:
         limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == expected_microdollars
+        assert limits[0].current_value == expected_total_tokens
 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
         assert latest_log is not None
         assert latest_log.model_source_id == source_id
-        assert latest_log.cost_usd == pytest.approx(expected_cost_usd)
+        assert latest_log.cost_usd is None
+        assert (latest_log.input_tokens, latest_log.output_tokens, latest_log.cached_input_tokens) == (1000, 500, 200)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("with_cost_limit", [False, True])
-async def test_unpriced_source_is_unknown_and_cost_limited_requests_are_rejected(
-    async_client, source_upstream, with_cost_limit
-):
+@pytest.mark.parametrize("with_token_limit", [False, True])
+async def test_unpriced_source_still_records_and_limits_tokens(async_client, source_upstream, with_token_limit):
     await _enable_api_key_auth(async_client)
     calls = 0
 
@@ -843,9 +846,9 @@ async def test_unpriced_source_is_unknown_and_cost_limited_requests_are_rejected
             "name": "unpriced-source-key",
             "assignedSourceIds": [source_id],
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000},
             ]
-            if with_cost_limit
+            if with_token_limit
             else [],
         },
     )
@@ -858,21 +861,16 @@ async def test_unpriced_source_is_unknown_and_cost_limited_requests_are_rejected
         headers={"Authorization": f"Bearer {key}"},
         json={"model": "gpt-5.2", "messages": [{"role": "user", "content": "hi"}]},
     )
-    assert response.status_code == (429 if with_cost_limit else 200)
-    assert calls == (0 if with_cost_limit else 1)
-    if with_cost_limit:
-        assert response.json()["error"]["code"] == "pricing_unavailable"
+    assert response.status_code == 200
+    assert calls == 1
 
     async with SessionLocal() as session:
         limits = await ApiKeysRepository(session).get_limits_by_key(key_id)
-        assert len(limits) == (1 if with_cost_limit else 0)
-        assert all(limit.current_value == 0 for limit in limits)
+        assert len(limits) == (1 if with_token_limit else 0)
+        assert all(limit.current_value == 1500 for limit in limits)
 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
-        if with_cost_limit:
-            assert latest_log is None
-            return
         assert latest_log is not None
         assert latest_log.model_source_id == source_id
         assert latest_log.cost_usd is None

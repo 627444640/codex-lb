@@ -18,16 +18,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import type { ApiKey } from "@/features/api-keys/schemas";
-import type { AccountCostDonutProps } from "@/features/apis/components/account-cost-donut";
 import { ApiKeyInfo } from "@/features/apis/components/api-key-info";
 import type { ApiTrendChartProps } from "@/features/apis/components/api-trend-chart";
 import type { ApiKeyUsage7DayResponse } from "@/features/apis/schemas";
 
-const AccountCostDonut = lazy(() =>
-	import("@/features/apis/components/account-cost-donut").then((module) => ({
-		default: (props: AccountCostDonutProps) => <module.AccountCostDonut {...props} />,
-	})),
-);
 const ApiTrendChart = lazy(() =>
 	import("@/features/apis/components/api-trend-chart").then((module) => ({
 		default: (props: ApiTrendChartProps) => <module.ApiTrendChart {...props} />,
@@ -79,7 +73,6 @@ export function ApiDetail({
 		if (!trends) return null;
 		if (!showAccumulated) return trends;
 		return {
-			cost: accumulateData(trends.cost),
 			tokens: accumulateData(trends.tokens),
 		};
 	}, [trends, showAccumulated]);
@@ -101,8 +94,7 @@ export function ApiDetail({
 		return null;
 	}, [t, usage7Day, usage7DayError, usage7DayLoading]);
 
-	const hasDonutData = usage7Day && usage7Day.accountCosts.length > 0;
-	const hasTrends = trends && (trends.cost.length > 0 || trends.tokens.length > 0);
+	const hasTrends = trends && trends.tokens.length > 0;
 
 	if (!apiKey) {
 		return (
@@ -152,28 +144,14 @@ export function ApiDetail({
 				</DropdownMenu>
 			</div>
 
-			{hasDonutData || hasTrends ? (
+			{hasTrends ? (
 				<div
 					className="rounded-xl border bg-card p-4 lg:flex lg:items-start"
 					data-testid="api-usage-panel"
 				>
-					{hasDonutData && (
-						<div className={hasTrends ? "lg:w-[25%] lg:shrink-0 lg:pr-4" : "lg:w-full"}>
-							<Suspense fallback={<div className="h-[240px]" />}>
-								<AccountCostDonut
-									accountCosts={usage7Day.accountCosts}
-									totalCostUsd={usage7Day.totalCostUsd}
-								/>
-							</Suspense>
-						</div>
-					)}
 					{hasTrends ? (
 						<div
-							className={
-								hasDonutData
-									? "mt-4 border-t pt-4 lg:mt-0 lg:max-w-[75%] lg:flex-1 lg:border-t-0 lg:border-l lg:pl-4 lg:pt-0"
-									: "lg:w-full"
-							}
+							className="w-full"
 							data-testid="api-trend-panel"
 						>
 							<div className="mb-3 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -186,10 +164,6 @@ export function ApiDetail({
 										<span className="flex items-center gap-1.5">
 												{t("apiKeys.limitTypes.total_tokens")}
 											<span className="inline-block h-2 w-2 rounded-full bg-chart-2" />
-										</span>
-										<span className="flex items-center gap-1.5">
-												{t("apiKeys.limitTypes.cost_usd")}
-											<span className="inline-block h-2 w-2 rounded-full bg-chart-1" />
 										</span>
 									</div>
 									<div className="flex items-center gap-1.5 rounded-md border px-2 py-1">
@@ -205,7 +179,7 @@ export function ApiDetail({
 							</div>
 							{chartData ? (
 								<Suspense fallback={<div className="h-[260px]" />}>
-									<ApiTrendChart cost={chartData.cost} tokens={chartData.tokens} />
+									<ApiTrendChart tokens={chartData.tokens} />
 								</Suspense>
 							) : null}
 						</div>

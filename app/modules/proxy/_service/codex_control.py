@@ -258,6 +258,7 @@ class _CodexControlMixin:
         api_key: ApiKeyData | None = None,
         success_gate: Callable[[str, CodexControlResponse], Awaitable[bool]] | None = None,
         privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+        client_ip: str | None = None,
     ) -> CodexControlResponse:
         proxy = cast(_CodexControlServiceProtocol, self)
         filtered = filter_inbound_headers(headers)
@@ -599,4 +600,5 @@ class _CodexControlMixin:
                 useragent=useragent,
                 useragent_group=useragent_group,
                 conversation_id=None if sensitive_realtime_request else conversation_id,
+                client_ip=client_ip,
             )

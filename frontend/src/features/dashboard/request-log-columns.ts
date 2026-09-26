@@ -9,7 +9,7 @@ export const REQUEST_LOG_COLUMN_OPTIONS = [
   { id: "ttft", translationKey: "dashboard.requests.columns.ttft" },
   { id: "tps", translationKey: "dashboard.requests.columns.tps" },
   { id: "tokens", translationKey: "dashboard.requests.columns.tokens" },
-  { id: "cost", translationKey: "dashboard.requests.columns.cost" },
+  { id: "clientIp", translationKey: "dashboard.requests.columns.clientIp" },
   { id: "details", translationKey: "dashboard.requests.columns.details" },
 ] as const;
 
@@ -39,7 +39,7 @@ export const REQUEST_LOG_COLUMN_DEFAULT_WIDTHS: Record<RequestLogColumnId, numbe
   ttft: 80,
   tps: 80,
   tokens: 96,
-  cost: 112,
+  clientIp: 160,
   details: 288,
 };
 

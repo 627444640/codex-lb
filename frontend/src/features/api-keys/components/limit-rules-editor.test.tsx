@@ -13,7 +13,7 @@ describe("LimitRulesEditor", () => {
     renderWithProviders(<LimitRulesEditor rules={[]} onChange={vi.fn()} />);
 
     expect(screen.getByText("Weekly token limit")).toBeInTheDocument();
-    expect(screen.getByText("Weekly cost limit ($)")).toBeInTheDocument();
+    expect(screen.queryByText("Weekly cost limit ($)")).not.toBeInTheDocument();
   });
 
   it("renders basic mode for standard weekly rules", () => {
@@ -103,21 +103,6 @@ describe("LimitRulesEditor", () => {
     expect(tokenRule.maxValue).toBe(1000);
   });
 
-  it("handles basic cost input change via fireEvent", () => {
-    const onChange = vi.fn();
-    renderWithProviders(<LimitRulesEditor rules={[]} onChange={onChange} />);
-
-    const inputs = screen.getAllByRole("spinbutton");
-    fireEvent.change(inputs[1], { target: { value: "5" } });
-
-    const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
-    const costRule = lastCall.find(
-      (r: LimitRuleCreate) => r.limitType === "cost_usd",
-    );
-    expect(costRule).toBeDefined();
-    expect(costRule.maxValue).toBe(5_000_000);
-  });
-
   it("removes token rule when cleared in basic mode", () => {
     const onChange = vi.fn();
     const rules: LimitRuleCreate[] = [
@@ -129,15 +114,6 @@ describe("LimitRulesEditor", () => {
     fireEvent.change(inputs[0], { target: { value: "" } });
 
     expect(onChange).toHaveBeenCalledWith([]);
-  });
-
-  it("displays cost value converted from micro-USD in basic mode", () => {
-    const rules: LimitRuleCreate[] = [
-      { limitType: "cost_usd", limitWindow: "weekly", maxValue: 3_500_000, modelFilter: null },
-    ];
-    renderWithProviders(<LimitRulesEditor rules={rules} onChange={vi.fn()} />);
-
-    expect(screen.getByDisplayValue("3.5")).toBeInTheDocument();
   });
 
   it("can switch to advanced mode", async () => {

@@ -328,6 +328,7 @@ class _FileOpsMixin:
         headers: Mapping[str, str],
         *,
         api_key: ApiKeyData | None = None,
+        client_ip: str | None = None,
     ) -> dict[str, JsonValue]:
         """Forward an inbound `POST /backend-api/files` registration to upstream.
 
@@ -354,6 +355,7 @@ class _FileOpsMixin:
             kind="files-create",
             api_key=api_key,
             headers=headers,
+            client_ip=client_ip,
             invoke=lambda access_token, upstream_account_id, filtered_headers, route, route_trace: (
                 _service_core_create_file()(
                     payload=payload,
@@ -375,6 +377,7 @@ class _FileOpsMixin:
         headers: Mapping[str, str],
         *,
         api_key: ApiKeyData | None = None,
+        client_ip: str | None = None,
     ) -> dict[str, JsonValue]:
         """Forward an inbound `POST /backend-api/files/{file_id}/uploaded` finalize call.
 
@@ -403,6 +406,7 @@ class _FileOpsMixin:
             kind="files-finalize",
             api_key=api_key,
             headers=headers,
+            client_ip=client_ip,
             resolve_preferred_account_id=resolve_file_owner,
             invoke=lambda access_token, upstream_account_id, filtered_headers, route, route_trace: (
                 _service_core_finalize_file()(
@@ -433,6 +437,7 @@ class _FileOpsMixin:
         preferred_account_id: str | None = None,
         resolve_preferred_account_id: Callable[[], Awaitable[str | None]] | None = None,
         on_success: Callable[[dict[str, JsonValue], str], Awaitable[None]] | None = None,
+        client_ip: str | None = None,
     ) -> tuple[dict[str, JsonValue], str | None]:
         """Shared account-selection / refresh / 401-retry plumbing for `/files` calls.
 
@@ -744,4 +749,5 @@ class _FileOpsMixin:
                 useragent=useragent,
                 useragent_group=useragent_group,
                 conversation_id=conversation_id,
+                client_ip=client_ip,
             )

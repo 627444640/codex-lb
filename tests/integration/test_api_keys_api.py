@@ -600,14 +600,14 @@ async def test_api_keys_update_limits(async_client):
         json={
             "limits": [
                 {"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 500},
-                {"limitType": "cost_usd", "limitWindow": "monthly", "maxValue": 10_000_000},
+                {"limitType": "output_tokens", "limitWindow": "monthly", "maxValue": 10_000_000},
             ],
         },
     )
     assert updated.status_code == 200
     assert len(updated.json()["limits"]) == 2
     types = {li["limitType"] for li in updated.json()["limits"]}
-    assert types == {"total_tokens", "cost_usd"}
+    assert types == {"total_tokens", "output_tokens"}
 
     await async_client.delete(f"/api/api-keys/{key_id}")
 
@@ -2028,7 +2028,7 @@ async def test_v1_responses_file_pinned_payload_skips_model_source(async_client,
 
 
 @pytest.mark.asyncio
-async def test_api_key_usage_summary_cost_respects_service_tier(async_client, monkeypatch):
+async def test_api_key_usage_summary_counts_tokens_without_new_cost(async_client, monkeypatch):
     enable = await async_client.put(
         "/api/settings",
         json={
@@ -2045,7 +2045,7 @@ async def test_api_key_usage_summary_cost_respects_service_tier(async_client, mo
         json={
             "name": "priority-usage-summary",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 100_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 100_000_000},
             ],
         },
     )
@@ -2095,7 +2095,8 @@ async def test_api_key_usage_summary_cost_respects_service_tier(async_client, mo
     usage_key_row = next((row for row in listed_rows if row["id"] == key_id), None)
     assert usage_key_row is not None
     assert usage_key_row["usageSummary"] is not None
-    assert usage_key_row["usageSummary"]["totalCostUsd"] == pytest.approx(31.0, abs=1e-6)
+    assert usage_key_row["usageSummary"]["totalCostUsd"] == 0.0
+    assert usage_key_row["usageSummary"]["totalTokens"] == 1_200_000
 
 
 @pytest.mark.asyncio
@@ -2116,7 +2117,7 @@ async def test_api_key_usage_summary_uses_persisted_request_log_cost(async_clien
         json={
             "name": "persisted-usage-summary",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 100_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 100_000_000},
             ],
         },
     )
@@ -2387,7 +2388,7 @@ async def test_stream_usage_logs_actual_service_tier(async_client, monkeypatch):
         json={
             "name": "stream-actual-tier-key",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 100_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 100_000_000},
             ],
         },
     )
@@ -2435,7 +2436,7 @@ async def test_stream_usage_logs_actual_service_tier(async_client, monkeypatch):
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 27_500_000
+        assert limits[0].current_value == 2_000_000
 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
@@ -2464,7 +2465,7 @@ async def test_stream_usage_logs_actual_service_tier_when_response_created_echoe
         json={
             "name": "stream-created-tier-key",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 100_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 100_000_000},
             ],
         },
     )
@@ -2520,7 +2521,7 @@ async def test_stream_usage_logs_actual_service_tier_when_response_created_echoe
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 27_500_000
+        assert limits[0].current_value == 2_000_000
 
         result = await session.execute(select(RequestLog).order_by(RequestLog.requested_at.desc()))
         latest_log = result.scalars().first()
@@ -2758,7 +2759,7 @@ async def test_chat_completions_cursor_context_limit_releases_reservation(async_
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_stream_finalizes_cost_limit(async_client, monkeypatch):
+async def test_chat_completions_stream_finalizes_large_token_limit(async_client, monkeypatch):
     enable = await async_client.put(
         "/api/settings",
         json={
@@ -2775,7 +2776,7 @@ async def test_chat_completions_stream_finalizes_cost_limit(async_client, monkey
         json={
             "name": "chat-completions-cost-limit",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 20_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 2_000_000},
             ],
         },
     )
@@ -2829,13 +2830,13 @@ async def test_chat_completions_stream_finalizes_cost_limit(async_client, monkey
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 27_500_000
+        assert limits[0].current_value == 2_000_000
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/codex/responses/compact", "/v1/responses/compact"])
 @pytest.mark.parametrize("requested_service_tier", ["priority", "fast"])
-async def test_compact_cost_limit_uses_canonical_request_service_tier_when_response_omits_echo(
+async def test_compact_token_limit_uses_canonical_request_service_tier_when_response_omits_echo(
     async_client,
     monkeypatch,
     endpoint,
@@ -2857,7 +2858,7 @@ async def test_compact_cost_limit_uses_canonical_request_service_tier_when_respo
         json={
             "name": "compact-priority-cost-limit",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 30_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_200_000},
             ],
         },
     )
@@ -2915,12 +2916,12 @@ async def test_compact_cost_limit_uses_canonical_request_service_tier_when_respo
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 31_000_000
+        assert limits[0].current_value == 1_200_000
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["/backend-api/codex/responses/compact", "/v1/responses/compact"])
-async def test_compact_cost_limit_prefers_response_service_tier_over_request(
+async def test_compact_token_limit_prefers_response_service_tier_over_request(
     async_client,
     monkeypatch,
     endpoint,
@@ -2941,7 +2942,7 @@ async def test_compact_cost_limit_prefers_response_service_tier_over_request(
         json={
             "name": "compact-response-tier-cost-limit",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 100_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 100_000_000},
             ],
         },
     )
@@ -2986,11 +2987,11 @@ async def test_compact_cost_limit_prefers_response_service_tier_over_request(
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 27_500_000
+        assert limits[0].current_value == 2_000_000
 
 
 @pytest.mark.asyncio
-async def test_v1_responses_non_stream_finalizes_cost_limit(async_client, monkeypatch):
+async def test_v1_responses_non_stream_finalizes_token_limit(async_client, monkeypatch):
     enable = await async_client.put(
         "/api/settings",
         json={
@@ -3007,7 +3008,7 @@ async def test_v1_responses_non_stream_finalizes_cost_limit(async_client, monkey
         json={
             "name": "v1-responses-cost-limit",
             "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 30_000_000},
+                {"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 3_000_000},
             ],
         },
     )
@@ -3057,7 +3058,7 @@ async def test_v1_responses_non_stream_finalizes_cost_limit(async_client, monkey
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
         assert len(limits) == 1
-        assert limits[0].current_value == 55_000_000
+        assert limits[0].current_value == 4_000_000
 
 
 @pytest.mark.asyncio
@@ -3604,7 +3605,7 @@ async def test_reset_expired_limits_background_fallback_advances_windows(async_c
             "name": "hourly-reset-fallback",
             "limits": [
                 {"limitType": "total_tokens", "limitWindow": "daily", "maxValue": 1000},
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1000},
+                {"limitType": "output_tokens", "limitWindow": "weekly", "maxValue": 1000},
             ],
         },
     )
@@ -4332,39 +4333,3 @@ async def test_stream_without_api_key_auth_skips_settlement(async_client, monkey
         assert response.status_code == 200
         lines = [line async for line in response.aiter_lines() if line]
         assert len(lines) >= 1  # stream completed without error
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model,tier", [("gpt-5.6-sol", "ultrafast"), ("gpt-5.7", "default")])
-async def test_cost_limited_http_request_rejects_unknown_pricing_before_upstream(
-    async_client, monkeypatch, model, tier
-):
-    await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})
-    created = await async_client.post(
-        "/api/api-keys/",
-        json={
-            "name": "unknown-price",
-            "limits": [
-                {"limitType": "cost_usd", "limitWindow": "weekly", "maxValue": 1_000_000},
-            ],
-        },
-    )
-    assert created.status_code == 200
-
-    async def forbidden_stream(*args, **kwargs):
-        raise AssertionError("Unpriced cost-limited request must not reach upstream")
-        yield ""
-
-    monkeypatch.setattr(proxy_module, "core_stream_responses", forbidden_stream)
-    response = await async_client.post(
-        "/backend-api/codex/responses",
-        headers={"Authorization": f"Bearer {created.json()['key']}"},
-        json={"model": model, "instructions": "hi", "input": [], "service_tier": tier, "stream": True},
-    )
-    assert response.status_code == 429
-    assert response.json()["error"]["code"] == "pricing_unavailable"
-    assert "retrying alone" in response.json()["error"]["message"]
-    async with SessionLocal() as session:
-        limits = await ApiKeysRepository(session).get_limits_by_key(created.json()["id"])
-        assert all(limit.current_value == 0 for limit in limits)
-        assert not (await session.scalars(select(ApiKeyUsageReservation))).all()

@@ -85,7 +85,7 @@ The planner adds:
 - `request_logs.request_kind`: request class such as `real` or `warmup`.
 
 Historical demand aggregation is exposed in the repository by 15-minute buckets across account, API key, model,
-reasoning effort, request kind, status, and token/cost totals.
+reasoning effort, request kind, status, and token totals.
 
 ## Dashboard
 
@@ -133,3 +133,9 @@ The routes use dashboard session authentication and write settings changes to th
 Decision responses include `details` parsed from the planner audit JSON when available. Current scheduler details
 include `target_peak_at`, `expected_gain`, `scenario_gain`, `expected_cost`, `net_score`, `warmup_cycle`,
 `scheduled_at`, `skip_reason`, `noop_reason`, and `unmet_demand`. Older rows may have `details = null`.
+
+## Internal token-only scope
+
+The retained `max_warmup_credits_per_day` setting is historically a budget over `RequestLog.cost_usd`, despite its name. The internal build hides this control and does not check the budget. Its stored value remains compatible and is preserved by unrelated updates. Planner mode, allowed windows, maximum warmup counts, forecast safety and evidence checks remain active.
+
+`expected_cost`, candidate warmup cost and routing cost in planner decisions denote non-monetary scheduling penalties. They remain part of scoring and diagnostics and are not price estimates. Upstream account quota and reset credits retain their separate provider-side meaning. See [internal usage](../internal-token-usage/spec.md).

@@ -30,6 +30,7 @@ import { OverviewTimeframeSelect } from "@/features/dashboard/components/filters
 import { RequestFilters } from "@/features/dashboard/components/filters/request-filters";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 import { StatsGrid } from "@/features/dashboard/components/stats-grid";
+import { KnownUsageNote } from "@/components/known-usage-note";
 import { UsageDonuts } from "@/features/dashboard/components/usage-donuts";
 import { WeeklyCreditsPaceCard } from "@/features/dashboard/components/weekly-credits-pace-card";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
@@ -51,7 +52,7 @@ import {
 import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
 import { useThemeStore } from "@/hooks/use-theme";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
-import { formatModelLabel, formatCurrency, formatSlug } from "@/utils/formatters";
+import { formatModelLabel, formatSlug } from "@/utils/formatters";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 
 const MODEL_OPTION_DELIMITER = ":::";
@@ -267,7 +268,6 @@ export function DashboardPage() {
     if (!conv || !filters.conversationId) {
       return null;
     }
-    const cost = formatCurrency(conv.aggregatedCostUsd);
     const count = conv.requestCount;
     const suffixParts: string[] = [];
 
@@ -320,11 +320,10 @@ export function DashboardPage() {
       return (
         <Trans
           i18nKey="dashboard.conversation.summaryWithFilters"
-          values={{ id: filters.conversationId, count, cost, filters: suffixParts.join(", ") }}
+          values={{ id: filters.conversationId, count, filters: suffixParts.join(", ") }}
           components={[
             <code key="id" className={codeClass} />,
             <code key="count" className={codeClass} />,
-            <code key="cost" className={codeClass} />,
           ]}
         />
       );
@@ -332,11 +331,10 @@ export function DashboardPage() {
     return (
       <Trans
         i18nKey="dashboard.conversation.summary"
-        values={{ id: filters.conversationId, count, cost }}
+        values={{ id: filters.conversationId, count }}
         components={[
           <code key="id" className={codeClass} />,
           <code key="count" className={codeClass} />,
-          <code key="cost" className={codeClass} />,
         ]}
       />
     );
@@ -399,6 +397,7 @@ export function DashboardPage() {
       ) : (
         <>
           <StatsGrid stats={view.stats} />
+          <KnownUsageNote />
 
           {view.weeklyCreditPace ? (
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
@@ -558,7 +557,6 @@ export function DashboardPage() {
                 <p className="text-sm text-muted-foreground">{conversationSummary}</p>
               </div>
             ) : null}
-            <p className="text-xs text-muted-foreground">{t("dashboard.requestCost.aggregateNote")}</p>
             <div className="transition-opacity duration-200">
               <RecentRequestsTable
                 requests={view.requestLogs}

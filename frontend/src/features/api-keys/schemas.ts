@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const LIMIT_TYPES = ["total_tokens", "input_tokens", "output_tokens", "cost_usd", "credits"] as const;
+export const TOKEN_LIMIT_TYPES = ["total_tokens", "input_tokens", "output_tokens"] as const;
+
 export const LIMIT_WINDOWS = ["daily", "weekly", "monthly", "5h", "7d"] as const;
 
 export type LimitType = (typeof LIMIT_TYPES)[number];
@@ -17,8 +19,8 @@ const LimitRuleSchema = z.object({
 });
 
 export const LimitRuleCreateSchema = z.object({
-  limitType: z.enum(LIMIT_TYPES).refine((value): boolean => value !== "credits", {
-    message: "Credits limit metering is unsupported; remove or replace this rule",
+  limitType: z.enum(LIMIT_TYPES).refine((value): boolean => TOKEN_LIMIT_TYPES.includes(value as (typeof TOKEN_LIMIT_TYPES)[number]), {
+    message: "Only token limits are supported",
   }),
   limitWindow: z.enum(LIMIT_WINDOWS),
   maxValue: z.number().int().positive(),

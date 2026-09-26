@@ -34,12 +34,6 @@ from app.core.openai.images import (
 )
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
-from app.core.usage.pricing import (
-    UsageCostBreakdown,
-    calculate_cost_breakdown_from_usage,
-    get_pricing_for_model,
-    image_usage_tokens,
-)
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 
@@ -533,22 +527,6 @@ def _stash_image_usage_tokens(captured: dict[str, object], usage: V1ImageUsage) 
 def captured_image_usage(captured: Mapping[str, object]) -> V1ImageUsage | None:
     usage = captured.get("image_usage")
     return usage if isinstance(usage, V1ImageUsage) else None
-
-
-def image_usage_cost(usage: V1ImageUsage | None, model: str) -> UsageCostBreakdown:
-    unknown = UsageCostBreakdown(None, None, None, None)
-    if usage is None:
-        return unknown
-    tokens = image_usage_tokens(
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        input_tokens_details=usage.input_tokens_details,
-        output_tokens_details=usage.output_tokens_details,
-    )
-    pricing = get_pricing_for_model(model, None, None)
-    if tokens is None or pricing is None:
-        return unknown
-    return calculate_cost_breakdown_from_usage(tokens, pricing[1]) or unknown
 
 
 def image_usage_detail_tokens(usage: V1ImageUsage | None, field: str) -> int | None:

@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import userEvent from "@testing-library/user-event";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -103,20 +102,6 @@ describe("UseragentDistributionDonut", () => {
     expect(screen.getByTestId("useragent-distribution-legend-4")).toBeInTheDocument();
   });
 
-  it("shows the total label and compact cost total in the donut center by default", () => {
-    render(
-      <UseragentDistributionDonut
-        data={[
-          { useragent: "CLI", costUsd: 430, requests: 8, percentage: 30 },
-          { useragent: "SDK", costUsd: 1000, requests: 4, percentage: 70 },
-        ]}
-      />,
-    );
-
-    expect(screen.getByTestId("useragent-distribution-center-label")).toHaveTextContent("Total");
-    expect(screen.getByTestId("useragent-distribution-center-value")).toHaveTextContent("$1.43K");
-  });
-
   it("renders Missing User-Agent with a fixed grey legend dot", () => {
     render(
       <UseragentDistributionDonut
@@ -158,7 +143,6 @@ describe("UseragentDistributionDonut", () => {
   });
 
   it("pads legend value cells to the longest formatted request total", async () => {
-    const user = userEvent.setup();
 
     render(
       <UseragentDistributionDonut
@@ -169,7 +153,6 @@ describe("UseragentDistributionDonut", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /^req$/i }));
 
     const smallRequestLegendValue = screen.getAllByText(/^8$/).at(-1);
     const largeRequestLegendValue = screen.getAllByText("1.2K").at(-1);
@@ -181,27 +164,7 @@ describe("UseragentDistributionDonut", () => {
     expect(largeRequestLegendValue?.style.minWidth).toBe("4ch");
   });
 
-  it("defaults to cost mode without rendering a donut tooltip", () => {
-    render(
-      <UseragentDistributionDonut
-        data={[
-          { useragent: "CLI", costUsd: 12.5, requests: 8, percentage: 62.5 },
-          { useragent: "SDK", costUsd: 7.5, requests: 4, percentage: 37.5 },
-        ]}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: /^cost$/i })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^req$/i })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("useragent-distribution-center-value")).toHaveTextContent("$20");
-    expect(screen.getByText("62.5%")).toBeInTheDocument();
-    expect(screen.getByText("$7.5")).toBeInTheDocument();
-    expect(screen.getByTestId("useragent-distribution-pie")).toHaveAttribute("data-key", "costUsd");
-    expect(screen.queryByText(/^Cost$/)).not.toBeInTheDocument();
-  });
-
-  it("switches to request mode for slices, legend values, and percentages without rendering a donut tooltip", async () => {
-    const user = userEvent.setup();
+  it("uses request counts and percentages regardless of legacy monetary fields", async () => {
 
     render(
       <UseragentDistributionDonut
@@ -212,18 +175,16 @@ describe("UseragentDistributionDonut", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /^req$/i }));
 
     expect(screen.getByText("66.7%")).toBeInTheDocument();
     expect(screen.getByText("33.3%")).toBeInTheDocument();
     expect(screen.getByText(/^4$/)).toBeInTheDocument();
     expect(screen.getByTestId("useragent-distribution-center-value")).toHaveTextContent("12");
     expect(screen.getByTestId("useragent-distribution-pie")).toHaveAttribute("data-key", "requests");
-    expect(screen.queryByText(/^Requests$/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^cost$/i })).not.toBeInTheDocument();
   });
 
-  it("uses compact request totals in the center and legend when request mode is active", async () => {
-    const user = userEvent.setup();
+  it("uses compact request totals in the center and legend without a monetary selector", async () => {
 
     render(
       <UseragentDistributionDonut
@@ -234,7 +195,6 @@ describe("UseragentDistributionDonut", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /^req$/i }));
 
     expect(screen.getByTestId("useragent-distribution-center-value")).toHaveTextContent("1.5B");
     expect(screen.getByText("500M")).toBeInTheDocument();

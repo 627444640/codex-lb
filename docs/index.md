@@ -8,8 +8,8 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 ## Features
 
 - **Account pooling** — load balance across multiple ChatGPT accounts
-- **Usage tracking** — per-account tokens, cost, 28-day trends
-- **API keys** — per-key rate limits by token, cost, window, model
+- **Usage tracking** — per-account tokens, requests, 28-day trends
+- **API keys** — per-key token limits by window and model
 - **Dashboard auth** — password + optional TOTP
 - **OpenAI-compatible** — Codex CLI, OpenCode, any OpenAI client
 - **Auto model sync** — available models fetched from upstream
@@ -19,7 +19,7 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 - [Getting Started](getting-started.md) — Docker / uvx quick start, remote bootstrap token
 - [Client Setup](client-setup.md) — Codex CLI, OpenCode, OpenClaw, Python SDK
 - [Configuration](configuration.md) — the few settings that matter
-- [Anonymous Telemetry](telemetry.md) — collected fields, consent, disabling, and retention
+- [Internal Usage](internal-token-usage.md) — token accounting, trusted client IP, and historical-data compatibility
 - [Authentication](authentication.md) — dashboard auth modes
 - [Conversations](conversations.md) — dashboard view and conversation APIs
 - [API Keys](api-keys.md) — protecting proxy routes

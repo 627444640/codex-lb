@@ -100,7 +100,7 @@ describe("reports date-range flow integration", () => {
         expect(accountRequests).toBeGreaterThan(0);
         expect(reportsRequests.length).toBeGreaterThan(0);
       });
-      expect(await screen.findByRole("heading", { name: "Cost Report" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "Usage Report" })).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Model", expanded: false }));
       await user.click(
@@ -198,7 +198,7 @@ describe("reports date-range flow integration", () => {
       expect(accountRequests).toBeGreaterThan(0);
       expect(reportsRequests.length).toBeGreaterThan(0);
     });
-    expect(await screen.findByRole("heading", { name: "Cost Report" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Usage Report" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Model", expanded: false }));
     await user.click(

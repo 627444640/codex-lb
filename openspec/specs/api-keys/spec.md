@@ -43,7 +43,7 @@ When `assigned_account_ids` is omitted or empty, the created key SHALL remain un
 ### Requirement: API Key update
 The system SHALL allow updating key properties via `PATCH /api/api-keys/{id}`. Updatable fields: `name`, `allowedModels`, `weeklyTokenLimit`, `expiresAt`, `isActive`, `usageSections`, `transportPolicyOverride`. The key hash and prefix MUST NOT be modifiable. The system MUST accept timezone-aware ISO 8601 datetimes for `expiresAt` and normalize them to UTC naive before persistence. The `transportPolicyOverride` field MUST accept `null` (follow the global policy) or one of `"smart"`, `"always_http"`, `"always_websocket"`; any other value MUST be rejected with HTTP 400.
 
-When a submitted API key limit rule does not match an existing rule by `limit_type`, `limit_window`, and `model_filter`, the system MUST initialize the new rule's `current_value` from the API key's successful existing request-log usage in that rule's current window. If `resetUsage` is true, the system MUST initialize submitted limits with `current_value: 0`.
+When a submitted token limit rule does not match an existing token rule by `limit_type`, `limit_window`, and `model_filter`, the system MUST initialize the new rule's `current_value` from the API key's successful existing request-log usage in that rule's current window. If `resetUsage` is true, the system MUST initialize submitted token limits with `current_value: 0`, while preserving dormant monetary limits.
 
 #### Scenario: Update key with timezone-aware expiration
 - **WHEN** admin submits `PATCH /api/api-keys/{id}` with `{ "expiresAt": "2025-12-31T00:00:00Z" }`
@@ -62,11 +62,12 @@ When a submitted API key limit rule does not match an existing rule by `limit_ty
 - **AND** admin submits `PATCH /api/api-keys/{id}` adding a daily `total_tokens` limit without `resetUsage`
 - **THEN** the new limit's `current_value` includes only the successful current-window token usage
 
-#### Scenario: Add cost limit after current-window usage exists
+#### Scenario: Reject a submitted monetary limit without touching history
 
-- **WHEN** an API key has successful request-log costs in the active daily window
-- **AND** admin submits `PATCH /api/api-keys/{id}` adding a daily `cost_usd` limit without `resetUsage`
-- **THEN** the new limit's `current_value` is the sum of each successful request log's `cost_usd` converted to truncated integer microdollars
+- **GIVEN** an API key has historical monetary usage
+- **WHEN** an administrator submits a new `cost_usd` or `credits` rule
+- **THEN** the update returns HTTP 400 atomically
+- **AND** existing keys, rules, counters and request logs remain unchanged
 
 #### Scenario: Reset usage when adding a limit
 
@@ -342,31 +343,24 @@ The create and edit dialogs SHALL expose an `Apply to codex /model` checkbox dir
 - **WHEN** an admin opens the edit API key dialog for a key with `apply_to_codex_model: true`
 - **THEN** the `Apply to codex /model` checkbox is shown as checked
 
-### Requirement: Cost accounting uses model and service-tier pricing
-When computing API key `cost_usd` usage, the system MUST price requests using the resolved model pricing and the authoritative `service_tier` reported by the upstream response when available, falling back to the forwarded request `service_tier` only when the response omits it. Requests sent with non-standard service tiers MUST use the published pricing for the tier actually used instead of falling back to standard-tier pricing.
+### Requirement: Internal API keys enforce token limits without monetary billing
 
-#### Scenario: Priority-tier request increments cost limit
-- **WHEN** an authenticated request for a priced model is finalized with `service_tier: "priority"`
-- **THEN** the system computes `cost_usd` using the priority-tier rate for that model
+The internal distribution MUST retain token-based authentication, model restrictions, admission, reservations, and settlement. It MUST NOT calculate monetary costs or consult prices for these decisions. New request logs MUST store `cost_usd=null` and `pricing_version=null`. A missing price MUST NOT reject otherwise valid traffic. Compatible historical monetary values MAY remain readable without repricing.
 
-#### Scenario: Flex-tier request increments cost limit
-- **WHEN** an authenticated request for a priced model is finalized with `service_tier: "flex"`
-- **THEN** the system computes `cost_usd` using the flex-tier rate for that model
+#### Scenario: An unpriced model is governed by token limits
 
-#### Scenario: Standard-tier request keeps standard pricing
-- **WHEN** an authenticated request for the same model is finalized without `service_tier`
-- **THEN** the system computes `cost_usd` using the standard-tier rate
+- **WHEN** an authenticated permitted request uses a model or tier without a price
+- **THEN** admission and settlement use the applicable token limits
+- **AND** no pricing-availability error or monetary estimate is generated
 
-### Requirement: gpt-5.4 pricing is recognized
-The system MUST recognize `gpt-5.4` pricing when computing request costs. For standard-tier requests with more than 272K input tokens, the system MUST apply the published higher long-context rates.
+#### Scenario: Historical amounts remain unchanged
 
-#### Scenario: gpt-5.4 request priced at standard tier
-- **WHEN** a request for `gpt-5.4` completes with standard service tier
-- **THEN** the system computes non-zero cost using the configured `gpt-5.4` standard rates
+- **GIVEN** a stored request contains a non-null historical cost and pricing version
+- **WHEN** usage or request-log APIs read it
+- **THEN** the existing values remain unchanged
+- **AND** no current price table is consulted or applied
 
-#### Scenario: gpt-5.4 long-context request priced at long-context rates
-- **WHEN** a standard-tier `gpt-5.4` request completes with more than 272K input tokens
-- **THEN** the system computes cost using the configured long-context `gpt-5.4` rates
+
 
 ### Requirement: Model-scoped limit enforcement
 
@@ -610,20 +604,7 @@ reservation exactly once before propagating the original header failure.
 - **WHEN** 동일 `reservation_id`로 `finalize_usage_reservation()`이 2회 호출되면
 - **THEN** 사용량은 정확히 1회만 반영되어야 한다 (SHALL)
 
-### Requirement: gpt-5.4-mini pricing is recognized
 
-The system MUST recognize `gpt-5.4-mini` pricing when computing request costs. Snapshot aliases for the same model family MUST resolve to the canonical `gpt-5.4-mini` price table entry.
-
-#### Scenario: gpt-5.4-mini request priced at standard tier
-
-- **WHEN** a request for `gpt-5.4-mini` completes with standard service tier
-- **THEN** the system computes non-zero cost using the configured `gpt-5.4-mini` standard rates
-
-#### Scenario: gpt-5.4-mini snapshot request priced at canonical rates
-
-- **WHEN** a request for `gpt-5.4-mini-2026-03-17` completes
-- **THEN** the system resolves the snapshot alias to `gpt-5.4-mini`
-- **AND** the system applies the same standard rates
 
 ### Requirement: API keys can read their own `/v1/usage`
 
@@ -632,8 +613,8 @@ The system SHALL expose `GET /v1/usage` for self-service usage lookup by API-key
 - `request_count`
 - `total_tokens`
 - `cached_input_tokens`
-- `total_cost_usd`
-- `limits[]` containing limits configured on the authenticated API key, with `limit_type`, `limit_window`, `max_value`, `current_value`, `remaining_value`, `model_filter`, `reset_at`, and `source`. When no API-key limits are configured and aggregate upstream quota details are visible to the caller, `limits[]` MAY mirror those aggregate upstream credit windows for legacy client compatibility.
+- `total_cost_usd` as a compatibility total of stored historical amounts, without current price calculation
+- `limits[]` containing active token limits configured on the authenticated API key, with `limit_type`, `limit_window`, `max_value`, `current_value`, `remaining_value`, `model_filter`, `reset_at`, and `source`. When no API-key limits are configured and aggregate upstream quota details are visible to the caller, `limits[]` MAY mirror those aggregate upstream credit windows for legacy client compatibility.
 - `upstream_limits[]` containing aggregate upstream Codex credit windows when available, with the same fields and `source: "aggregate"`, subject to the key's `usage_sections` containing `upstream_limits`
 - `account_pool_usage` containing `primary` and `secondary` float remaining percentages, subject to the key's `usage_sections` containing `account_pool_usage`
 
@@ -678,14 +659,15 @@ Validation failures MUST use the existing OpenAI error envelope used by `/v1/*` 
 - **WHEN** `api_key_auth_enabled` is false and a client calls `GET /v1/usage` with a valid Bearer key
 - **THEN** the system still authenticates that key and returns the self-usage payload
 
-### Requirement: API key cost accounting uses the billable service tier
-API key cost accounting MUST continue to use the effective billable `service_tier` chosen for the request log and MUST NOT derive pricing from the operator-requested tier when the upstream reports a different actual tier.
+### Requirement: API key token accounting preserves service-tier metadata
+
+Requested, actual and effective service tiers MUST remain request metadata. Token accounting MUST settle actual usage independently of model or service-tier prices.
 
 #### Scenario: Requested and actual tiers differ
-- **WHEN** a priced request is sent with `requested_service_tier: "priority"`
-- **AND** the upstream reports `actual_service_tier: "default"`
-- **THEN** the persisted billable `service_tier` is `default`
-- **AND** API key cost accounting uses the `default` tier rate for that request
+
+- **WHEN** a request asks for `priority` and upstream reports `default`
+- **THEN** both tier values remain available in the request log
+- **AND** token settlement uses reported usage without computing a currency value
 
 ### Requirement: API keys can enforce a service tier
 
@@ -743,9 +725,9 @@ When `pooled_capacity_credits_primary` is 0.0 (e.g., all assigned accounts are f
 
 ### Requirement: API key 7-day usage includes account cost breakdown
 
-`GET /api/api-keys/{key_id}/usage-7d` SHALL return `accountCosts[]` in addition to the existing 7-day totals for the selected API key. Each `accountCosts[]` item SHALL include `accountId`, `email`, `costUsd`, and `isDeleted`.
+For historical response compatibility, `GET /api/api-keys/{key_id}/usage-7d` MAY retain `accountCosts[]` in addition to the existing 7-day totals for the selected API key. Each `accountCosts[]` item SHALL include `accountId`, `email`, `costUsd`, and `isDeleted`.
 
-The system MUST aggregate `accountCosts[]` from request-log rows whose `api_key_id` matches the selected key and whose `requested_at` falls inside the rolling 7-day window used by the endpoint totals.
+When retained, the system MUST aggregate `accountCosts[]` only from stored historical amounts in request-log rows whose `api_key_id` matches the selected key and whose `requested_at` falls inside the rolling 7-day window used by the endpoint totals.
 
 #### Scenario: Account costs are sorted by descending cost
 - **WHEN** a client loads `GET /api/api-keys/{key_id}/usage-7d`
@@ -775,13 +757,13 @@ The database SHALL provide an index that supports filtering request logs by API 
 
 ### Requirement: Request-aware API-key usage reservations
 
-API-key usage reservation admission MUST reserve a bounded request-aware budget instead of an unconditional fixed 8192 input-token plus 8192 output-token pre-charge for every request. The reservation budget MUST be used only for admission and in-flight accounting; final usage accounting MUST continue to settle to the authoritative completed request usage and service-tier pricing.
+API-key usage reservation admission MUST reserve a bounded request-aware budget instead of an unconditional fixed 8192 input-token plus 8192 output-token pre-charge for every request. The reservation budget MUST be used only for admission and in-flight accounting; final token accounting MUST continue to settle to authoritative completed request usage.
 
-For token limits, admission MUST reserve from the request input and output token budgets. The input budget MAY be estimated from self-contained request payloads, while opaque upstream context MUST fall back to a conservative input budget. The output budget MUST use a bounded system default unless codex-lb can verify that a client-provided output cap is actually enforced upstream. For `cost_usd` limits, admission MUST compute the reservation cost from the same input and output token budgets and the effective request service tier. Reservation finalization MUST adjust every applicable reserved value to actual completed usage exactly once, including limits whose admission reservation was zero.
+For token limits, admission MUST reserve from the request input and output token budgets. The input budget MAY be estimated from self-contained request payloads, while opaque upstream context MUST fall back to a conservative input budget. The output budget MUST use a bounded system default unless codex-lb can verify that a client-provided output cap is actually enforced upstream. Retained `cost_usd` and `credits` limits MUST be excluded from reservation creation and enforcement. Reservation finalization MUST adjust every applicable reserved token value to actual completed usage exactly once, including limits whose admission reservation was zero.
 
 #### Scenario: Concurrent priority lanes do not require 8 × 8192 output-token headroom
 
-- **WHEN** an API key has a `cost_usd` limit with enough remaining value for the bounded request-aware reservations
+- **WHEN** an API key has a token limit with enough remaining tokens for the bounded request-aware reservations
 - **AND** eight `gpt-5.5` requests using `service_tier = "priority"` are admitted concurrently
 - **THEN** the proxy allows all eight reservations instead of rejecting a lane solely because the old 8192-output-token pre-charge would exceed the limit
 
@@ -1120,7 +1102,7 @@ The system MUST reserve API-key usage before forwarding an OpenAI-compatible
 source-routed request authenticated by an API key, and MUST finalize the
 reservation from the upstream OpenAI-compatible `usage` payload when the
 request completes.
-The finalized input, output, cached-input, and cost values MUST update the same
+The finalized input, output and cached-input token values MUST update the same
 API-key limit and usage-reporting paths used by subscription-backed requests.
 
 #### Scenario: Source-routed response finalizes token usage
@@ -1133,7 +1115,7 @@ API-key limit and usage-reporting paths used by subscription-backed requests.
 
 #### Scenario: Missing usage fails closed for limited keys
 
-- **GIVEN** an API key has a token or cost limit
+- **GIVEN** an API key has a token limit
 - **WHEN** a source-routed response succeeds but lacks usable OpenAI `usage`
   fields
 - **THEN** the system does not silently finalize zero usage
@@ -1241,53 +1223,7 @@ When API-key authentication and proxy-header trust are disabled, a loopback sock
 - **AND** the raw socket peer is outside `proxy_unauthenticated_client_cidrs`
 - **THEN** the protected proxy request is rejected with HTTP 401
 
-### Requirement: GPT-5.6 usage cost pricing matches the current published rates
 
-When computing API-key usage, request-log, reservation, or aggregate cost for the canonical GPT-5.6 models, the system MUST use these USD-per-1M-token rates
-for input, cached input, and output:
-
-| Model | Standard | Fast/priority | Flex | Standard long context |
-| --- | --- | --- | --- | --- |
-| `gpt-5.6-sol` | `4 / 0.40 / 20` | `8 / 0.80 / 40` | `2 / 0.20 / 10` | `8 / 0.80 / 30` |
-| `gpt-5.6-terra` | `2 / 0.20 / 12` | `4 / 0.40 / 24` | `1 / 0.10 / 6` | `4 / 0.40 / 18` |
-| `gpt-5.6-luna` | `0.20 / 0.02 / 1.20` | `0.40 / 0.04 / 2.40` | `0.10 / 0.01 / 0.60` | `0.40 / 0.04 / 1.80` |
-
-The existing `priority` and `fast` service-tier aliases MUST use the
-Fast/priority rates. Standard long-context rates MUST apply only when input
-tokens exceed 272,000. Fast and Flex long-context pricing MUST apply twice their short-context input
-and cached-input rates and 1.5 times their short-context output rates. Model aliases with a
-numeric dated snapshot suffix MUST resolve to the corresponding canonical table
-entry.
-
-Reported cache-write tokens MUST be priced at 1.25 times the effective
-input rate and MUST be subtracted alongside cached reads from ordinary
-input tokens. Unreported cache writes MUST remain unknown in request logs.
-Sol rates are the verified promotional table as of 2026-09-17; persisted
-estimates MUST retain a pricing version. Batch service behavior is outside
-this proxy contract.
-
-#### Scenario: Terra standard usage uses the current rate
-
-- **WHEN** a standard-tier `gpt-5.6-terra` request has 200,000 input tokens and 1,000,000 output tokens
-- **THEN** the token cost is `$12.40`
-
-#### Scenario: Luna Fast and Flex usage use their tier rates
-
-- **WHEN** a `gpt-5.6-luna` request has 200,000 input tokens, 100,000 cached input tokens, and 1,000,000 output tokens
-- **AND** the request uses `priority` or `fast`
-- **THEN** the token cost is `$2.444`
-- **WHEN** the same usage uses `flex`
-- **THEN** the token cost is `$0.611`
-
-#### Scenario: Terra standard long-context usage uses the current long-context rate
-
-- **WHEN** a standard-tier `gpt-5.6-terra` request has 300,000 input tokens, 50,000 cached input tokens, and 100,000 output tokens
-- **THEN** the token cost is `$2.82`
-
-#### Scenario: Versioned aliases use canonical GPT-5.6 pricing
-
-- **WHEN** the requested model is `gpt-5.6-luna-2026-07-13`
-- **THEN** cost accounting resolves it to the `gpt-5.6-luna` price entry
 
 ### Requirement: API key last-used tracking is write-behind and coalesced
 
@@ -1337,36 +1273,7 @@ The system SHALL track `api_keys.last_used_at` through a process-local write-beh
 - **WHEN** it records a touch after the flusher has stopped and performed its final flush
 - **THEN** the touch is flushed to the database immediately by the recording path rather than being lost at process exit
 
-### Requirement: GPT-5.6 personality pricing is recognized
 
-The system MUST recognize `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` when computing request costs. The bare `gpt-5.6` alias MUST resolve to Sol, and suffixed aliases for each personality model MUST resolve to the matching canonical pricing entry. Standard, Flex, Priority, and requests with more than 272K input tokens MUST use the published rates applicable to the model and tier.
-
-#### Scenario: Canonical GPT-5.6 models use personality-specific pricing
-
-- **WHEN** a standard-tier request completes for `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`
-- **THEN** the system computes cost using that model's standard input, cached-input, and output rates
-
-#### Scenario: Bare GPT-5.6 alias resolves to Sol pricing
-
-- **WHEN** a request completes for `gpt-5.6`
-- **THEN** the system resolves it to the canonical Sol pricing entry
-- **AND** the system does not use the generic `gpt-5` pricing entry
-
-#### Scenario: Suffixed GPT-5.6 model resolves to its personality price
-
-- **WHEN** a request completes for a suffixed GPT-5.6 personality model ID
-- **THEN** the system resolves it to the matching canonical Sol, Terra, or Luna pricing entry
-- **AND** the system does not use the generic `gpt-5` pricing entry
-
-#### Scenario: GPT-5.6 service tiers use published tier rates
-
-- **WHEN** a GPT-5.6 request completes with `service_tier: "flex"` or `service_tier: "priority"`
-- **THEN** the system computes cost using the published rates for that model and service tier
-
-#### Scenario: GPT-5.6 long-context request uses published uplift
-
-- **WHEN** a standard-tier or Flex GPT-5.6 request completes with more than 272K input tokens
-- **THEN** the system computes cost using the published long-context input, cached-input, and output rates for that model and tier
 
 ### Requirement: API-key limit rule identities are unique
 
@@ -1425,100 +1332,32 @@ The dashboard API key CRUD surface MUST accept and persist `ultrafast` as a cano
 - **WHEN** a request uses an API key whose enforced service tier is `ultrafast`
 - **THEN** the upstream request carries `service_tier: "ultrafast"`
 
-### Requirement: Unsupported credit limits fail closed
+### Requirement: Monetary limit records remain inactive and preserved
 
-The system MUST reject API key creation or submitted limit updates containing `credits` with HTTP 400 and an explanation that credit metering is unsupported. It MUST NOT assign an invented token-to-credit or currency-to-credit conversion. An existing key with any stored `credits` rule MUST fail authentication or request admission before upstream work, even when that rule has zero usage or its reset window has expired. Administrators MUST remain able to list, delete, disable, and replace these rules with supported token or cost limits.
+The system MUST reject key creation or submitted rule updates containing `cost_usd` or `credits` with HTTP 400 before committing changes. It MUST NOT invent a currency or credit conversion. Existing monetary rules MUST remain inactive: they MUST NOT block authentication, admission or token settlement, and their counters and reset times MUST NOT be changed by normal traffic, resets of token usage or token-only limit edits. The dashboard MUST expose only token-limit controls. Account-level upstream quota and reset-credit functionality MUST retain its independent behavior.
 
-The dashboard MUST omit credits from new limit choices and MUST explain that an existing credits rule blocks the key until it is removed or replaced. Existing credit rules MUST remain readable for remediation. Account-level upstream quota and reset-credit capabilities MUST remain unchanged. For valid keys with supported token or cost limits, `/v1/usage` MUST retain those limits and their original units separately from upstream credit windows. `/api/codex/usage` MUST NOT convert token or cost limits into Codex credit windows or balances, and MUST return null `rate_limit` and `credits` when no supported credit representation exists.
+#### Scenario: Reject unsupported rules atomically
 
-#### Scenario: Reject an unsupported submitted rule atomically
-
-- **WHEN** an administrator creates a key or updates its limits with a credits rule
-- **THEN** the endpoint returns HTTP 400 with an unsupported-metering explanation
+- **WHEN** an administrator creates a key or submits `cost_usd` or `credits` in a limit update
+- **THEN** the endpoint returns HTTP 400 with a token-only limit explanation
 - **AND** no key or limit changes are committed
 
-#### Scenario: A legacy credits key cannot proxy requests
+#### Scenario: Exhausted historical monetary rules do not block token capacity
 
-- **WHEN** a key contains an existing credits rule, including an expired rule or one with zero current usage
-- **THEN** its request is rejected before upstream execution or usage reservation
-- **AND** replacing that rule with a supported rule restores normal key behavior
+- **GIVEN** a key has an exhausted or expired monetary rule and available token capacity
+- **WHEN** a valid permitted request is received
+- **THEN** only active token limits govern admission and settlement
+- **AND** the monetary rule remains unchanged
 
-#### Scenario: The dashboard supports remediation
+#### Scenario: Token edits retain dormant monetary rows
 
-- **WHEN** an administrator edits a key with an existing credits rule
-- **THEN** the dashboard explains why the key is blocked
-- **AND** the rule can be removed or changed to a supported type
-- **AND** new rules cannot select credits
+- **GIVEN** a key has token and monetary rules
+- **WHEN** an administrator updates only token rules or resets token usage
+- **THEN** token rules are updated as requested
+- **AND** omitted monetary rows retain their IDs, values and reset times without becoming active
 
-#### Scenario: Supported personal limits remain distinct from upstream credits
+#### Scenario: Upstream quota remains distinct
 
-- **WHEN** a valid key with token or cost limits, including monthly limits, calls the usage endpoints
-- **THEN** `/v1/usage` returns those limits with their original units, windows, usage, remaining values, and `api_key_limit` source
-- **AND** any visible upstream credit windows remain in `upstream_limits` with `aggregate` source
-- **AND** `/api/codex/usage` returns null `rate_limit` and `credits` rather than inventing a conversion or substituting upstream aggregate limits
-- **AND** ChatGPT-authenticated upstream credit and monthly-window presentation remains unchanged
-
-### Requirement: Cost reservations cover cache-write and image modality rates
-Within a request's bounded input/output budget, admission MUST reserve the maximum applicable input rate when cache writes or image modality are not yet known. Final successful settlement MUST use reported cache writes and actual model identity, and MUST preserve explicit image cost overrides. Settlement MUST remain idempotent and MUST NOT convert an image cost marked unknown into host-model charges.
-
-#### Scenario: Cache writes exceed ordinary input rates
-- **WHEN** admission estimates 10,000 input tokens for a model with a 1.25-times cache-write rate
-- **THEN** its cost reservation covers all 10,000 tokens being cache writes
-- **AND** final settlement adjusts the reservation to the reported input partition exactly once
-
-#### Scenario: Image modality is not known at admission
-- **WHEN** an image request has a bounded input/output token budget
-- **THEN** reservation uses the upper bound of the model's text and image token rates
-- **AND** final costs use the image usage evidence instead of this admission estimate
-
-### Requirement: Verified Astra and long-context pricing
-The system MUST recognize Astra and its versioned aliases with standard short-context USD-per-million rates of 10 input, 1 cached input, 12.5 cache write, and 50 output. For Astra requests above 272,000 input tokens, input and cache rates MUST double and output rates MUST increase by 1.5 times. Fast MUST use twice the respective standard rates and Flex MUST use half. GPT-5.5 standard long-context pricing MUST apply the published 2-times input and 1.5-times output uplift, and GPT-5.4-mini Fast MUST use twice its standard rates. Unverified model aliases MUST NOT be guessed.
-
-#### Scenario: Astra cache writes are separately priced
-- **WHEN** an Astra request reports 100 input tokens, 40 cached reads, 20 cache writes, and 10 output tokens
-- **THEN** ordinary input is 40 tokens and its standard short-context estimate is 0.00119 USD
-
-#### Scenario: Auto-review has no verified price
-- **WHEN** a response reports the model codex-auto-review and no custom price exists
-- **THEN** builtin cost accounting returns unknown
-
-### Requirement: Published variants have independent verified rates
-
-The system MUST use the following Standard USD-per-million input/cached-input/output rates: GPT-5 Mini 0.25/0.025/2, GPT-5 Nano 0.05/0.005/0.4, GPT-5 Pro 15/unavailable/120, GPT-5.2 Pro 21/unavailable/168, GPT-5.5 Cyber and GPT-5.6 Cyber 12.5/1.25/75, and chat-latest 5/0.5/30. GPT-5.6 Cyber cache writes MUST use 15.625 per million. GPT-5 Mini Fast MUST use 0.45/0.045/3.6; Mini and Nano Flex MUST use half their Standard rates.
-
-#### Scenario: Mini is not priced as the full model
-- **WHEN** gpt-5-mini reports 100,000 ordinary input and 1,000 output tokens on Standard
-- **THEN** its cost estimate is 0.027 USD
-
-### Requirement: Default price resolution does not guess variant prices
-
-The system MUST resolve exact registered model IDs, their numeric YYYY-MM-DD snapshots and explicitly published compatibility aliases. It MUST NOT match arbitrary suffixes or unknown model families to a shorter model name. The gpt-5.6 and gpt-daybreak-blue-latest aliases MUST resolve to Sol; gpt-daybreak-red-latest MUST resolve to GPT-5.6 Cyber. A model or service tier without verified public pricing MUST remain unknown in cost estimates, including bare gpt-5.3 and ultrafast.
-
-#### Scenario: Unknown variant remains unpriced
-- **WHEN** gpt-5.7 or gpt-5-mini-custom is reported without a custom price
-- **THEN** no built-in cost estimate is fabricated
-
-#### Scenario: Numeric snapshot keeps its own variant rate
-- **WHEN** gpt-5-mini-2025-08-07 is reported
-- **THEN** it uses the Mini rate, not the GPT-5 rate
-
-#### Scenario: Unpublished tier remains unknown
-- **WHEN** a Sol response reports service_tier ultrafast
-- **THEN** its API cost estimate is unknown
-
-### Requirement: Unknown pricing cannot bypass cost limits
-
-For requests subject to a cost_usd limit, admission MUST reject an unpriced requested model or service tier with pricing_unavailable instead of admitting it as free, using the existing bounded input/output budget for context-sensitive admission estimates. A custom model source MUST use its own verified configured price for admission. If an admitted request's actual model, tier or context length has no verifiable final cost, successful settlement MUST retain that request's previously reserved cost-limit amount while leaving its actual cost unknown. Token and request limits MUST settle from their actual usage, and repeated settlement MUST remain idempotent. An explicit verified zero cost MUST remain distinct from unknown cost and MUST release the cost reservation normally.
-
-#### Scenario: Unknown requested price is rejected before forwarding
-- **WHEN** a cost-limited API key requests Sol on ultrafast without a configured source price
-- **THEN** admission returns pricing_unavailable and does not call upstream
-
-#### Scenario: Upstream changes to an unpriced model
-- **WHEN** a request reserved a known cost budget and the successful upstream response reports an unpriced actual model
-- **THEN** settlement retains the original cost-limit reservation as a conservative allowance
-- **AND** actual cost stays unknown, token counts settle to actual usage, and another settlement changes nothing
-
-#### Scenario: Explicit zero cost releases the allowance
-- **WHEN** a request has an explicit verified final cost of zero
-- **THEN** the cost reservation is released rather than retained as unknown
+- **WHEN** a token-limited key reads its usage
+- **THEN** token limits retain their units and source
+- **AND** upstream quota or reset-credit data is not treated as a local monetary rule

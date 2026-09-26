@@ -1330,19 +1330,19 @@ async def test_create_key_with_limits() -> None:
             expires_at=None,
             limits=[
                 LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
-                LimitRuleInput(limit_type="cost_usd", limit_window="daily", max_value=5_000_000),
+                LimitRuleInput(limit_type="output_tokens", limit_window="daily", max_value=5_000_000),
             ],
         )
     )
 
     assert len(created.limits) == 2
     token_limit = next(lim for lim in created.limits if lim.limit_type == "total_tokens")
-    cost_limit = next(lim for lim in created.limits if lim.limit_type == "cost_usd")
+    output_limit = next(lim for lim in created.limits if lim.limit_type == "output_tokens")
     assert token_limit.max_value == 1_000_000
     assert token_limit.limit_window == "weekly"
     assert token_limit.current_value == 0
-    assert cost_limit.max_value == 5_000_000
-    assert cost_limit.limit_window == "daily"
+    assert output_limit.max_value == 5_000_000
+    assert output_limit.limit_window == "daily"
 
 
 @pytest.mark.asyncio
@@ -1477,76 +1477,24 @@ async def test_validate_key_multi_limit_all_must_pass() -> None:
             expires_at=None,
             limits=[
                 LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100),
-                LimitRuleInput(limit_type="cost_usd", limit_window="daily", max_value=5_000_000),
+                LimitRuleInput(limit_type="output_tokens", limit_window="daily", max_value=5_000_000),
             ],
         )
     )
 
     limits = await repo.get_limits_by_key(created.id)
     token_limit = next(lim for lim in limits if lim.limit_type == LimitType.TOTAL_TOKENS)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
+    output_limit = next(lim for lim in limits if lim.limit_type == LimitType.OUTPUT_TOKENS)
 
-    # Token within range, cost exceeded → should fail
+    # Token within range, output exceeded → should fail
     token_limit.current_value = 50
-    cost_limit.current_value = 5_000_000
+    output_limit.current_value = 5_000_000
     token_limit.reset_at = utcnow() + timedelta(days=1)
-    cost_limit.reset_at = utcnow() + timedelta(days=1)
+    output_limit.reset_at = utcnow() + timedelta(days=1)
 
     with pytest.raises(ApiKeyRateLimitExceededError) as exc_info:
         await service.enforce_limits_for_request(created.id, request_model="gpt-5.1")
-    assert "cost_usd" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_enforce_limits_reserves_tier_aware_cost_budget() -> None:
-    repo = _FakeApiKeysRepository()
-    service = ApiKeysService(repo)
-    priority_created = await service.create_key(
-        ApiKeyCreateData(
-            name="priority-cost-reserve-key",
-            allowed_models=None,
-            expires_at=None,
-            limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000),
-            ],
-        )
-    )
-
-    priority_reservation = await service.enforce_limits_for_request(
-        priority_created.id,
-        request_model="gpt-5.4",
-        request_service_tier="priority",
-        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=8192, output_tokens=8192),
-    )
-    assert priority_reservation is not None
-    assert priority_reservation.key_id == priority_created.id
-
-    priority_limits = await repo.get_limits_by_key(priority_created.id)
-    priority_cost_limit = next(lim for lim in priority_limits if lim.limit_type == LimitType.COST_USD)
-    assert priority_cost_limit.current_value == 286_720
-
-    standard_created = await service.create_key(
-        ApiKeyCreateData(
-            name="standard-cost-reserve-key",
-            allowed_models=None,
-            expires_at=None,
-            limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000),
-            ],
-        )
-    )
-    standard_reservation = await service.enforce_limits_for_request(
-        standard_created.id,
-        request_model="gpt-5.4",
-        request_service_tier=None,
-        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=8192, output_tokens=8192),
-    )
-    assert standard_reservation is not None
-    assert standard_reservation.key_id == standard_created.id
-
-    standard_limits = await repo.get_limits_by_key(standard_created.id)
-    standard_cost_limit = next(lim for lim in standard_limits if lim.limit_type == LimitType.COST_USD)
-    assert standard_cost_limit.current_value == 143_360
+    assert "output_tokens" in str(exc_info.value)
 
 
 def test_api_key_request_usage_budget_rejects_non_integer_tokens() -> None:
@@ -1557,7 +1505,7 @@ def test_api_key_request_usage_budget_rejects_non_integer_tokens() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enforce_limits_default_budget_allows_eight_priority_lanes_under_five_dollars() -> None:
+async def test_enforce_limits_default_budget_allows_eight_token_lanes() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -1565,7 +1513,7 @@ async def test_enforce_limits_default_budget_allows_eight_priority_lanes_under_f
             name="priority-lanes",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=5_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=5_000_000)],
         )
     )
 
@@ -1585,12 +1533,12 @@ async def test_enforce_limits_default_budget_allows_eight_priority_lanes_under_f
     assert len(granted) == 8
     assert {reservation.key_id for reservation in granted} == {created.id}
     limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
-    assert 0 < cost_limit.current_value < 5_000_000
+    token_limit = next(lim for lim in limits if lim.limit_type == LimitType.TOTAL_TOKENS)
+    assert 0 < token_limit.current_value < 5_000_000
 
 
 @pytest.mark.asyncio
-async def test_enforce_limits_request_budget_bounds_token_and_cost_reservations() -> None:
+async def test_enforce_limits_request_budget_bounds_token_reservations() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -1602,7 +1550,6 @@ async def test_enforce_limits_request_budget_bounds_token_and_cost_reservations(
                 LimitRuleInput(limit_type="input_tokens", limit_window="weekly", max_value=1_000_000),
                 LimitRuleInput(limit_type="output_tokens", limit_window="weekly", max_value=1_000_000),
                 LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=1_000_000),
             ],
         )
     )
@@ -1619,7 +1566,6 @@ async def test_enforce_limits_request_budget_bounds_token_and_cost_reservations(
     assert by_type[LimitType.INPUT_TOKENS] == 123
     assert by_type[LimitType.OUTPUT_TOKENS] == 456
     assert by_type[LimitType.TOTAL_TOKENS] == 579
-    assert 0 < by_type[LimitType.COST_USD] < 1_000_000
 
 
 @pytest.mark.asyncio
@@ -1964,7 +1910,7 @@ async def test_record_usage_model_filter_matching() -> None:
 
 
 @pytest.mark.asyncio
-async def test_record_usage_cost_limit_uses_service_tier_pricing() -> None:
+async def test_record_usage_token_limit_ignores_service_tier_pricing() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -1973,7 +1919,7 @@ async def test_record_usage_cost_limit_uses_service_tier_pricing() -> None:
             allowed_models=None,
             expires_at=None,
             limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
+                LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000),
             ],
         )
     )
@@ -1987,12 +1933,12 @@ async def test_record_usage_cost_limit_uses_service_tier_pricing() -> None:
     )
 
     limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
-    assert cost_limit.current_value == 31_000_000
+    token_limit = next(lim for lim in limits if lim.limit_type == LimitType.TOTAL_TOKENS)
+    assert token_limit.current_value == 1_200_000
 
 
 @pytest.mark.asyncio
-async def test_record_usage_cost_limit_uses_legacy_gpt_5_priority_pricing() -> None:
+async def test_record_usage_token_limit_ignores_legacy_gpt_5_priority_pricing() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -2001,7 +1947,7 @@ async def test_record_usage_cost_limit_uses_legacy_gpt_5_priority_pricing() -> N
             allowed_models=None,
             expires_at=None,
             limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
+                LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000),
             ],
         )
     )
@@ -2015,12 +1961,12 @@ async def test_record_usage_cost_limit_uses_legacy_gpt_5_priority_pricing() -> N
     )
 
     limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
-    assert cost_limit.current_value == 22_500_000
+    token_limit = next(lim for lim in limits if lim.limit_type == LimitType.TOTAL_TOKENS)
+    assert token_limit.current_value == 2_000_000
 
 
 @pytest.mark.asyncio
-async def test_record_usage_cost_limit_uses_flex_service_tier_pricing() -> None:
+async def test_record_usage_token_limit_ignores_flex_service_tier_pricing() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -2029,7 +1975,7 @@ async def test_record_usage_cost_limit_uses_flex_service_tier_pricing() -> None:
             allowed_models=None,
             expires_at=None,
             limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
+                LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000),
             ],
         )
     )
@@ -2043,59 +1989,8 @@ async def test_record_usage_cost_limit_uses_flex_service_tier_pricing() -> None:
     )
 
     limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
-    assert cost_limit.current_value == 2_625_000
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "expected_reserved_microdollars", "expected_final_microdollars"),
-    [
-        ("gpt-5.6", 204_800, 20_800_000),
-        ("gpt-5.6-sol-2026-07-13", 204_800, 20_800_000),
-        ("gpt-5.6-terra-2026-07-13", 118_784, 12_400_000),
-        ("gpt-5.6-luna-2026-07-13", 11_878, 1_240_000),
-        ("gpt-5-mini", 18_432, 2_050_000),
-        ("gpt-5-nano", 3_686, 410_000),
-    ],
-)
-async def test_usage_reservation_uses_distinct_model_pricing(
-    model: str,
-    expected_reserved_microdollars: int,
-    expected_final_microdollars: int,
-) -> None:
-    repo = _FakeApiKeysRepository()
-    service = ApiKeysService(repo)
-    created = await service.create_key(
-        ApiKeyCreateData(
-            name=f"{model}-cost-key",
-            allowed_models=None,
-            expires_at=None,
-            limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
-            ],
-        )
-    )
-
-    reservation = await service.enforce_limits_for_request(
-        created.id,
-        request_model=model,
-        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=8_192, output_tokens=8_192),
-    )
-    assert reservation is not None
-
-    limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(lim for lim in limits if lim.limit_type == LimitType.COST_USD)
-    assert cost_limit.current_value == expected_reserved_microdollars
-
-    await service.finalize_usage_reservation(
-        reservation.reservation_id,
-        model=model,
-        input_tokens=200_000,
-        output_tokens=1_000_000,
-    )
-
-    assert cost_limit.current_value == expected_final_microdollars
+    token_limit = next(lim for lim in limits if lim.limit_type == LimitType.TOTAL_TOKENS)
+    assert token_limit.current_value == 2_000_000
 
 
 @pytest.mark.asyncio
@@ -2585,7 +2480,7 @@ async def test_create_key_rejects_invalid_usage_sections() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("override", ["none", "known", "unknown"])
-async def test_finalize_cost_uses_actual_model_cache_writes_or_image_evidence(override: str) -> None:
+async def test_finalize_tokens_ignores_legacy_cost_evidence(override: str) -> None:
     from app.core.usage.pricing import UsageCostBreakdown
 
     repo = _FakeApiKeysRepository()
@@ -2595,13 +2490,11 @@ async def test_finalize_cost_uses_actual_model_cache_writes_or_image_evidence(ov
             name="cost-evidence",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000)],
         )
     )
     reservation = await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
     assert reservation is not None
-    [reserved_limit] = await repo.get_limits_by_key(created.id)
-    reserved_cost = reserved_limit.current_value
     breakdown = (
         None if override == "none" else UsageCostBreakdown(None, None, None, 0.00234 if override == "known" else None)
     )
@@ -2617,11 +2510,11 @@ async def test_finalize_cost_uses_actual_model_cache_writes_or_image_evidence(ov
             cost_override=breakdown,
         )
     [limit] = await repo.get_limits_by_key(created.id)
-    assert limit.current_value == {"none": 15000, "known": 2340, "unknown": reserved_cost}[override]
+    assert limit.current_value == 101000
 
 
 @pytest.mark.asyncio
-async def test_image_admission_reserves_modality_upper_bound() -> None:
+async def test_image_admission_reserves_only_reported_token_budget() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -2629,7 +2522,7 @@ async def test_image_admission_reserves_modality_upper_bound() -> None:
             name="image-cost-budget",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000)],
         )
     )
     reservation = await service.enforce_limits_for_request(
@@ -2639,12 +2532,12 @@ async def test_image_admission_reserves_modality_upper_bound() -> None:
     )
     assert reservation is not None
     [limit] = await repo.get_limits_by_key(created.id)
-    assert limit.current_value == 5000  # $10/M image input + $40/M image output.
+    assert limit.current_value == 200
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("tier", "reserved"), [("default", 2200), ("priority", 4400), ("flex", 1100)])
-async def test_text_admission_covers_all_input_cache_writes_without_inflating_output(tier: str, reserved: int) -> None:
+@pytest.mark.parametrize(("tier", "reserved"), [("default", 5000), ("priority", 5000), ("flex", 5000)])
+async def test_token_admission_does_not_price_cache_writes(tier: str, reserved: int) -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -2652,7 +2545,7 @@ async def test_text_admission_covers_all_input_cache_writes_without_inflating_ou
             name="write-cost-budget",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000)],
         )
     )
     reservation = await service.enforce_limits_for_request(
@@ -2663,7 +2556,7 @@ async def test_text_admission_covers_all_input_cache_writes_without_inflating_ou
     )
     assert reservation is not None
     [limit] = await repo.get_limits_by_key(created.id)
-    assert limit.current_value == reserved  # 4K writes * .25 + 1K output * 1.2, then tier rates.
+    assert limit.current_value == reserved
     await service.finalize_usage_reservation(
         reservation.reservation_id,
         model="gpt-5.6-luna",
@@ -2685,7 +2578,7 @@ async def test_text_admission_covers_all_input_cache_writes_without_inflating_ou
         ("gpt-5.6-sol", None, 100, ApiKeyRequestPricing()),
     ],
 )
-async def test_cost_limit_rejects_unpublished_requested_price(model, tier, input_tokens, pricing) -> None:
+async def test_token_limit_accepts_unpublished_requested_price(model, tier, input_tokens, pricing) -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
     created = await service.create_key(
@@ -2693,28 +2586,26 @@ async def test_cost_limit_rejects_unpublished_requested_price(model, tier, input
             name="unpublished-price",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000)],
         )
     )
-    with pytest.raises(ApiKeyRateLimitExceededError) as exc:
-        await service.enforce_limits_for_request(
-            created.id,
-            request_model=model,
-            request_service_tier=tier,
-            request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=input_tokens, output_tokens=100),
-            request_pricing=pricing,
-        )
-    assert exc.value.code == "pricing_unavailable"
-    assert "retrying alone" in str(exc.value)
+    reservation = await service.enforce_limits_for_request(
+        created.id,
+        request_model=model,
+        request_service_tier=tier,
+        request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=input_tokens, output_tokens=100),
+        request_pricing=pricing,
+    )
+    assert reservation is not None
     [limit] = await repo.get_limits_by_key(created.id)
-    assert limit.current_value == 0
+    assert limit.current_value == input_tokens + 100
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "result", ["unknown_model", "unknown_tier", "unknown_context", "unknown_override", "zero_override"]
 )
-async def test_unknown_settlement_preserves_cost_reservation_and_actual_tokens(result, monkeypatch) -> None:
+async def test_unknown_settlement_keeps_actual_tokens_without_cost(result, monkeypatch) -> None:
     from app.core.usage.pricing import UsageCostBreakdown
 
     repo = _FakeApiKeysRepository()
@@ -2725,7 +2616,6 @@ async def test_unknown_settlement_preserves_cost_reservation_and_actual_tokens(r
             allowed_models=None,
             expires_at=None,
             limits=[
-                LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000),
                 LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000_000),
             ],
         )
@@ -2737,10 +2627,7 @@ async def test_unknown_settlement_preserves_cost_reservation_and_actual_tokens(r
     )
     assert reservation is not None
     limits = await repo.get_limits_by_key(created.id)
-    cost_limit = next(limit for limit in limits if limit.limit_type == LimitType.COST_USD)
     token_limit = next(limit for limit in limits if limit.limit_type == LimitType.TOTAL_TOKENS)
-    reserved_cost = cost_limit.current_value
-    assert reserved_cost > 0
     settle = AsyncMock(wraps=repo.settle_usage_reservation)
     monkeypatch.setattr(repo, "settle_usage_reservation", settle)
     override = (
@@ -2759,11 +2646,10 @@ async def test_unknown_settlement_preserves_cost_reservation_and_actual_tokens(r
             service_tier={"unknown_tier": "ultrafast", "unknown_context": "flex"}.get(result),
             cost_override=override,
         )
-    assert cost_limit.current_value == (0 if result == "zero_override" else reserved_cost)
     assert token_limit.current_value == actual_input + 10
     settle.assert_awaited_once()
     assert settle.await_args is not None
-    assert settle.await_args.kwargs["cost_microdollars"] == (0 if result == "zero_override" else None)
+    assert settle.await_args.kwargs["cost_microdollars"] is None
 
 
 @pytest.mark.asyncio
@@ -2775,7 +2661,7 @@ async def test_explicit_free_source_and_token_only_unknown_model_are_admitted() 
             name="free-source",
             allowed_models=None,
             expires_at=None,
-            limits=[LimitRuleInput(limit_type="cost_usd", limit_window="weekly", max_value=100_000_000)],
+            limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100_000_000)],
         )
     )
     await service.enforce_limits_for_request(
@@ -2784,7 +2670,7 @@ async def test_explicit_free_source_and_token_only_unknown_model_are_admitted() 
         request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     [limit] = await repo.get_limits_by_key(free.id)
-    assert limit.current_value == 0
+    assert limit.current_value == 10240
     token_only = await service.create_key(
         ApiKeyCreateData(
             name="tokens-only",

@@ -162,11 +162,8 @@ async def update_quota_planner_settings(
         max_warmups_per_day=(
             payload.max_warmups_per_day if payload.max_warmups_per_day is not None else current.max_warmups_per_day
         ),
-        max_warmup_credits_per_day=(
-            payload.max_warmup_credits_per_day
-            if payload.max_warmup_credits_per_day is not None
-            else current.max_warmup_credits_per_day
-        ),
+        # Historical monetary policy is inert and survives ordinary edits.
+        max_warmup_credits_per_day=current.max_warmup_credits_per_day,
         min_expected_gain=(
             payload.min_expected_gain if payload.min_expected_gain is not None else current.min_expected_gain
         ),

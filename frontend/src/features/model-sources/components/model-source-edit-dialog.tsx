@@ -33,10 +33,6 @@ import type {
 type ModelDraftChangeFlags = {
   contextWindow: boolean;
   maxOutputTokens: boolean;
-  inputPer1M: boolean;
-  cachedInputPer1M: boolean;
-  outputPer1M: boolean;
-  audioPerMinute: boolean;
   supportsStreaming: boolean;
   supportsTools: boolean;
   supportsVision: boolean;
@@ -48,13 +44,6 @@ function parsePositiveInt(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number.parseInt(trimmed, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parseNonNegativeFloat(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number.parseFloat(trimmed);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function splitModelIds(value: string): string[] {
@@ -76,10 +65,6 @@ function getModelDraftChangeFlags(
   return {
     contextWindow: draft.contextWindow !== initialDraft.contextWindow,
     maxOutputTokens: draft.maxOutputTokens !== initialDraft.maxOutputTokens,
-    inputPer1M: draft.inputPer1M !== initialDraft.inputPer1M,
-    cachedInputPer1M: draft.cachedInputPer1M !== initialDraft.cachedInputPer1M,
-    outputPer1M: draft.outputPer1M !== initialDraft.outputPer1M,
-    audioPerMinute: draft.audioPerMinute !== initialDraft.audioPerMinute,
     supportsStreaming: draft.supportsStreaming !== initialDraft.supportsStreaming,
     supportsTools: draft.supportsTools !== initialDraft.supportsTools,
     supportsVision: draft.supportsVision !== initialDraft.supportsVision,
@@ -121,18 +106,6 @@ function buildModelInputs(
       supportsVision: draftChangeFlags.supportsVision
         ? draft.supportsVision
         : existingModel?.supportsVision ?? false,
-      inputPer1M: draftChangeFlags.inputPer1M
-        ? parseNonNegativeFloat(draft.inputPer1M)
-        : existingModel?.inputPer1M ?? null,
-      cachedInputPer1M: draftChangeFlags.cachedInputPer1M
-        ? parseNonNegativeFloat(draft.cachedInputPer1M)
-        : existingModel?.cachedInputPer1M ?? null,
-      outputPer1M: draftChangeFlags.outputPer1M
-        ? parseNonNegativeFloat(draft.outputPer1M)
-        : existingModel?.outputPer1M ?? null,
-      audioPerMinute: draftChangeFlags.audioPerMinute
-        ? parseNonNegativeFloat(draft.audioPerMinute)
-        : existingModel?.audioPerMinute ?? null,
       rawMetadataJson: draftChangeFlags.supportsReasoning
         ? mergeReasoningMetadata(
             existingModel?.rawMetadataJson,

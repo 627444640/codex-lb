@@ -1,3 +1,5 @@
+> **Status: superseded for the internal distribution.** The [internal-token-only-usage change](../internal-token-only-usage/proposal.md) removes the collector, including opt-out sending. The content and checked tasks below describe the earlier change only; they are not current implementation or acceptance claims. This change has not been newly verified or archived as completed by the retirement work.
+
 ## Why
 
 Telemetry currently becomes silent when an operator disables it, so the collector cannot

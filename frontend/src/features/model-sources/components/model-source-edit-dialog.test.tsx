@@ -49,7 +49,7 @@ function createModelSource(overrides: Partial<ModelSource> = {}): ModelSource {
 }
 
 describe("ModelSourceEditDialog", () => {
-  it("prefills existing fields including pricing and models", () => {
+  it("prefills model settings without exposing historical prices", () => {
     renderWithProviders(
       <ModelSourceEditDialog
         open
@@ -63,11 +63,11 @@ describe("ModelSourceEditDialog", () => {
     expect(screen.getByLabelText("Name")).toHaveValue("vllm-local");
     expect(screen.getByLabelText("Base URL")).toHaveValue("http://127.0.0.1:8000/v1");
     expect(screen.getByDisplayValue("Qwen/Qwen3.6-27B-FP8")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("0.5")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("1.5")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("0.5")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("1.5")).not.toBeInTheDocument();
   });
 
-  it("submits edited pricing and omits blank api key", async () => {
+  it("submits token settings while omitting historical price fields and blank api key", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
 
@@ -81,9 +81,9 @@ describe("ModelSourceEditDialog", () => {
       />,
     );
 
-    const outputPrice = screen.getByDisplayValue("1.5");
-    await user.clear(outputPrice);
-    await user.type(outputPrice, "2.25");
+    const maxTokens = screen.getByDisplayValue("4096");
+    await user.clear(maxTokens);
+    await user.type(maxTokens, "8192");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -96,9 +96,11 @@ describe("ModelSourceEditDialog", () => {
     expect(payload.models).toHaveLength(1);
     expect(payload.models[0]).toMatchObject({
       model: "Qwen/Qwen3.6-27B-FP8",
-      inputPer1M: 0.5,
-      outputPer1M: 2.25,
+      maxOutputTokens: 8192,
     });
+    for (const key of ["inputPer1M", "cachedInputPer1M", "outputPer1M", "audioPerMinute"]) {
+      expect(payload.models[0]).not.toHaveProperty(key);
+    }
     expect(payload.supportsAudioTranscriptions).toBe(false);
     expect(payload.supportsEmbeddings).toBe(false);
   });
@@ -162,9 +164,9 @@ describe("ModelSourceEditDialog", () => {
       />,
     );
 
-    const outputPrice = screen.getByDisplayValue("1.5");
-    await user.clear(outputPrice);
-    await user.type(outputPrice, "2.0");
+    const maxTokens = screen.getByDisplayValue("4096");
+    await user.clear(maxTokens);
+    await user.type(maxTokens, "8192");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -177,14 +179,14 @@ describe("ModelSourceEditDialog", () => {
           model: "enabled-model",
           isEnabled: true,
           contextWindow: 2048,
-          outputPer1M: 2,
+          maxOutputTokens: 8192,
           supportsVision: true,
         }),
         expect.objectContaining({
           model: "disabled-model",
           isEnabled: false,
           contextWindow: 4096,
-          outputPer1M: 2,
+          maxOutputTokens: 8192,
           supportsVision: false,
         }),
       ]),
@@ -237,7 +239,7 @@ describe("ModelSourceEditDialog", () => {
     expect(payload.models).toBeUndefined();
   });
 
-  it("prefills and submits the audio per-minute rate", async () => {
+  it("omits historical audio pricing on a model capability edit", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     const source = createModelSource();
@@ -253,16 +255,15 @@ describe("ModelSourceEditDialog", () => {
       />,
     );
 
-    const audioPrice = screen.getByDisplayValue("0.3");
-    await user.clear(audioPrice);
-    await user.type(audioPrice, "0.45");
+    expect(screen.queryByDisplayValue("0.3")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Reasoning" }));
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledTimes(1);
     });
 
-    expect(onSubmit.mock.calls[0][1].models[0].audioPerMinute).toBe(0.45);
+    expect(onSubmit.mock.calls[0][1].models[0]).not.toHaveProperty("audioPerMinute");
   });
 
   it("toggles reasoning support via raw metadata while keeping other keys", async () => {
