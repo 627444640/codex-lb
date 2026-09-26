@@ -119,7 +119,7 @@ describe("api keys flow integration", () => {
     expect(within(readOnlyRow).getByText(/12\.5K tok/)).toBeInTheDocument();
     expect(within(readOnlyRow).getByText(/2\.2K cached/)).toBeInTheDocument();
     expect(within(readOnlyRow).getByText(/42 req/)).toBeInTheDocument();
-    expect(within(readOnlyRow).getByText(/\$0\.42/)).toBeInTheDocument();
+    expect(within(readOnlyRow).queryByText(/\$0\.42/)).not.toBeInTheDocument();
     expect(within(readOnlyRow).getByText("Never")).toBeInTheDocument();
     expect(within(readOnlyRow).getByText("Disabled")).toBeInTheDocument();
   });

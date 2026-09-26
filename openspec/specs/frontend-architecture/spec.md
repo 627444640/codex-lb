@@ -166,10 +166,10 @@ When a request log entry is associated with an account, the dashboard request-lo
 - **AND** the dashboard recent-requests table still renders the row without failing
 
 ### Requirement: Request logs distinguish actual and requested service tiers
-When a request log entry includes service-tier data, the dashboard request-log API response MUST expose the billable tier, requested tier, and actual tier separately. The recent-requests UI MUST display the actual tier when available and MUST show the requested tier when it differs from the visible actual tier.
+When a request log entry includes service-tier data, the dashboard request-log API response MUST expose the effective compatibility tier, requested tier, and actual tier separately. The recent-requests UI MUST display the actual tier when available and MUST show the requested tier when it differs from the visible actual tier.
 
 #### Scenario: Dashboard shows upstream-selected tier and requested tier
-- **WHEN** a request log entry is recorded with `requested_service_tier: "priority"`, `actual_service_tier: "default"`, and billable `service_tier: "default"`
+- **WHEN** a request log entry is recorded with `requested_service_tier: "priority"`, `actual_service_tier: "default"`, and effective `service_tier: "default"`
 - **THEN** the `GET /api/request-logs` response includes `requestedServiceTier: "priority"`, `actualServiceTier: "default"`, and `serviceTier: "default"`
 - **AND** the dashboard renders the model label with `default`
 - **AND** the dashboard also shows that the request asked for `priority`
@@ -555,61 +555,35 @@ The dashboard accounts API SHALL expose an operator-controlled, human-readable `
 - **AND** clearing the control stores `alias: null` and restores the email fallback
 - **AND** account search matches the stored alias or alias-backed display name so operators can filter duplicate-email accounts by their chosen label
 
-### Requirement: APIs tab shows a 7-day account-cost donut for selected API keys
+### Requirement: APIs tab shows token usage without monetary charts
 
-When the selected API key's 7-day usage payload contains one or more `accountCosts[]` items, the APIs tab detail panel SHALL render the account-cost donut section and usage-trend section inside a single shared card. On large screens, the split layout SHALL use a 25:75 width ratio with the donut on the left, the trend on the right, and a vertical separator between them.
+The APIs tab MUST show available token usage and request metrics for the selected key without a cost donut or monetary totals. Retained `accountCosts` and cost-trend API fields MUST NOT activate a monetary display. The token trend MUST use the available panel width and retain its accumulated toggle.
 
-The donut section SHALL include a title and subtitle, SHALL show the 7-day total cost in the donut center, SHALL not render a separate `Total $...` summary in the section header, and SHALL render the legend below the donut.
+#### Scenario: Historical monetary data does not restore the donut
 
-#### Scenario: Donut renders inside the shared usage card
-- **WHEN** a selected API key has 7-day account-cost data and trend data
-- **THEN** the detail panel renders the account-cost donut section to the left of the trend section inside one shared card
-- **AND** the large-screen layout uses a 25:75 split with a vertical separator between the sections
+- **GIVEN** the selected key has historical account costs and token trend data
+- **WHEN** the detail panel renders
+- **THEN** its chart shows only the token trend
+- **AND** no account-cost panel, cost axis or currency legend is displayed
 
-#### Scenario: Donut is omitted when no account-cost buckets exist
-- **WHEN** the selected API key's `usage-7d.accountCosts[]` array is empty
-- **THEN** the APIs tab does not render the account-cost donut card
+#### Scenario: Monetary history alone does not create an empty chart
 
-### Requirement: APIs tab account-cost donut uses existing account labels and privacy rules
+- **WHEN** the selected key has historical cost data but no token trend points
+- **THEN** the dashboard does not create a chart from monetary data
 
-The donut legend SHALL use the account label derived from the existing payload fields: `Deleted Account` for `isDeleted: true`, otherwise the account `email` when present, otherwise `Unknown Account`. Non-deleted account labels MUST respect the hide-account-info privacy setting used elsewhere in the dashboard.
 
-The legend SHALL show each visible bucket's 7-day cost, SHALL coordinate hover highlighting with the matching pie slice, and SHALL use the same vertically scrollable five-row viewport pattern as the dashboard donuts when more rows exist than fit without scrolling.
 
-#### Scenario: Deleted account label is explicit
-- **WHEN** an `accountCosts[]` item has `isDeleted: true`
-- **THEN** the legend label is `Deleted Account`
 
-#### Scenario: Privacy hiding applies to non-deleted account labels
-- **WHEN** the hide-account-info setting is enabled
-- **AND** a visible donut legend row represents a non-deleted account label
-- **THEN** the label text is privacy-blurred
 
-#### Scenario: Legend scroll viewport matches dashboard donuts
-- **WHEN** more than five account-cost buckets are present
-- **THEN** the donut legend keeps all rows available
-- **AND** the visible legend viewport shows five rows before scrolling
+### Requirement: APIs tab token trend controls remain accessible
 
-### Requirement: APIs tab account-cost donut follows the dashboard donut visual system
+The APIs token trend MUST retain its heading, token-only description, token legend and accessible accumulated switch. It MUST render a single token series and token axis. Historical cost points MUST NOT affect chart values, axes or date selection.
 
-The account-cost donut SHALL use the same sizing, palette generation, reduced-motion behavior, hover-linked legend highlighting, and gray consumed/deleted color treatment as the dashboard donut visual system.
+#### Scenario: Token trend preserves accumulation
 
-#### Scenario: Deleted-account slice uses the consumed gray color
-- **WHEN** the donut renders a deleted-account bucket
-- **THEN** that bucket uses the same gray color family used by the dashboard donut's consumed or used segment
-
-### Requirement: APIs tab usage trend control layout is compact in the split view
-
-The APIs tab usage trend card SHALL keep its heading and subtitle, SHALL align the accumulated toggle and Tokens/Cost legend to the right side of the heading block on larger screens, and SHALL reduce the chart right margin to fit the split layout.
-
-#### Scenario: Usage trend controls align with the heading row
-- **WHEN** the usage trend card renders
-- **THEN** the Tokens/Cost legend appears to the right of the heading block on larger screens
-- **AND** the accumulated toggle remains in the same right-side controls group
-
-#### Scenario: Usage trend uses compact right margin
-- **WHEN** the usage trend chart renders in the split APIs-tab layout
-- **THEN** the chart right margin is reduced from the previous wider layout to a compact right margin
+- **WHEN** the operator enables the accumulated switch
+- **THEN** the visible token series becomes cumulative
+- **AND** no cost series or currency axis is added
 
 ### Requirement: Dashboard account summaries sorted by primary capacity
 
@@ -643,52 +617,46 @@ The weekly credits pace card header MUST align the title and gauge icon to the f
 - **WHEN** the weekly credits pace card renders
 - **THEN** the header row uses `justify-between` without `items-center`
 
-### Requirement: Request logs expose cost breakdown details
-When a request log has sufficient usage data, the dashboard request-log API MUST expose raw input/output token counts and a cost breakdown that separates non-cached input, cached input, and output cost.
+### Requirement: Request logs expose token evidence with legacy response compatibility
 
-#### Scenario: Successful request log exposes token and cost segments
-- **WHEN** a successful request log row has persisted input, cached-input, and output usage
-- **THEN** `GET /api/request-logs` includes `inputTokens`, `outputTokens`, and `costBreakdown`
-- **AND** `costBreakdown` includes `inputUsd`, `cachedInputUsd`, `outputUsd`, and `totalUsd`
+The request-log API MUST preserve available input, output, cached-read, cache-write and reasoning token fields. It MAY retain old cost response keys for compatibility, but MUST NOT calculate a monetary breakdown. A stored historical cost MAY appear as a historical total; absent monetary segments MUST be null. Missing token evidence MUST remain null rather than being invented.
 
-#### Scenario: Request log output falls back to reasoning tokens
-- **WHEN** a successful request log row has no persisted `output_tokens` and does have `reasoning_tokens`
-- **THEN** `GET /api/request-logs` uses the reasoning-token value for `outputTokens`
+#### Scenario: Request log exposes token evidence
 
-#### Scenario: Request log response preserves shape for legacy partial data
-- **WHEN** a successful request log row is missing one or more persisted token or cost segments
-- **THEN** `GET /api/request-logs` still includes `inputTokens`, `outputTokens`, and `costBreakdown`
-- **AND** any unavailable top-level token field is returned as `null`
-- **AND** `costBreakdown` includes `inputUsd`, `cachedInputUsd`, `outputUsd`, and `totalUsd`
-- **AND** any unavailable `costBreakdown` field is returned as `null`
-- **AND** clients can render only the available token and cost segments without treating the row as invalid
+- **WHEN** a request log has input, cached-input and output usage
+- **THEN** its API representation exposes that token evidence
+- **AND** a new row has no monetary estimate
 
-### Requirement: Request detail dialog renders successful cost breakdowns
-The dashboard request-log `View Details` dialog MUST render a `Cost` section under `Archive` for successful request rows and MUST hide the section for non-success rows.
+#### Scenario: Reasoning fallback remains compatible
 
-#### Scenario: Successful request displays ordered cost details
-- **WHEN** a request log detail dialog opens for an `ok` row with available breakdown data
-- **THEN** the dialog displays the total cost first
-- **AND** the dialog lists available cost segments in this order: input, cached, output
-- **AND** each displayed segment includes its token count and matching currency value
-- **AND** token counts use the same compact formatting as the request-log tokens column
-- **AND** currency values are rounded to two decimals
+- **WHEN** a historical row lacks output tokens but has reasoning tokens
+- **THEN** the existing output-token fallback remains available without generating a price
 
-#### Scenario: Missing cost segments are omitted without breaking the dialog
-- **WHEN** a successful request log row is missing one or more token or cost segments
-- **THEN** the dialog renders only the available segments
-- **AND** if no segments are available the `Cost` section is hidden
+#### Scenario: Legacy partial data remains valid
+
+- **WHEN** a log is missing optional token or monetary fields
+- **THEN** its compatible response shape remains valid with null unavailable values
+
+### Requirement: Request detail dialog renders token usage without billing
+
+Request details MUST retain available token counts, timing and request metadata without a monetary total or cost breakdown section. Partial or failed rows MUST remain inspectable according to existing availability rules.
+
+#### Scenario: Historical cost is not shown in details
+
+- **GIVEN** a successful row carries a historical monetary total
+- **WHEN** the administrator opens its detail dialog
+- **THEN** available token evidence remains visible
+- **AND** no cost section or currency amount is rendered
 
 ### Requirement: Reports page renders English user-facing labels
 
 The dashboard SHALL render `/reports` with the following exact page-owned user-facing labels for the current reports surface:
 
-- `Cost Report`
+- `Usage Report`
 - `Usage history by date range`
 - `Loading...`
-- `Total Cost`
+- `Tokens`
 - `Requests`
-- `Cost by Day`
 - `Tokens by Day`
 - `Distribution by Model`
 - `Distribution by UserAgent`
@@ -696,7 +664,6 @@ The dashboard SHALL render `/reports` with the following exact page-owned user-f
 - `Day`
 - `Input Tokens`
 - `Output Tokens`
-- `Cost`
 - `Accounts`
 - `Total`
 - `Failed to load report data:`
@@ -710,11 +677,11 @@ Backend-provided strings, account values, model values, and raw server error pay
 #### Scenario: Reports page shows English labels
 
 - **WHEN** an authenticated operator opens `/reports`
-- **THEN** the page title is `Cost Report`
+- **THEN** the page title is `Usage Report`
 - **AND** the subtitle is `Usage history by date range`
-- **AND** the summary cards include `Total Cost` and `Requests`
-- **AND** the chart and table section titles include `Cost by Day`, `Tokens by Day`, `Distribution by Model`, `Distribution by UserAgent`, and `Daily Breakdown`
-- **AND** the daily table headings include `Day`, `Input Tokens`, `Output Tokens`, `Cost`, and `Accounts`
+- **AND** the summary cards include `Tokens` and `Requests`
+- **AND** the chart and table section titles include `Tokens by Day`, `Distribution by Model`, `Distribution by UserAgent`, and `Daily Breakdown`
+- **AND** the daily table headings include `Day`, `Input Tokens`, `Output Tokens`, and `Accounts`
 
 #### Scenario: Reports page state labels are English
 
@@ -724,18 +691,16 @@ Backend-provided strings, account values, model values, and raw server error pay
 - **AND** the retry warning is `Some report data could not be loaded. Try reloading.`
 - **AND** the retry button label is `Retry`
 
-### Requirement: Reports distribution donuts show compact active-metric totals
+### Requirement: Reports distribution donuts show compact request totals
 
-The `/reports` page SHALL render both `Distribution by Model` and `Distribution by UserAgent` cards with a donut-center total that uses the page-owned label `Total` above the current metric value.
-When a donut card is in `cost` mode, its center total and legend values SHALL display compact USD values with up to two fractional digits and `K`, `M`, or `B` suffixes when applicable.
-When a donut card is in `req` mode, its center total and legend values SHALL display compact request values with up to two fractional digits and `K`, `M`, or `B` suffixes when applicable.
+Both model and User-Agent distribution cards MUST show request counts and request-based percentages. Their centers MUST display `Total` and a compact request count with up to two fractional digits and K/M/B suffixes. The cards MUST NOT expose a currency metric or selector. Legends MUST retain hover-linked slices, four visible rows and accessible scrolling for additional rows.
 
-#### Scenario: Reports distribution donut totals switch with the selected metric
+#### Scenario: Legacy costs do not affect distribution
 
-- **WHEN** `/reports` renders model or user-agent distribution data
-- **THEN** each distribution donut shows `Total` in the center above the total value
-- **AND** `cost` mode uses compact USD totals such as `$1.43K`
-- **AND** `req` mode uses compact request totals such as `1.5B`
+- **GIVEN** distribution rows contain request counts and old monetary values
+- **WHEN** a distribution card renders
+- **THEN** its slices, totals, percentages and legends derive only from requests
+- **AND** hover linkage and scrolling remain available
 
 ### Requirement: Reports page loads report data from the reports endpoint
 
@@ -782,11 +747,11 @@ The `/reports` page SHALL expose visible filter controls for `7d`, `30d`, and `9
 
 The `/reports` page MUST expose a visible multi-select immediately before the
 date controls. Its options MUST use the localized existing chart-header keys
-`reports.charts.costByDay`, `reports.charts.tokensByDay`,
+`reports.charts.tokensByDay`,
 `reports.charts.timeToFirstToken`, `reports.charts.tokensPerSecond`, and
 `reports.charts.queueWait`. The multi-select filter label MUST use the
 `reports.filters.charts` key, and that key MUST be provided in each of
-`en.json`, `ko.json`, and `zh-CN.json`. All five options MUST be selected by
+`en.json`, `ko.json`, and `zh-CN.json`. All four options MUST be selected by
 default.
 Selected line-chart cards MUST render, deselected line-chart cards MUST NOT
 render, and an empty selection MUST be valid. Summary, donut, and table
@@ -795,21 +760,21 @@ sections MUST remain visible regardless of line-chart selection.
 #### Scenario: Reports selects all line charts by default
 
 - **WHEN** the `/reports` page loads without a saved visibility preference
-- **THEN** the multi-select has all five chart options selected
-- **AND** all five line-chart cards render
+- **THEN** the multi-select has all four chart options selected
+- **AND** all four line-chart cards render
 - **AND** the summary, donut, and table sections remain visible
 
 #### Scenario: Reports renders a partial selection
 
-- **GIVEN** the operator selects only Cost by Day and Queue Wait
+- **GIVEN** the operator selects only Tokens by Day and Queue Wait
 - **WHEN** the Reports page renders
 - **THEN** only those two line-chart cards render
-- **AND** the other three line-chart cards do not render
+- **AND** the other two line-chart cards do not render
 - **AND** the summary, donut, and table sections remain visible
 
 #### Scenario: Reports permits an empty selection
 
-- **GIVEN** the operator deselects all five chart options
+- **GIVEN** the operator deselects all four chart options
 - **WHEN** the Reports page renders
 - **THEN** no line-chart cards render
 - **AND** the summary, donut, and table sections remain visible
@@ -825,14 +790,13 @@ sections MUST remain visible regardless of line-chart selection.
 
 Reports MUST store the selected chart IDs as a JSON array under the exact
 localStorage key `codex-lb-reports-visible-charts`. The only known chart IDs
-MUST be the following five, in this canonical order: `costByDay`,
-`tokensByDay`, `timeToFirstToken`, `tokensPerSecond`, `queueWait`. This
+MUST be the following four, in this canonical order: `tokensByDay`, `timeToFirstToken`, `tokensPerSecond`, `queueWait`. This
 canonical order MUST be used for normalization, persistence, and rendering.
-Missing storage MUST default to all five known chart IDs. A valid array MUST
+Missing storage MUST default to all four known chart IDs. A valid array MUST
 be filtered to known IDs, deduplicated, and normalized to canonical chart
 order; an empty array MUST remain empty. Malformed JSON, non-array values,
 arrays containing any non-string values, and localStorage access failures MUST
-default to all five known chart IDs. Storage failures MUST NOT disable
+default to all four known chart IDs. Storage failures MUST NOT disable
 current-session in-memory visibility changes.
 
 #### Scenario: Reports restores a persisted subset
@@ -842,14 +806,14 @@ current-session in-memory visibility changes.
 - **WHEN** the `/reports` page initializes
 - **THEN** those two chart options are selected
 - **AND** their line-chart cards render
-- **AND** the other three line-chart cards do not render
+- **AND** the other two line-chart cards do not render
 
 #### Scenario: Reports ignores unknown IDs and normalizes persisted values
 
 - **GIVEN** localStorage contains a valid JSON array with known IDs in a
   non-canonical order, duplicate known IDs, and unknown IDs
 - **WHEN** the `/reports` page initializes
-- **THEN** unknown IDs are ignored
+- **THEN** unknown IDs, including retired `costByDay`, are ignored
 - **AND** duplicate IDs occur only once
 - **AND** the selected IDs are normalized to canonical chart order
 
@@ -1023,17 +987,13 @@ page-level selected-account fallback.
 
 ### Requirement: API key overview SHALL show lifetime usage aggregates
 
-The dashboard API key overview SHALL present usage totals using the API key list
-`usageSummary` values as lifetime aggregates (all non-warmup request-log history),
-unless the backend contract is changed to provide a bounded window explicitly.
+The key overview MUST present request and token totals using lifetime non-warmup `usageSummary` data unless a bounded backend window is explicitly provided. It MUST NOT show monetary totals. Request and token distributions MUST reflect those respective metrics.
 
-#### Scenario: Overview usage labels reflect lifetime scope
+#### Scenario: Overview scope remains lifetime
 
-- **WHEN** the API key overview renders `usageSummary` values for request count,
-  token count, and cost
-- **THEN** the section labels SHALL read as lifetime usage (for example:
-  "Lifetime Requests", "Lifetime Cost", "Lifetime Cost by API Key", "Lifetime Tokens
-  by API Key"), and SHALL NOT be labeled as 7-day totals.
+- **WHEN** the overview renders key-list usage summaries
+- **THEN** its request and token totals retain their lifetime scope
+- **AND** charts show requests by key and lifetime tokens by key without a monetary chart
 
 ### Requirement: Dashboard request-log details expose user-agent metadata
 The dashboard request-log API response MUST expose the persisted request-log `useragent` and `useragentGroup` values when present. The Request Details dialog MUST render the full `useragent` value in a `User Agent` field below the `Transport`, `Time`, and `Error Code` row, and MUST render `—` when no full user-agent value is stored.
@@ -1079,27 +1039,16 @@ The dashboard surface SHALL expose a reports page at route `/reports` and route 
 - **AND** allows filtering by date range, model, and account
 - **AND** uses the returned payload to render summary cards, daily charts, and model and user-agent distribution donuts
 
-### Requirement: Reports distribution donuts show active-metric totals
+### Requirement: Reports distribution donuts show request totals
 
-The `/reports` page SHALL render both `Distribution by Model` and `Distribution by UserAgent` cards.
-Each card SHALL show `Total` above the donut center value.
-When the distribution metric toggle is `cost`, the center value and legend values SHALL show compact USD formatting with up to two decimal places and `K`, `M`, or `B` suffixes when applicable.
-When the distribution metric toggle is `req`, the center value and legend values SHALL show compact request formatting with up to two decimal places and `K`, `M`, or `B` suffixes when applicable.
-Each distribution legend SHALL keep at most four rows visible before vertical scrolling, and any overflow scrollbar SHALL remain visually hidden while preserving scroll interaction.
-Hovering a donut slice SHALL highlight the matching legend row, and hovering a legend row SHALL highlight the matching donut slice.
+Both model and User-Agent distribution cards MUST show request counts and request-based percentages. Their centers MUST display `Total` and a compact request count with up to two fractional digits and K/M/B suffixes. The cards MUST NOT expose a currency metric or selector. Legends MUST retain hover-linked slices, four visible rows and accessible scrolling for additional rows.
 
-#### Scenario: Distribution donuts follow the active metric
-- **WHEN** report data includes model and user-agent distribution rows
-- **THEN** `/reports` renders both `Distribution by Model` and `Distribution by UserAgent`
-- **AND** each donut center shows `Total` on one line and the active metric total on the next line
-- **AND** switching a donut card from `cost` to `req` updates that card's center and legend values from compact USD totals to compact request totals
+#### Scenario: Legacy costs do not affect distribution
 
-#### Scenario: Distribution donuts sync hover state with a scrollable legend
-- **WHEN** report data includes more than four model or user-agent distribution rows
-- **THEN** each distribution legend shows four visible rows before vertical scrolling the remainder
-- **AND** the scrollbar stays visually hidden while scrolling still works
-- **AND** hovering any donut slice highlights the matching legend row
-- **AND** hovering any legend row highlights the matching donut slice
+- **GIVEN** distribution rows contain request counts and old monetary values
+- **WHEN** a distribution card renders
+- **THEN** its slices, totals, percentages and legends derive only from requests
+- **AND** hover linkage and scrolling remain available
 
 ### Requirement: Dashboard accounts section shows account availability summary
 
@@ -1132,9 +1081,9 @@ The summary SHALL render in the `Accounts` section header row and SHALL use the 
 
 ### Requirement: Dashboard overview summary cards show previous-window usage deltas
 
-The dashboard overview API SHALL expose previous-window comparison data for the existing `Requests`, `Tokens`, and `Est. API Cost` summary cards returned by `GET /api/dashboard/overview`. The comparison SHALL be tied to the selected overview timeframe so that `1d` compares the current 1-day window with the immediately preceding 1-day window, `7d` compares the current 7-day window with the immediately preceding 7-day window, and `30d` compares the current 30-day window with the immediately preceding 30-day window.
+The dashboard overview API SHALL expose previous-window comparison data for the existing `Requests` and `Tokens` summary cards returned by `GET /api/dashboard/overview`. The comparison SHALL be tied to the selected overview timeframe so that `1d` compares the current 1-day window with the immediately preceding 1-day window, `7d` compares the current 7-day window with the immediately preceding 7-day window, and `30d` compares the current 30-day window with the immediately preceding 30-day window.
 
-The overview response SHALL include a comparison block that exposes whether previous-window comparison is allowed and the previous-window totals for requests, tokens, and estimated API cost. The dashboard SHALL use that block to render a compact percentage-change indicator on the existing `Requests`, `Tokens`, and `Est. API Cost` cards only. The dashboard MUST NOT add this indicator to `Error rate` or `Account burn projection`.
+The overview response SHALL include a comparison block that exposes whether previous-window comparison is allowed and the previous-window totals for requests and tokens. The dashboard SHALL use that block to render a compact percentage-change indicator on the existing `Requests` and `Tokens` cards only. The dashboard MUST NOT add this indicator to `Error rate` or `Account burn projection`.
 
 If the immediately preceding window is not fully covered by eligible request-log history for the selected timeframe, the overview response SHALL mark the comparison as unavailable and the dashboard SHALL hide the percentage-change indicator for those cards.
 
@@ -1142,15 +1091,15 @@ If previous-window comparison is available and the previous total for a card is 
 
 #### Scenario: Daily overview renders increase from previous window
 
-- **WHEN** `GET /api/dashboard/overview?timeframe=1d` returns current totals for requests, tokens, and estimated API cost plus comparison data with `canCompare: true`
+- **WHEN** `GET /api/dashboard/overview?timeframe=1d` returns current totals for requests and tokens plus comparison data with `canCompare: true`
 - **AND** the previous-window totals are lower than the current-window totals
-- **THEN** the dashboard renders percentage-change indicators on the `Requests`, `Tokens`, and `Est. API Cost` cards
+- **THEN** the dashboard renders percentage-change indicators on the `Requests` and `Tokens` cards
 - **AND** each increase uses an upward indicator with positive `emerald` styling
 
 #### Scenario: Weekly overview renders decrease from previous window
 
 - **WHEN** `GET /api/dashboard/overview?timeframe=7d` returns comparison data with `canCompare: true`
-- **AND** at least one of the previous-window totals for requests, tokens, or estimated API cost is higher than the current-window total for that same card
+- **AND** at least one of the previous-window totals for requests or tokens is higher than the current-window total for that same card
 - **THEN** the dashboard renders a downward percentage-change indicator for that card
 - **AND** that decrease uses negative `red` styling
 
@@ -1158,29 +1107,22 @@ If previous-window comparison is available and the previous total for a card is 
 
 - **WHEN** `GET /api/dashboard/overview?timeframe=7d` or `GET /api/dashboard/overview?timeframe=30d` cannot prove the immediately preceding same-length window is fully covered by eligible request-log history
 - **THEN** the overview response marks the comparison as unavailable
-- **AND** the dashboard does not render percentage-change indicators on the `Requests`, `Tokens`, or `Est. API Cost` cards
+- **AND** the dashboard does not render percentage-change indicators on the `Requests` or `Tokens` cards
 
 #### Scenario: Non-comparison cards remain unchanged
 
 - **WHEN** the dashboard renders overview cards from `GET /api/dashboard/overview` with or without comparison data
 - **THEN** `Error rate` and `Account burn projection` do not render previous-window percentage-change indicators
 
-### Requirement: Dashboard estimated cost card meta avoids duplicate estimate and cache copy
+### Requirement: Dashboard summary omits monetary cards
 
-The dashboard overview `Est. API Cost` summary card SHALL render its meta text as only the averaged cost for the selected overview timeframe. The meta text MUST NOT append duplicate estimate wording or cached-token counts.
+The dashboard MUST NOT render an estimated API cost card or per-hour/per-day monetary averages. It MUST retain request, token, cache, conversation and error metrics supported by the existing overview.
 
-#### Scenario: Weekly estimated cost card shows only average-per-day text
+#### Scenario: Stored amounts do not restore a cost card
 
-- **WHEN** `GET /api/dashboard/overview?timeframe=7d` returns an `Est. API Cost` total and the summary metrics also include cached input tokens
-- **THEN** the dashboard renders the cost-card meta text as `Avg/day <currency value>`
-- **AND** the same meta text does not include `API estimate`
-- **AND** the same meta text does not include `cached`
-
-#### Scenario: Daily estimated cost card shows only average-per-hour text
-
-- **WHEN** `GET /api/dashboard/overview?timeframe=1d` returns an `Est. API Cost` total
-- **THEN** the dashboard renders the cost-card meta text as `Avg/hr <currency value>`
-- **AND** the same meta text does not include any extra suffix text
+- **GIVEN** a compatible overview payload contains a historical cost total
+- **WHEN** the overview renders
+- **THEN** its operational metrics remain visible without a monetary card
 
 ### Requirement: Upstream proxy admin creation flows use modal dialogs
 
@@ -1407,17 +1349,15 @@ The dashboard SHALL render `/reports` with a `Distribution by UserAgent` card pl
 - **WHEN** an authenticated operator opens `/reports`
 - **THEN** the page renders `Distribution by UserAgent` below `Distribution by Model`
 
-### Requirement: Reports distribution cards toggle between cost and requests
+### Requirement: Reports distribution cards use request metrics
 
-The dashboard SHALL render both `/reports` distribution cards with an upper-right `cost` / `req` toggle that defaults to `cost` and changes the donut slices, percentages, and legend values to match the selected metric. The `Distribution by Model` and `Distribution by UserAgent` donuts SHALL NOT render hover tooltips.
+The two report distribution cards MUST use request counts without a monetary toggle. They MUST preserve independent hover highlighting and MUST NOT render hover tooltips.
 
-#### Scenario: Distribution cards default to cost mode
-- **WHEN** an authenticated operator opens `/reports`
-- **THEN** both distribution cards render in `cost` mode by default
+#### Scenario: Request counts define both distributions
 
-#### Scenario: Distribution cards can switch to request mode
-- **WHEN** an authenticated operator activates `req` on either distribution card
-- **THEN** that card renders request-count slices, request-count values, and request-based percentages
+- **WHEN** an operator views model and User-Agent distributions
+- **THEN** both cards show request counts and independently highlight their active legend rows
+- **AND** no cost selector or currency value appears
 
 ### Requirement: Reports user-agent distribution preserves unknown buckets without collisions
 
@@ -1428,7 +1368,7 @@ The dashboard SHALL render both `/reports` distribution cards with an upper-righ
 - **WHEN** `GET /api/reports` aggregates request logs that include one or more rows with `request_logs.useragent_group = null`
 - **AND** one or more rows with normalized `request_logs.useragent_group = "Unknown"`
 - **THEN** the response `byUseragent` array includes an entry with `useragent: "Missing User-Agent"`
-- **AND** that entry aggregates only the null-backed rows' request counts and costs
+- **AND** that entry aggregates only the null-backed rows' request counts
 - **AND** the response separately includes an entry with `useragent: "Unknown"` for the real normalized `"Unknown"` rows
 
 #### Scenario: Reports filters distinguish missing and real Unknown user-agent traffic
@@ -1446,19 +1386,19 @@ The dashboard SHALL render both `/reports` distribution cards with an upper-righ
 
 ### Requirement: Reports daily charts fill missing selected days with zero-value rows
 
-The dashboard SHALL render `/reports` `Cost by Day` and `Tokens by Day` charts from a continuous daily series covering every selected day from the current `startDate` through `endDate`. When `GET /api/reports` omits a selected date, the page SHALL insert a zero-value daily row for that date before rendering both charts.
+The dashboard SHALL render `/reports` `Tokens by Day` charts from a continuous daily series covering every selected day from the current `startDate` through `endDate`. When `GET /api/reports` omits a selected date, the page SHALL insert a zero-value daily row for that date before rendering the token chart.
 
 #### Scenario: Missing API dates render as zero-value chart points
 
 - **WHEN** an authenticated operator views `/reports` for a selected date range and the `daily` response omits one or more selected dates
-- **THEN** the `Cost by Day` chart includes a point for every selected day from `startDate` through `endDate`
-- **AND** each omitted date renders with `costUsd = 0`
+- **THEN** the `Tokens by Day` chart includes a point for every selected day from `startDate` through `endDate`
+- **AND** each omitted date renders with zero token counts
 - **AND** the `Tokens by Day` chart includes a point for every selected day from `startDate` through `endDate`
 - **AND** each omitted date renders with `inputTokens = 0`, `outputTokens = 0`, `cachedInputTokens = 0`, `requests = 0`, `activeAccounts = 0`, and `errorCount = 0`
 
 ### Requirement: Daily Breakdown supports explicit visible-column sorting
 
-The dashboard SHALL render `/reports` `Daily Breakdown` with sortable visible columns for `Day`, `Reqs`, `Input Tokens`, `Output Tokens`, `Cost`, and `Accounts`. The default sort SHALL be `Day` descending.
+The dashboard SHALL render `/reports` `Daily Breakdown` with sortable visible columns for `Day`, `Reqs`, `Input Tokens`, `Output Tokens`, and `Accounts`. The default sort SHALL be `Day` descending.
 
 #### Scenario: Daily Breakdown defaults to newest day first
 
@@ -1581,7 +1521,7 @@ The Settings page and its constituent sections (`Appearance`, `Routing`, `Import
 
 ### Requirement: Dashboard request details expose client IP
 
-The dashboard request-log API response MUST expose the persisted `clientIp` value when present. The Request Details dialog MUST render `Client IP` with the full value when present, MUST allow copying the value, and MUST render `—` when no client IP is stored.
+The administrator request-log API response MUST expose the persisted `clientIp` value when present, and the request-log table MUST include its IP column by default. Guest responses and IP search MUST retain sensitive-field redaction. The Request Details dialog MUST render `Client IP` with the full value when present, MUST allow copying the value, and MUST render `—` when no client IP is stored.
 
 #### Scenario: Request details show client IP
 
@@ -1620,7 +1560,7 @@ MUST clear only the conversation filter and reset pagination. When the filtered
 API response includes conversation metadata, the dashboard MUST render a
 summary box between the filter row and request-log table with the form:
 
-`The conversation ${id} runs ${count} request(s), cost = ${formattedCost}`. The ID, count, and cost MUST be separate styled inline-code values without literal backticks.
+`The conversation ${id} runs ${count} request(s)`. The ID and count MUST be separate styled inline-code values without literal backticks.
 
 If at least one other non-conversation filter is active, the summary MUST append
 an inline suffix describing those active filters and MUST omit the conversation
@@ -1645,7 +1585,7 @@ conversation ID because the active URL-backed filter already identifies it.
   and status filters also active
 - **WHEN** the request-log page renders
 - **THEN** the summary appears between the filter row and table
-- **AND** it states the active conversation ID, count, and formatted cost
+- **AND** it states the active conversation ID and request count without currency
 - **AND** its inline suffix describes the timeframe and status without repeating
   the conversation filter
 - **AND** the response-level conversation metadata contains exactly
@@ -1661,8 +1601,7 @@ conversation ID because the active URL-backed filter already identifies it.
 
 ### Requirement: Dashboard and report metrics count distinct conversations
 
-Dashboard overview metrics MUST include a Conversations card between Est. API
-Cost and Error Rate, counting distinct non-empty conversation IDs in the
+Dashboard overview metrics MUST include a Conversations card alongside Tokens and Error Rate, counting distinct non-empty conversation IDs in the
 selected timeframe. Report summary metrics MUST include a Conversations card
 immediately after Requests, counting distinct non-empty IDs across the complete
 filtered report range. A conversation spanning multiple days MUST count once in
@@ -1675,7 +1614,7 @@ render a `{count} distinct` secondary label.
   conversation IDs
 - **WHEN** overview metrics are rendered
 - **THEN** the Conversations card counts each distinct non-empty ID once
-- **AND** the card is between Est. API Cost and Error Rate
+- **AND** the card is alongside Tokens and Error Rate
 
 #### Scenario: Report summary and daily counts use distinct IDs
 
@@ -1967,12 +1906,12 @@ The `/reports` page SHALL detect the browser's current IANA timezone, cache the 
 
 ### Requirement: Reports summary cards show previous-window deltas conservatively
 
-`GET /api/reports` SHALL expose a `comparison` block for the `Total Cost`, `Tokens`, and `Requests` summary cards that includes `canCompare` plus the previous-window totals for cost, tokens, and requests. The current window and previous window SHALL use equal calendar-window lengths derived from the selected report date range. The endpoint SHALL set `canCompare` to `true` only when eligible report history fully covers the immediately preceding window. When `canCompare` is `false`, the `/reports` summary cards SHALL hide the previous-window percentage indicators. Even when `canCompare` is `true`, an individual summary card SHALL hide its own percentage indicator when that card's previous-window total is zero.
+`GET /api/reports` SHALL expose a `comparison` block for the `Tokens` and `Requests` summary cards that includes `canCompare` plus the previous-window totals for tokens and requests. The current window and previous window SHALL use equal calendar-window lengths derived from the selected report date range. The endpoint SHALL set `canCompare` to `true` only when eligible report history fully covers the immediately preceding window. When `canCompare` is `false`, the `/reports` summary cards SHALL hide the previous-window percentage indicators. Even when `canCompare` is `true`, an individual summary card SHALL hide its own percentage indicator when that card's previous-window total is zero.
 
 #### Scenario: Reports summary cards show previous-window increase
 
 - **WHEN** `GET /api/reports` returns current summary totals plus `comparison.canCompare: true`
-- **AND** a previous-window total for `Total Cost`, `Tokens`, or `Requests` is lower than the current total for that same card
+- **AND** a previous-window total for `Tokens` or `Requests` is lower than the current total for that same card
 - **THEN** the matching summary card renders a visible percentage-change increase indicator
 
 #### Scenario: Incomplete previous window suppresses comparison
@@ -1984,7 +1923,7 @@ The `/reports` page SHALL detect the browser's current IANA timezone, cache the 
 #### Scenario: Zero previous total suppresses the matching card indicator
 
 - **WHEN** `GET /api/reports` returns `comparison.canCompare: true`
-- **AND** the previous-window total for one of `Total Cost`, `Tokens`, or `Requests` is `0`
+- **AND** the previous-window total for one of `Tokens` or `Requests` is `0`
 - **THEN** that summary card does not render a previous-window percentage indicator
 - **AND** the other summary cards may still render percentage indicators when their own previous-window totals are greater than `0`
 
@@ -1997,7 +1936,7 @@ The `/reports` daily breakdown table SHALL render one row per calendar day in th
 - **WHEN** the selected reports window spans `2026-06-05` through `2026-06-12`
 - **AND** the reports API returns daily rows for every day except `2026-06-06`
 - **THEN** the daily breakdown renders a row for `2026-06-06`
-- **AND** that row shows zero requests, zero input tokens, zero output tokens, zero cost, and zero accounts
+- **AND** that row shows zero requests, zero input tokens, zero output tokens and zero accounts
 - **AND** that row uses the same row styling as neighboring rows
 
 #### Scenario: Daily breakdown header stays visible while rows scroll
@@ -2013,12 +1952,12 @@ The `/reports` daily breakdown table SHALL render one row per calendar day in th
 
 ### Requirement: Reports daily charts use symmetric horizontal padding
 
-The `/reports` `Cost by Day` and `Tokens by Day` charts SHALL use equal left and right horizontal plot padding within their chart cards.
+The `/reports` `Tokens by Day` charts SHALL use equal left and right horizontal plot padding within their chart cards.
 
 #### Scenario: Daily charts render with balanced left and right inset
 
 - **WHEN** an authenticated operator opens `/reports`
-- **THEN** the `Cost by Day` and `Tokens by Day` charts render with equal left and right horizontal padding around the plotted area
+- **THEN** the `Tokens by Day` charts render with equal left and right horizontal padding around the plotted area
 
 ### Requirement: API keys settings expose quota privacy toggle
 The Settings page SHALL include a toggle in the API Keys section that controls `hide_upstream_quota_from_api_keys`.
@@ -2698,12 +2637,11 @@ comparable. Dashboard USD values SHALL use the `$` prefix across locales.
 - **THEN** 10,200 renders as `10.2K`
 - **AND** 1,500,000 renders as `1.5M`
 - **AND** 1,500,000,000 renders as `1.5B`
-- **AND** 12 USD renders as `$12.00`
 
 ### Requirement: Reports per-day averages use the inclusive local calendar window
 
-`GET /api/reports` MUST calculate `summary.avgCostPerDay` and
-`summary.avgRequestsPerDay` by dividing the current report totals by exactly
+`GET /api/reports` MUST calculate `summary.avgRequestsPerDay` and any retained historical-only
+`summary.avgCostPerDay` compatibility value by dividing the respective stored report totals by exactly
 `(end_date - start_date).days + 1`. The divisor MUST represent the selected
 inclusive local calendar-date window and MUST NOT be derived from the
 UTC-converted filter boundaries.
@@ -2792,7 +2730,7 @@ eligible row has `requested_at >= since`. A conversation MAY have eligible rows
 before `since` and MUST still be included when it has activity in the window.
 The grouped summary MUST aggregate all eligible rows for every selected
 conversation, so `firstRequest`, `lastRequest`, `requestCount`, token totals,
-cached-token totals, and cost MUST NOT be clipped to the window. Membership MUST
+cached-token totals and any retained historical monetary totals MUST NOT be clipped to the window. Membership MUST
 be implemented as an in-window aggregate condition and MUST NOT use a global
 pre-window ID set or a pre-window anti-join.
 
@@ -2879,7 +2817,7 @@ The list order MUST be stable: `lastRequest DESC`, then normalized
 - **WHEN** the client calls `GET /api/conversations?search=opencode`
 - **THEN** that conversation is selected
 - **AND** all eligible rows in that conversation contribute to its counts,
-  tokens, cached tokens, and cost
+  tokens and cached tokens, with historical monetary fields retained only for API compatibility
 - **AND** rows from conversations with no matching ID or user-agent family are
   not returned
 
@@ -3102,7 +3040,7 @@ retained `overviewTimeframe` MUST continue to drive the overview query when
 Request Logs is active.
 
 The conversation list MUST render exactly these columns in order: Last request,
-Conversation, Accounts, API key, Models, Tokens, Cost, and Details. Last request
+Conversation, Accounts, API key, Models, Tokens, and Details. Last request
 MUST use the request-log Time column's two-line time/date presentation. Accounts
 MUST resolve the representative account ID through the dashboard account
 summaries and display `displayName`, then email, then the ID as a final fallback.
@@ -3119,7 +3057,7 @@ The details dialog MUST render row one as conversation ID, start, and latest;
 row two as account count, total elapsed time, and dominant user-agent family;
 and a model/effort table with exactly these displayed columns, in order: Model
 (effort), Reqs, Total elapsed, Total input (with total cache as a
-subordinate/parenthetical value), Total output, and Total cost. Total cache MUST
+subordinate/parenthetical value), Total output. Total cache MUST
 not be a separate displayed column. The table MUST default to Reqs descending
 and MUST support client-side sorting for every displayed column without adding a
 sort query parameter.
@@ -3245,8 +3183,7 @@ zero MUST NOT render pagination controls.
 - **AND** conversation ID has no copy action
 - **AND** row two contains account count/total elapsed/dominant user-agent
 - **AND** the table displays exactly Model (effort), Reqs, Total elapsed, Total
-  input (with total cache as a subordinate/parenthetical value), Total output,
-  and Total cost
+  input (with total cache as a subordinate/parenthetical value), Total output
 - **AND** the table initially sorts by Reqs descending
 - **AND** activating any displayed table column header reorders only the returned
   rows client-side
@@ -3273,7 +3210,7 @@ in that conversation, and `firstRequest` SHALL be the earliest eligible
 ### Requirement: Conversation list renders metrics and readable duration
 
 The dashboard SHALL render columns in this order: Last request, Lasted,
-Conversation, Accounts, API key, Models, Requests, Tokens, Cost, Details.
+Conversation, Accounts, API key, Models, Requests, Tokens, Details.
 The Lasted value SHALL use `lastRequest - firstRequest`, displaying `0s` for
 zero duration, seconds for durations under one minute, `xm ys` for durations
 under one hour, `xh ym` for durations under one day, and `xd yh` for durations
@@ -3347,4 +3284,3 @@ The x-axis tick format of the Account Trend and API Trend charts SHALL be `MM-DD
 
 - **WHEN** the API Trend chart renders with timestamp data
 - **THEN** the x-axis tick labels SHALL be in `MM-DD` format (e.g., `"08-09"`)
-

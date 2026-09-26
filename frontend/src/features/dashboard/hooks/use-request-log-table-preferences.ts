@@ -49,12 +49,13 @@ function normalizeVisibleColumns(value: unknown): RequestLogColumnId[] | null {
   if (
     !Array.isArray(value) ||
     value.length === 0 ||
-    value.some((column) => !isRequestLogColumnId(column))
+    value.some((column) => column !== "cost" && !isRequestLogColumnId(column))
   ) {
     return null;
   }
 
-  const selected = new Set(value);
+  // Replace the retired monetary column in saved layouts with the source IP.
+  const selected = new Set(value.map((column) => column === "cost" ? "clientIp" : column));
   return ALL_REQUEST_LOG_COLUMNS.filter((column) => selected.has(column));
 }
 

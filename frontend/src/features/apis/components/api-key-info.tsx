@@ -5,7 +5,6 @@ import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-d
 import { cn } from "@/lib/utils";
 import {
 	formatCompactNumber,
-	formatCurrency,
 	formatTimeLong,
 } from "@/utils/formatters";
 
@@ -55,6 +54,7 @@ export function ApiKeyInfo({
 		? (usageSummary ?? apiKey.usageSummary)
 		: (usageSummary ?? null);
 	const hasUsage = usage && usage.requestCount > 0;
+	const tokenLimits = apiKey.limits.filter((limit) => limit.limitType.endsWith("_tokens"));
 
 	return (
 		<div className="space-y-4 rounded-lg border bg-muted/30 p-4" data-testid="api-key-info">
@@ -119,10 +119,6 @@ export function ApiKeyInfo({
 								<span className="font-medium">
 									{t("common.units.requestsShort", { count: formatCompactNumber(usage.requestCount) })}
 								</span>
-								<span className="mx-1 text-muted-foreground/40">|</span>
-								<span className="font-medium">
-									{formatCurrency(usage.totalCostUsd)}
-								</span>
 							</span>
 						) : (
 							<span className="text-muted-foreground">
@@ -135,9 +131,9 @@ export function ApiKeyInfo({
 					<div className="flex items-center justify-between gap-2">
 						<dt className="text-muted-foreground">{t("apiKeys.form.limits")}</dt>
 						<dd className="text-right tabular-nums">
-							{apiKey.limits.length > 0 ? (
+							{tokenLimits.length > 0 ? (
 								<span className="font-medium">
-									{t("apis.keyInfo.limitsConfigured", { count: apiKey.limits.length })}
+									{t("apis.keyInfo.limitsConfigured", { count: tokenLimits.length })}
 								</span>
 							) : (
 								<span className="text-muted-foreground">
@@ -146,18 +142,13 @@ export function ApiKeyInfo({
 							)}
 						</dd>
 					</div>
-					{apiKey.limits.map((limit) => {
-						const isCost = limit.limitType === "cost_usd";
+					{tokenLimits.map((limit) => {
 						const percent =
 							limit.maxValue > 0
 								? Math.min(100, (limit.currentValue / limit.maxValue) * 100)
 								: 0;
-						const current = isCost
-							? `$${(limit.currentValue / 1_000_000).toFixed(2)}`
-							: formatCompactNumber(limit.currentValue);
-						const max = isCost
-							? `$${(limit.maxValue / 1_000_000).toFixed(2)}`
-							: formatCompactNumber(limit.maxValue);
+						const current = formatCompactNumber(limit.currentValue);
+						const max = formatCompactNumber(limit.maxValue);
 						const modelFilter = limit.modelFilter || t("common.options.allLower");
 
 						return (

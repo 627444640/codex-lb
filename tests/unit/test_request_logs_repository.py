@@ -11,7 +11,7 @@ from sqlalchemy.exc import ResourceClosedError
 from app.db.models import ModelSource, RequestLog
 from app.db.session import SessionLocal
 from app.modules.request_logs import repository as repository_module
-from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.request_logs.repository import RequestLogsRepository, RequestLogUsageUpdate
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,9 @@ async def test_add_log_ignores_closed_transaction(monkeypatch, db_setup) -> None
         )
 
         assert log.request_id == "req"
-        assert log.cost_usd is not None
+        assert log.cost_usd is None
+        assert log.pricing_version is None
+        assert (log.input_tokens, log.output_tokens) == (1000, 500)
 
 
 @pytest.mark.asyncio
@@ -194,7 +196,8 @@ async def test_aggregate_activity_counts_only_nonblank_conversation_requests(db_
 
 
 @pytest.mark.asyncio
-async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup) -> None:
+@pytest.mark.parametrize("legacy_cost", [None, 0.0, 0.123456789])
+async def test_add_log_ignores_legacy_cost_override_for_model_source(db_setup, legacy_cost) -> None:
     del db_setup
     async with SessionLocal() as session:
         session.add(
@@ -217,14 +220,63 @@ async def test_add_log_does_not_recalculate_unpriced_model_source_cost(db_setup)
             latency_ms=1,
             status="success",
             error_code=None,
-            cost_usd=None,
+            cost_usd=legacy_cost,
         )
 
         persisted = await session.scalar(select(RequestLog).where(RequestLog.id == saved.id))
         assert persisted is not None
-        # Missing custom pricing is unknown, not a free request. Do not fall
-        # back to the built-in model rate or silently persist a zero cost.
+        # New rows retain measured tokens without a monetary value, even
+        # when an older caller still supplies a monetary override.
         assert persisted.cost_usd is None
+        assert persisted.pricing_version is None
+        assert (persisted.input_tokens, persisted.output_tokens) == (10000, 5000)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_cost", [None, 0.0, 0.123456789])
+@pytest.mark.parametrize("correct_usage", [False, True])
+async def test_image_corrections_preserve_historical_money_timing_and_ip(db_setup, legacy_cost, correct_usage) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        # Direct synthetic DB seed represents a row written by the old
+        # distribution. add_log deliberately cannot create monetary rows.
+        historical = RequestLog(
+            request_id="legacy-image-row",
+            model="old-host-model",
+            actual_model="old-host-model",
+            input_tokens=500,
+            output_tokens=200,
+            cached_input_tokens=100,
+            cache_write_tokens=10,
+            reasoning_tokens=50,
+            cost_usd=legacy_cost,
+            pricing_version="historical-pricebook",
+            status="success",
+            latency_ms=1234,
+            latency_first_token_ms=123,
+            client_ip="203.0.113.7",
+        )
+        session.add(historical)
+        await session.commit()
+        repo = RequestLogsRepository(session)
+        if correct_usage:
+            count = await repo.update_usage_for_request(
+                "legacy-image-row",
+                "public-image-model",
+                RequestLogUsageUpdate(30, 40, 5, 6, "actual-image-model", 999.0),
+            )
+        else:
+            count = await repo.update_model_for_request("legacy-image-row", "public-image-model")
+        assert count == 1
+        await session.refresh(historical)
+        assert historical.model == "public-image-model"
+        assert historical.actual_model == ("actual-image-model" if correct_usage else "public-image-model")
+        assert (historical.input_tokens, historical.output_tokens) == ((30, 40) if correct_usage else (500, 200))
+        assert historical.cost_usd == legacy_cost
+        assert historical.pricing_version == "historical-pricebook"
+        assert historical.latency_ms == 1234
+        assert historical.latency_first_token_ms == 123
+        assert historical.client_ip == "203.0.113.7"
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -592,7 +593,8 @@ def test_plan_shadow_actions_rejects_start_that_misses_peak() -> None:
     assert actions == []
 
 
-def test_forecast_and_simulation_use_history_without_requiring_user_input() -> None:
+@pytest.mark.parametrize("historical_cost", [0.0, 1.0, 1_000_000.0])
+def test_forecast_and_simulation_use_history_without_requiring_user_input(historical_cost: float) -> None:
     settings = PlannerSettings(
         mode="shadow",
         timezone="UTC",
@@ -616,7 +618,7 @@ def test_forecast_and_simulation_use_history_without_requiring_user_input() -> N
             input_tokens=20_000,
             cached_input_tokens=0,
             output_tokens=2_000,
-            cost_usd=0.0,
+            cost_usd=historical_cost,
             request_count=3,
         )
     ]
@@ -632,6 +634,13 @@ def test_forecast_and_simulation_use_history_without_requiring_user_input() -> N
     ]
 
     forecast = build_demand_forecast(settings=settings, bins=bins, now=now, horizon_hours=12)
+    without_amount = build_demand_forecast(
+        settings=settings,
+        bins=[replace(row, cost_usd=0.0) for row in bins],
+        now=now,
+        horizon_hours=12,
+    )
+    assert forecast == without_amount
     actions = plan_shadow_actions(settings=settings, states=states, demand_forecast=forecast, now=now)
     simulation = simulate_pool(
         settings=settings,

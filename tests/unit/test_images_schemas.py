@@ -311,55 +311,30 @@ class TestValidateImageRequestParameters:
         assert excinfo.value.param == "moderation"
 
 
-class TestImagePricingPresent:
-    """Cost-based API key quotas would resolve to $0 if pricing entries
-    are missing for ``gpt-image-*`` models. These tests pin the pricing
-    table so the quota actually bites.
-    """
-
-    def test_gpt_image_2_pricing_is_defined(self) -> None:
+class TestImageTokenOnly:
+    @pytest.mark.parametrize("model", ["gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-1.5", "gpt-image-1"])
+    def test_image_models_do_not_restore_monetary_pricing(self, model: str) -> None:
         from app.core.usage.pricing import get_pricing_for_model
 
-        result = get_pricing_for_model("gpt-image-2")
-        assert result is not None
-        _, price = result
-        assert price.input_per_1m > 0
-        assert price.output_per_1m > 0
+        assert get_pricing_for_model(model) is None
 
-    def test_gpt_image_2_alias_resolves(self) -> None:
-        from app.core.usage.pricing import get_pricing_for_model
-
-        # ``gpt-image-2-2026-04-21`` (a hypothetical date-pinned snapshot)
-        # should resolve via the alias entry.
-        result = get_pricing_for_model("gpt-image-2-2026-04-21")
-        assert result is not None
-        canonical, _ = result
-        assert canonical == "gpt-image-2"
-
-    def test_image_cost_is_unknown_without_input_modality(self) -> None:
-        from app.core.usage.logs import calculated_cost_from_log
+    def test_image_log_keeps_tokens_without_deriving_cost(self) -> None:
+        from app.core.usage.logs import cost_breakdown_from_log, total_tokens_from_log
 
         class _Log:
             model = "gpt-image-2"
             actual_model = None
-            cache_write_tokens = None
             pricing_version = None
             service_tier = None
             input_tokens = 1000
             output_tokens = 500
             cached_input_tokens = None
+            cache_write_tokens = None
             reasoning_tokens = None
             cost_usd = None
 
-        cost = calculated_cost_from_log(_Log())
-        assert cost is None
-
-    def test_legacy_gpt_image_models_have_pricing(self) -> None:
-        from app.core.usage.pricing import get_pricing_for_model
-
-        for model in ("gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"):
-            result = get_pricing_for_model(model)
-            assert result is not None, f"{model} must have pricing"
+        assert total_tokens_from_log(_Log()) == 1500
+        assert cost_breakdown_from_log(_Log()).total_usd is None
 
 
 class TestQualityAndFidelityEdgeCases:

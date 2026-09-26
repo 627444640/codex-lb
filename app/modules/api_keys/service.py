@@ -8,20 +8,13 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from math import ceil
 from typing import Protocol
 
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
-from app.core.usage.pricing import (
-    UsageCostBreakdown,
-    UsageTokens,
-    calculate_cost_from_usage,
-    get_pricing_for_model,
-    has_pricing_for_usage,
-)
+from app.core.usage.pricing import UsageCostBreakdown
 from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, ApiKey, ApiKeyLimit, LimitType, LimitWindow, ModelSource, UsageHistory
@@ -30,6 +23,7 @@ from app.modules.api_keys.last_used_coalescer import ApiKeyLastUsedCoalescer, ge
 from app.modules.api_keys.limit_windows import advance_limit_reset, limit_window_delta, next_limit_reset
 from app.modules.api_keys.repository import (
     _UNSET,
+    TOKEN_LIMIT_TYPES,
     ApiKeyTrendBucket,
     ApiKeyUsageSummary,
     ApiKeyUsageTotals,
@@ -47,8 +41,6 @@ _DETAIL_BUCKET_SECONDS = 3600
 API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET = 8_192
 API_KEY_USAGE_RESERVATION_DEFAULT_INPUT_TOKENS = API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET
 API_KEY_USAGE_RESERVATION_DEFAULT_OUTPUT_TOKENS = 2_048
-_API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_MICRODOLLARS = 2_000_000
-_API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_BASE_TOKENS = API_KEY_USAGE_RESERVATION_MAX_TOKEN_BUDGET * 2
 TRAFFIC_CLASS_FOREGROUND = "foreground"
 TRAFFIC_CLASS_OPPORTUNISTIC = "opportunistic"
 _SUPPORTED_TRAFFIC_CLASSES = frozenset({TRAFFIC_CLASS_FOREGROUND, TRAFFIC_CLASS_OPPORTUNISTIC})
@@ -234,18 +226,9 @@ class ApiKeyRateLimitExceededError(ValueError):
         self.code = code
 
 
-def _pricing_unavailable_error() -> ApiKeyRateLimitExceededError:
-    return ApiKeyRateLimitExceededError(
-        message="This API key has a cost limit, but verified pricing is unavailable. "
-        "Choose a supported model and service tier or configure source pricing; retrying alone will not resolve this.",
-        reset_at=utcnow(),
-        code="pricing_unavailable",
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class ApiKeyRequestPricing:
-    """Explicit source rates, or known zero rates for non-inference routes."""
+    """Legacy caller data retained for compatibility; no longer used for billing."""
 
     input_per_1m: float | None = None
     cached_input_per_1m: float | None = None
@@ -1101,35 +1084,16 @@ class ApiKeysService:
 
             effective_input_tokens = input_tokens or 0
             effective_output_tokens = output_tokens or 0
-            effective_cached_input_tokens = cached_input_tokens or 0
-            cost_microdollars = (
-                0
-                if status == "failed"
-                else cost_microdollars_override
-                if cost_microdollars_override is not None
-                else (_usd_to_microdollars(cost_override.total_usd) if cost_override.total_usd is not None else None)
-                if cost_override is not None
-                else _calculate_cost_microdollars(
-                    actual_model or model,
-                    effective_input_tokens,
-                    effective_output_tokens,
-                    effective_cached_input_tokens,
-                    service_tier,
-                    cache_write_tokens=cache_write_tokens,
-                )
-            )
 
             try:
                 for item in reservation.items:
-                    actual_delta = (
-                        item.reserved_delta
-                        if item.limit_type == LimitType.COST_USD and cost_microdollars is None
-                        else _compute_increment_for_limit_type(
-                            item.limit_type,
-                            input_tokens=effective_input_tokens,
-                            output_tokens=effective_output_tokens,
-                            cost_microdollars=cost_microdollars or 0,
-                        )
+                    if item.limit_type not in TOKEN_LIMIT_TYPES:
+                        continue
+                    actual_delta = _compute_increment_for_limit_type(
+                        item.limit_type,
+                        input_tokens=effective_input_tokens,
+                        output_tokens=effective_output_tokens,
+                        cost_microdollars=0,
                     )
                     delta = actual_delta - item.reserved_delta
                     if delta != 0:
@@ -1150,7 +1114,7 @@ class ApiKeysService:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cached_input_tokens=cached_input_tokens,
-                    cost_microdollars=cost_microdollars,
+                    cost_microdollars=None,
                 )
                 await self._repository.commit()
             except Exception:
@@ -1208,6 +1172,8 @@ class ApiKeysService:
 
             try:
                 for item in reservation.items:
+                    if item.limit_type not in TOKEN_LIMIT_TYPES:
+                        continue
                     await self._repository.adjust_reserved_usage(
                         item.limit_id,
                         delta=-item.reserved_delta,
@@ -1243,27 +1209,12 @@ class ApiKeysService:
         cache_write_tokens: int = 0,
         actual_model: str | None = None,
     ) -> None:
-        cost_microdollars = _calculate_cost_microdollars(
-            actual_model or model,
-            input_tokens,
-            output_tokens,
-            cached_input_tokens,
-            service_tier,
-            cache_write_tokens=cache_write_tokens,
-        )
-        if cost_microdollars is None:
-            limits = await self._repository.get_limits_by_key(key_id)
-            if any(
-                limit.limit_type == LimitType.COST_USD and _limit_applies_for_request(limit, request_model=model)
-                for limit in limits
-            ):
-                raise _pricing_unavailable_error()
         await self._repository.increment_limit_usage(
             key_id,
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_microdollars=cost_microdollars or 0,
+            cost_microdollars=0,
         )
         await self._last_used_coalescer.record(key_id, utcnow())
 
@@ -1307,6 +1258,7 @@ class ApiKeysService:
                 source="api_key_limit",
             )
             for limit in refreshed.limits
+            if limit.limit_type in TOKEN_LIMIT_TYPES
         ]
         return ApiKeySelfUsageData(
             request_count=usage.request_count,
@@ -1662,8 +1614,6 @@ def _to_limit_rule_data(limit: ApiKeyLimit) -> LimitRuleData:
 def _ensure_valid_api_key_row(row: ApiKey | None) -> ApiKey:
     if row is None or not row.is_active:
         raise ApiKeyInvalidError("Invalid API key")
-    if any(limit.limit_type == LimitType.CREDITS for limit in row.limits):
-        raise ApiKeyInvalidError("API key has an unsupported credits limit; an administrator must remove or replace it")
     return row
 
 
@@ -1675,6 +1625,8 @@ async def _lazy_reset_expired_limits(
 ) -> bool:
     reset_performed = False
     for limit in limits:
+        if limit.limit_type not in TOKEN_LIMIT_TYPES:
+            continue
         if limit.reset_at >= now:
             continue
         new_reset_at = advance_limit_reset(limit.reset_at, now, limit.limit_window)
@@ -1696,6 +1648,8 @@ def _rate_limit_exceeded_error(limit: ApiKeyLimit) -> ApiKeyRateLimitExceededErr
 
 
 def _limit_applies_for_request(limit: ApiKeyLimit, *, request_model: str | None) -> bool:
+    if limit.limit_type not in TOKEN_LIMIT_TYPES:
+        return False
     if limit.model_filter is None:
         return True
     if request_model is None:
@@ -1764,82 +1718,7 @@ def _reserve_budget_for_limit_type(
         return input_tokens
     if limit_type == LimitType.OUTPUT_TOKENS:
         return output_tokens
-    if limit_type == LimitType.COST_USD:
-        return _reserve_cost_budget_microdollars(
-            request_model,
-            request_service_tier,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            request_pricing=request_pricing,
-        )
-    if limit_type == LimitType.CREDITS:
-        return 0
-    return 1
-
-
-def _reserve_cost_budget_microdollars(
-    model: str | None,
-    service_tier: str | None,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    request_pricing: ApiKeyRequestPricing | None = None,
-) -> int:
-    if request_pricing is not None:
-        rates = (request_pricing.input_per_1m, request_pricing.cached_input_per_1m, request_pricing.output_per_1m)
-        if any(rate is not None for rate in rates):
-            return ceil(
-                input_tokens * max(request_pricing.input_per_1m or 0.0, request_pricing.cached_input_per_1m or 0.0)
-                + output_tokens * (request_pricing.output_per_1m or 0.0)
-            )
-        if request_pricing.audio_per_minute is not None:
-            # Duration is unavailable before transcription. Preserve the existing
-            # conservative admission budget; settlement uses reported duration.
-            return _unknown_model_reserve_cost_budget_microdollars(
-                input_tokens=input_tokens, output_tokens=output_tokens
-            )
-        raise _pricing_unavailable_error()
-    if not model:
-        raise _pricing_unavailable_error()
-    resolved = get_pricing_for_model(model)
-    if resolved is None or not has_pricing_for_usage(
-        UsageTokens(input_tokens, output_tokens), resolved[1], service_tier=service_tier
-    ):
-        raise _pricing_unavailable_error()
-    if resolved is not None and resolved[1].image_input_per_1m is not None:
-        price = resolved[1]
-        # Admission has no actual modality counts yet. Reserve the upper
-        # token-rate bound; final image accounting still requires real usage.
-        return ceil(
-            input_tokens * max(price.input_per_1m, price.image_input_per_1m or 0.0)
-            + output_tokens * max(price.output_per_1m, price.text_output_per_1m or 0.0)
-        )
-    cost_microdollars = _calculate_cost_microdollars(
-        model,
-        input_tokens,
-        output_tokens,
-        0,
-        service_tier,
-        # Before the upstream runs, all input may become a charged cache
-        # write. Reserve that upper bound without multiplying output prices.
-        cache_write_tokens=(
-            input_tokens if resolved is not None and (resolved[1].cache_write_multiplier or 1.0) > 1.0 else 0
-        ),
-    )
-    if cost_microdollars is None:
-        raise _pricing_unavailable_error()
-    return cost_microdollars
-
-
-def _unknown_model_reserve_cost_budget_microdollars(*, input_tokens: int, output_tokens: int) -> int:
-    token_budget = max(0, input_tokens) + max(0, output_tokens)
-    if token_budget <= 0:
-        return 0
-    return ceil(
-        _API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_MICRODOLLARS
-        * token_budget
-        / _API_KEY_USAGE_RESERVATION_UNKNOWN_MODEL_BASE_TOKENS
-    )
+    return 0
 
 
 def _compute_increment_for_limit_type(
@@ -1855,10 +1734,6 @@ def _compute_increment_for_limit_type(
         return input_tokens
     if limit_type == LimitType.OUTPUT_TOKENS:
         return output_tokens
-    if limit_type == LimitType.COST_USD:
-        return cost_microdollars
-    if limit_type == LimitType.CREDITS:
-        return 0
     return 0
 
 
@@ -1954,8 +1829,8 @@ def _limit_input_to_row(
     reset_at: datetime | None = None,
 ) -> ApiKeyLimit:
     window = LimitWindow(li.limit_window)
-    if li.limit_type == LimitType.CREDITS.value:
-        raise ApiKeyValidationError("credits limit metering is unsupported; use a token or cost limit")
+    if LimitType(li.limit_type) not in TOKEN_LIMIT_TYPES:
+        raise ApiKeyValidationError("Monetary and price-weighted credits limits are unsupported; use token limits")
     return ApiKeyLimit(
         api_key_id=key_id,
         limit_type=LimitType(li.limit_type),
@@ -1981,6 +1856,8 @@ async def _build_limit_rows_for_update(
 
     rows: list[ApiKeyLimit] = []
     for submitted in submitted_limits:
+        if LimitType(submitted.limit_type) not in TOKEN_LIMIT_TYPES:
+            raise ApiKeyValidationError("Monetary and price-weighted credits limits are unsupported; use token limits")
         identity = _limit_identity_from_input(submitted)
         matched = existing_by_key.get(identity)
         if reset_usage:
@@ -2037,6 +1914,8 @@ def _build_reset_limit_rows(
 ) -> list[ApiKeyLimit]:
     rows: list[ApiKeyLimit] = []
     for existing in existing_limits:
+        if existing.limit_type not in TOKEN_LIMIT_TYPES:
+            continue
         rows.append(
             ApiKeyLimit(
                 api_key_id=key_id,
@@ -2066,37 +1945,6 @@ def _validate_unique_limit_rule_identities(limits: list[LimitRuleInput]) -> None
 
 def _limit_identity_from_row(limit: ApiKeyLimit) -> tuple[str, str, str | None]:
     return (limit.limit_type.value, limit.limit_window.value, limit.model_filter)
-
-
-def _calculate_cost_microdollars(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int,
-    service_tier: str | None = None,
-    *,
-    cache_write_tokens: int = 0,
-) -> int | None:
-    resolved = get_pricing_for_model(model)
-    if resolved is None:
-        return None
-    _, price = resolved
-    usage = UsageTokens(
-        input_tokens=float(input_tokens),
-        output_tokens=float(output_tokens),
-        cached_input_tokens=float(cached_input_tokens),
-        cache_write_tokens=float(cache_write_tokens),
-    )
-    cost_usd = calculate_cost_from_usage(usage, price, service_tier=service_tier)
-    if cost_usd is None:
-        return None
-    return _usd_to_microdollars(cost_usd)
-
-
-def _usd_to_microdollars(cost_usd: float) -> int:
-    # Retain sub-microdollar truncation, removing binary floating-point noise
-    # below one trillionth of a dollar at exact microdollar boundaries.
-    return int(round(cost_usd * 1_000_000, 6))
 
 
 def _is_sqlite_database_locked(exc: OperationalError) -> bool:

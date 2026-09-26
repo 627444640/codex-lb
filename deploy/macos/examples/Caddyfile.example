@@ -3,10 +3,24 @@
     admin off
     auto_https disable_redirects
     skip_install_trust
+    # Only a trusted local connector may supply the Cloudflare client address.
+    # Loopback cannot distinguish cloudflared from another local process; use
+    # an isolated/authenticated origin when local processes are not trusted.
+    servers {
+        trusted_proxies static 127.0.0.1/32 ::1/128
+        trusted_proxies_strict
+        client_ip_headers CF-Connecting-IP
+    }
 }
 
 https://localhost:8443 {
     bind 127.0.0.1 ::1
     tls internal
-    reverse_proxy 127.0.0.1:2455
+    reverse_proxy 127.0.0.1:2455 {
+        header_up X-Forwarded-For {client_ip}
+        header_up -Forwarded
+        header_up -X-Real-IP
+        header_up -True-Client-IP
+        header_up -CF-Connecting-IP
+    }
 }

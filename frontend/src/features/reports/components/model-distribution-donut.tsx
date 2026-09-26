@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Cell, Pie, PieChart, ResponsiveContainer, Sector, type PieSectorShapeProps } from "@/components/lazy-recharts";
 import type { ModelCostEntry } from "../schemas";
-import { DistributionMetricToggle, type DistributionMetric } from "./distribution-metric-toggle";
-import { formatDistributionMetricValue } from "./distribution-metric-format";
+import { formatCompactNumber } from "@/utils/formatters";
 
 export type ModelDistributionDonutProps = {
   data: ModelCostEntry[];
@@ -23,27 +22,16 @@ type ChartDatum = ModelCostEntry & {
 
 export function ModelDistributionDonut({ data }: ModelDistributionDonutProps) {
   const { t } = useTranslation();
-  const [metric, setMetric] = useState<DistributionMetric>("cost");
   const [activeLegendId, setActiveLegendId] = useState<string | null>(null);
   const legendRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const totalCost = data.reduce((sum, entry) => sum + entry.costUsd, 0);
   const totalRequests = data.reduce((sum, entry) => sum + entry.requests, 0);
-  const isCostMetric = metric === "cost";
-  const totalMetricLabel = formatDistributionMetricValue(
-    isCostMetric ? totalCost : totalRequests,
-    metric,
-  );
+  const totalMetricLabel = formatCompactNumber(totalRequests);
   const chartData: ChartDatum[] = data.map((entry, index) => ({
     ...entry,
     id: entry.model,
     fill: COLORS[index % COLORS.length],
-    metricLabel: formatDistributionMetricValue(
-      isCostMetric ? entry.costUsd : entry.requests,
-      metric,
-    ),
-    metricPercentage: isCostMetric
-      ? entry.percentage
-      : totalRequests > 0
+    metricLabel: formatCompactNumber(entry.requests),
+    metricPercentage: totalRequests > 0
         ? (entry.requests / totalRequests) * 100
         : 0,
   }));
@@ -82,7 +70,7 @@ export function ModelDistributionDonut({ data }: ModelDistributionDonutProps) {
     <div className="rounded-xl border bg-card p-5">
       <div className="flex items-start justify-between gap-3">
         <div className="text-sm font-semibold text-foreground">{t("reports.distribution.byModel")}</div>
-        <DistributionMetricToggle metric={metric} onChange={setMetric} />
+        <span className="text-xs text-muted-foreground">{t("reports.summary.requests")}</span>
       </div>
       <div className="mt-4 flex items-center gap-4">
         <div className="relative h-[140px] w-[140px] shrink-0">
@@ -104,7 +92,7 @@ export function ModelDistributionDonut({ data }: ModelDistributionDonutProps) {
             <PieChart>
               <Pie
                 data={chartData}
-                dataKey={isCostMetric ? "costUsd" : "requests"}
+                dataKey="requests"
                 nameKey="model"
                 cx="50%"
                 cy="50%"

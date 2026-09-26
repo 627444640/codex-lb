@@ -17,16 +17,6 @@ import type {
 import { useDialogState } from "@/hooks/use-dialog-state";
 import { getErrorMessageOrNull } from "@/utils/errors";
 
-function modelPriceLabel(source: ModelSource): string | null {
-  const priced = source.models.find(
-    (model) => model.inputPer1M !== null || model.outputPer1M !== null,
-  );
-  if (!priced) return null;
-  const input = priced.inputPer1M ?? 0;
-  const output = priced.outputPer1M ?? 0;
-  return `$${input}/$${output} per 1M`;
-}
-
 export type ModelSourcesSettingsProps = {
   disabled?: boolean;
 };
@@ -122,9 +112,6 @@ export function ModelSourcesSettings({ disabled = false }: ModelSourcesSettingsP
                         {model.model}
                       </Badge>
                     ))}
-                    {modelPriceLabel(source) ? (
-                      <Badge variant="secondary">{modelPriceLabel(source)}</Badge>
-                    ) : null}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">

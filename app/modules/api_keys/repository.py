@@ -100,6 +100,7 @@ class _Unset(Enum):
 _UNSET = _Unset.UNSET
 _EXPIRED_LIMIT_RESET_BATCH_SIZE = 500
 _STALE_USAGE_RESERVATION_RELEASE_BATCH_SIZE = 500
+TOKEN_LIMIT_TYPES = (LimitType.TOTAL_TOKENS, LimitType.INPUT_TOKENS, LimitType.OUTPUT_TOKENS)
 
 
 class ApiKeysRepository:
@@ -450,9 +451,11 @@ class ApiKeysRepository:
         return list(result.scalars().all())
 
     async def replace_limits(self, key_id: str, limits: list[ApiKeyLimit]) -> list[ApiKeyLimit]:
+        _require_token_limits(limits)
         existing = await self.get_limits_by_key(key_id)
         for limit in existing:
-            await self._session.delete(limit)
+            if limit.limit_type in TOKEN_LIMIT_TYPES:
+                await self._session.delete(limit)
         for limit in limits:
             limit.api_key_id = key_id
             self._session.add(limit)
@@ -463,6 +466,7 @@ class ApiKeysRepository:
         return await self.get_limits_by_key(key_id)
 
     async def upsert_limits(self, key_id: str, limits: list[ApiKeyLimit], *, commit: bool = True) -> list[ApiKeyLimit]:
+        _require_token_limits(limits)
         existing = await self.get_limits_by_key(key_id)
         existing_by_key = {_limit_key(limit): limit for limit in existing}
         incoming_keys = {_limit_key(limit) for limit in limits}
@@ -479,7 +483,7 @@ class ApiKeysRepository:
             matched.reset_at = incoming.reset_at
 
         for old_limit in existing:
-            if _limit_key(old_limit) not in incoming_keys:
+            if old_limit.limit_type in TOKEN_LIMIT_TYPES and _limit_key(old_limit) not in incoming_keys:
                 await self._session.delete(old_limit)
 
         if commit:
@@ -546,6 +550,8 @@ class ApiKeysRepository:
     ) -> None:
         limits = await self.get_limits_by_key(key_id)
         for limit in limits:
+            if limit.limit_type not in TOKEN_LIMIT_TYPES:
+                continue
             if limit.model_filter is not None and limit.model_filter != model:
                 continue
             increment = _compute_increment(limit, input_tokens, output_tokens, cost_microdollars)
@@ -561,6 +567,7 @@ class ApiKeysRepository:
         result = await self._session.execute(
             update(ApiKeyLimit)
             .where(ApiKeyLimit.id == limit_id)
+            .where(ApiKeyLimit.limit_type.in_(TOKEN_LIMIT_TYPES))
             .where(ApiKeyLimit.reset_at == expected_reset_at)
             .values(current_value=0, reset_at=new_reset_at)
             .returning(ApiKeyLimit.id)
@@ -577,6 +584,7 @@ class ApiKeysRepository:
                     ApiKeyLimit.reset_at,
                     ApiKeyLimit.limit_window,
                 )
+                .where(ApiKeyLimit.limit_type.in_(TOKEN_LIMIT_TYPES))
                 .where(ApiKeyLimit.reset_at < now)
                 .order_by(ApiKeyLimit.reset_at.asc(), ApiKeyLimit.id.asc())
                 .limit(_EXPIRED_LIMIT_RESET_BATCH_SIZE)
@@ -620,6 +628,7 @@ class ApiKeysRepository:
         result = await self._session.execute(
             update(ApiKeyLimit)
             .where(ApiKeyLimit.id == limit_id)
+            .where(ApiKeyLimit.limit_type.in_(TOKEN_LIMIT_TYPES))
             .where(ApiKeyLimit.reset_at == expected_reset_at)
             .where(ApiKeyLimit.current_value + delta <= ApiKeyLimit.max_value)
             .values(current_value=ApiKeyLimit.current_value + delta)
@@ -663,7 +672,12 @@ class ApiKeysRepository:
         delta: int,
         expected_reset_at: datetime,
     ) -> bool:
-        stmt = update(ApiKeyLimit).where(ApiKeyLimit.id == limit_id).where(ApiKeyLimit.reset_at == expected_reset_at)
+        stmt = (
+            update(ApiKeyLimit)
+            .where(ApiKeyLimit.id == limit_id)
+            .where(ApiKeyLimit.limit_type.in_(TOKEN_LIMIT_TYPES))
+            .where(ApiKeyLimit.reset_at == expected_reset_at)
+        )
         if delta < 0:
             stmt = stmt.where(ApiKeyLimit.current_value >= -delta)
         result = await self._session.execute(
@@ -692,6 +706,8 @@ class ApiKeysRepository:
         )
         self._session.add(reservation)
         for item in items:
+            if item.limit_type not in TOKEN_LIMIT_TYPES:
+                continue
             self._session.add(
                 ApiKeyUsageReservationItem(
                     reservation_id=reservation_id,
@@ -751,6 +767,8 @@ class ApiKeysRepository:
         item: UsageReservationItemData,
         actual_delta: int,
     ) -> None:
+        if item.limit_type not in TOKEN_LIMIT_TYPES:
+            return
         bind = self._session.get_bind()
         dialect_name = bind.dialect.name if bind is not None else "sqlite"
         if dialect_name == "sqlite":
@@ -831,7 +849,6 @@ class ApiKeysRepository:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cached_input_tokens=cached_input_tokens,
-                cost_microdollars=cost_microdollars,
             )
         )
 
@@ -922,7 +939,6 @@ class ApiKeysRepository:
                                 input_tokens=None,
                                 output_tokens=None,
                                 cached_input_tokens=None,
-                                cost_microdollars=None,
                             )
                             .returning(ApiKeyUsageReservation.id)
                         )
@@ -930,6 +946,8 @@ class ApiKeysRepository:
                             continue
 
                         for item in items_by_reservation_id[reservation_id]:
+                            if item.limit_type not in TOKEN_LIMIT_TYPES:
+                                continue
                             await self.adjust_reserved_usage(
                                 item.limit_id,
                                 delta=-item.reserved_delta,
@@ -1131,6 +1149,11 @@ class ApiKeysRepository:
         )
 
 
+def _require_token_limits(limits: list[ApiKeyLimit]) -> None:
+    if any(limit.limit_type not in TOKEN_LIMIT_TYPES for limit in limits):
+        raise ValueError("Only token limits may be created or updated")
+
+
 def _compute_increment(limit: ApiKeyLimit, input_tokens: int, output_tokens: int, cost_microdollars: int) -> int:
     if limit.limit_type == LimitType.TOTAL_TOKENS:
         return input_tokens + output_tokens
@@ -1138,8 +1161,6 @@ def _compute_increment(limit: ApiKeyLimit, input_tokens: int, output_tokens: int
         return input_tokens
     if limit.limit_type == LimitType.OUTPUT_TOKENS:
         return output_tokens
-    if limit.limit_type == LimitType.COST_USD:
-        return cost_microdollars
     return 0
 
 

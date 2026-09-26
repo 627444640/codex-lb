@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/utils/formatters";
 
 import type { ReportComparison, ReportSummary } from "../schemas";
 
@@ -18,13 +17,6 @@ export type ReportsSummaryCardsProps = {
 export function ReportsSummaryCards({ summary, comparison }: ReportsSummaryCardsProps) {
   const { t } = useTranslation();
   const cards = [
-    {
-      id: "total-cost",
-      label: t("reports.summary.totalCost"),
-      value: formatCurrency(summary.totalCostUsd),
-      sub: t("reports.summary.avgCostPerDay", { cost: formatCurrency(summary.avgCostPerDay) }),
-      comparison: buildComparison(summary.totalCostUsd, comparison.previous.totalCostUsd, comparison.canCompare),
-    },
     {
       id: "tokens",
       label: t("reports.summary.tokens"),
@@ -76,7 +68,7 @@ export function ReportsSummaryCards({ summary, comparison }: ReportsSummaryCards
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
       {cards.map((card) => (
         <div
           key={card.id}

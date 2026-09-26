@@ -73,7 +73,7 @@ type ApiKeyEditFormProps = {
 };
 
 function limitsToCreateRules(apiKey: ApiKey): LimitRuleCreate[] {
-  return apiKey.limits.map((l) => ({
+  return apiKey.limits.filter((l) => l.limitType !== "cost_usd" && l.limitType !== "credits").map((l) => ({
     limitType: l.limitType,
     limitWindow: l.limitWindow,
     maxValue: l.maxValue,
@@ -402,11 +402,11 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
             <h4 className="sticky top-0 bg-background pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("apiKeys.form.limits")}</h4>
             <LimitRulesEditor rules={draft.limitRules} onChange={(limitRules) => updateDraft({ limitRules })} />
 
-            {apiKey.limits.length > 0 ? (
+            {initialLimitRules.length > 0 ? (
               <div className="space-y-1">
                 <div className="text-xs font-medium text-muted-foreground">{t("apiKeys.form.currentUsage")}</div>
                 <div className="space-y-1">
-                  {apiKey.limits.map((limit) => (
+                  {apiKey.limits.filter((limit) => limit.limitType !== "cost_usd" && limit.limitType !== "credits").map((limit) => (
                     <LimitUsageBar key={limit.id} limit={limit} />
                   ))}
                 </div>
@@ -426,10 +426,9 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
 }
 
 function LimitUsageBar({ limit }: { limit: ApiKey["limits"][number] }) {
-  const isCost = limit.limitType === "cost_usd";
   const percent = limit.maxValue > 0 ? Math.min(100, (limit.currentValue / limit.maxValue) * 100) : 0;
-  const current = isCost ? `$${(limit.currentValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.currentValue);
-  const max = isCost ? `$${(limit.maxValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.maxValue);
+  const current = formatTokenCount(limit.currentValue);
+  const max = formatTokenCount(limit.maxValue);
   const typeLabel = LIMIT_TYPE_SHORT[limit.limitType];
   const windowLabel = limit.limitWindow;
   const modelLabel = limit.modelFilter || "all";
@@ -454,12 +453,10 @@ function LimitUsageBar({ limit }: { limit: ApiKey["limits"][number] }) {
   );
 }
 
-const LIMIT_TYPE_SHORT: Record<LimitType, string> = {
+const LIMIT_TYPE_SHORT: Partial<Record<LimitType, string>> = {
   total_tokens: "Tokens",
   input_tokens: "Input",
   output_tokens: "Output",
-  cost_usd: "Cost",
-  credits: "Credits",
 };
 
 function formatTokenCount(n: number): string {

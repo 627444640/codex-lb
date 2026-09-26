@@ -35,7 +35,7 @@ function ReportsSummaryCards({
 }
 
 describe("ReportsSummaryCards", () => {
-  it("renders inline comparison badges for cost, tokens, and requests", () => {
+  it("renders inline comparison badges for tokens and requests", () => {
     render(
       <ReportsSummaryCards
         summary={{
@@ -63,11 +63,7 @@ describe("ReportsSummaryCards", () => {
       />,
     );
 
-    const costCard = screen.getByTestId("report-summary-card-total-cost");
-    expect(within(costCard).getByText("▲ 50%")).toHaveClass(
-      "text-emerald-600",
-      "dark:text-emerald-400",
-    );
+    expect(screen.queryByTestId("report-summary-card-total-cost")).not.toBeInTheDocument();
 
     const tokensCard = screen.getByTestId("report-summary-card-tokens");
     expect(within(tokensCard).getByText("▼ 50%")).toHaveClass(
@@ -87,7 +83,7 @@ describe("ReportsSummaryCards", () => {
       ),
     ).toBeInTheDocument();
     expect(within(tokensCard).getByText("Reported reasoning 8.0M (included in output) · 1400/1500 requests")).toBeInTheDocument();
-    expect(tokensCard.parentElement).toHaveClass("lg:grid-cols-3", "xl:grid-cols-6");
+    expect(tokensCard.parentElement).toHaveClass("lg:grid-cols-3", "xl:grid-cols-5");
     expect(within(requestsCard).getByText("avg 500/day · 3 accounts")).toBeInTheDocument();
   });
 
@@ -126,7 +122,7 @@ describe("ReportsSummaryCards", () => {
     expect(within(tokensCard).queryByText("170")).not.toBeInTheDocument();
   });
 
-  it("renders grouped currency for full-value Cost displays", () => {
+  it("does not expose stored monetary totals", () => {
     render(
       <ReportsSummaryCards
         summary={{
@@ -145,9 +141,8 @@ describe("ReportsSummaryCards", () => {
       />,
     );
 
-    const costCard = screen.getByTestId("report-summary-card-total-cost");
-    expect(within(costCard).getByText("$1,400.00")).toBeInTheDocument();
-    expect(costCard).toHaveTextContent("avg $1,400.00/day");
+    expect(screen.queryByTestId("report-summary-card-total-cost")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$1,400/)).not.toBeInTheDocument();
   });
 
   it("hides comparison badges when unavailable or previous totals are zero", () => {
@@ -203,9 +198,6 @@ describe("ReportsSummaryCards", () => {
       />,
     );
 
-    expect(
-      within(screen.getByTestId("report-summary-card-total-cost")).queryByText(/^[▲▼] \d+%$/),
-    ).not.toBeInTheDocument();
     expect(
       within(screen.getByTestId("report-summary-card-tokens")).queryByText(/^[▲▼] \d+%$/),
     ).not.toBeInTheDocument();

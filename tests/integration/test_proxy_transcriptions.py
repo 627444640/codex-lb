@@ -319,8 +319,10 @@ async def test_backend_transcribe_exact_file_limit_closes_spool_before_reservati
         prompt: str | None,
         headers,
         api_key=None,
+        client_ip=None,
     ):
         del self, headers, api_key
+        assert client_ip == "127.0.0.1"
         assert spools
         assert all(spool.closed for spool in spools)
         events.append("service")

@@ -165,6 +165,7 @@ class _TranscribeMixin:
         prompt: str | None,
         headers: Mapping[str, str],
         api_key: ApiKeyData | None = None,
+        client_ip: str | None = None,
     ) -> dict[str, JsonValue]:
         proxy = cast(_TranscribeServiceProtocol, self)
         filtered = filter_inbound_headers(headers)
@@ -429,4 +430,5 @@ class _TranscribeMixin:
                 useragent=useragent,
                 useragent_group=useragent_group,
                 conversation_id=conversation_id,
+                client_ip=client_ip,
             )

@@ -3,13 +3,13 @@
 ## Purpose
 
 Define the quota phase planner contracts for audit-only defaults,
-phase-aware routing costs, scheduler safety, warmup-effect evidence, and
+phase-aware non-monetary routing penalties, scheduler safety, warmup-effect evidence, and
 dashboard/operator controls.
 ## Requirements
 ### Requirement: Quota phase planner defaults are non-invasive
 
 The quota phase planner SHALL default to audit-only behavior. Fresh installations
-MUST enable routing costs and scheduler audit rows without sending synthetic
+MUST enable non-monetary routing penalties and scheduler audit rows without sending synthetic
 traffic, and the planner MUST skip work instead of blocking user traffic when
 forecast, usage, or warmup-effect data is stale, missing, or uncertain.
 
@@ -143,9 +143,9 @@ persisted planner observation timestamps.
 Warmup execution SHALL atomically transition a planned decision to `executing`
 before reserving API-key budget or sending synthetic probe traffic, and that
 transition SHALL be the single authoritative enforcement point for the daily
-warmup count and credit budgets: the claim statement MUST evaluate the
-`planned` status precondition and both budget guards atomically, so concurrent
-claimants on other replicas or processes cannot exceed either budget. The
+warmup count budget: the claim statement MUST evaluate the
+`planned` status precondition and count guard atomically, so concurrent
+claimants on other replicas or processes cannot exceed that budget. The
 count-budget guard MUST include in-flight `executing` warmup decisions in
 addition to `executed` ones, so a probe reserves budget when it is claimed
 rather than after it completes. The claim MUST record its own timestamp on the
@@ -157,8 +157,8 @@ serialized (a transaction-scoped advisory lock on a fixed warmup-budget key)
 so two claims cannot both evaluate the budget against a stale snapshot; on
 SQLite the claim MUST execute as a single statement under the database-level
 writer lock. When a claim is refused because a budget guard failed, the
-decision MUST be skipped with a reason that distinguishes the exhausted count
-budget from the exhausted credit budget. Final outcomes such as `executed`,
+decision MUST be skipped with the exhausted-count-budget reason. The retained monetary
+credit-budget setting MUST NOT be read or enforced as an admission guard. Final outcomes such as `executed`,
 `failed`, or API-key skip reasons MUST only update decisions that are still
 `executing`. Cancellation MUST only update decisions that are still `planned`
 or `skipped` and MUST NOT cancel an in-flight `executing` decision.
@@ -197,15 +197,12 @@ or `skipped` and MUST NOT cancel an in-flight `executing` decision.
 - **AND** a subsequent claim of another planned decision on the same day is
   refused
 
-#### Scenario: Claim is refused when the credit budget is spent
+#### Scenario: Dormant monetary budget does not prevent a claim
 
-- **GIVEN** warmup request logs recorded today already meet the daily credit
-  budget
-- **WHEN** a planned warmup decision is claimed after its execution gate read
-  stale budget state
-- **THEN** the claim is refused before any probe is sent
-- **AND** the decision is skipped with reason
-  `daily_warmup_credit_budget_exhausted`
+- **GIVEN** historical warmup request costs exceed the retained monetary budget
+- **WHEN** a planned warmup satisfies the count, mode, time and safety gates
+- **THEN** the historical monetary budget does not reject its claim
+- **AND** no monetary estimate is generated for the probe
 
 #### Scenario: Executing warmup cannot be canceled
 
@@ -289,3 +286,20 @@ integrity error that aborts the remainder of a planning tick.
   writer
 - **THEN** the tick continues logging the remaining accounts' decisions
 
+
+### Requirement: Internal planner retires monetary warmup budgets
+
+The internal planner MUST NOT enforce the historical `max_warmup_credits_per_day` monetary budget against request-log costs, and its dashboard MUST NOT show that budget as an active control. The stored setting MUST remain compatible and unchanged when omitted from unrelated edits. Planner mode, time windows, forecast/evidence gates and maximum warmup counts MUST retain their behavior. The `expected_cost` decision value MUST remain a non-monetary scheduling penalty and MUST NOT be interpreted as currency or a price-weighted credit charge. Demand forecasts MUST depend on token and request measurements without weighting retained historical monetary values.
+
+#### Scenario: Historical monetary budget does not gate warmup
+
+- **GIVEN** an old planner monetary budget is exhausted
+- **WHEN** otherwise eligible scheduled or manual warmup is evaluated
+- **THEN** mode, schedule, evidence and count limits still govern the decision
+- **AND** the monetary budget neither blocks nor prices the work
+
+#### Scenario: Scheduling penalty remains diagnostic
+
+- **WHEN** a planner decision exposes `expected_cost`
+- **THEN** it describes the existing non-monetary scheduling penalty
+- **AND** it does not generate or enforce a monetary amount

@@ -14,7 +14,6 @@ import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { quotaBarColor, quotaBarTrack } from "@/utils/account-status";
 import {
   formatCompactNumber,
-  formatCurrency,
   formatDateTimeInline,
   formatPercentNullable,
   formatQuotaResetLabel,
@@ -279,7 +278,6 @@ export function AccountUsagePanel({
               tokens: formatCompactNumber(requestUsage?.totalTokens),
               cached: formatCompactNumber(requestUsage?.cachedInputTokens),
               requests: formatCompactNumber(requestUsage?.requestCount),
-              cost: formatCurrency(requestUsage?.totalCostUsd),
             })}
           </p>
         ) : (

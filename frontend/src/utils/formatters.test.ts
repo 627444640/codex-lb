@@ -14,8 +14,6 @@ import {
   formatCompactNumber,
   formatElapsed,
   formatCountdown,
-  formatCurrency,
-  formatRequestCost,
   formatIdTokenLabel,
   formatModelLabel,
   formatNumber,
@@ -68,17 +66,7 @@ describe("formatters", () => {
     expect(formatCompactNumber(1200)).toMatch(/K$/);
     expect(formatCompactNumber(1430)).toBe("1.43K");
     expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
-    expect(formatCurrency(12)).toMatch(/^\$/);
     expect(formatNumber("abc")).toBe("--");
-  });
-
-  it("keeps small request costs visible and distinguishes missing usage from zero", () => {
-    expect(formatRequestCost(0.0032)).toBe("$0.0032");
-    expect(formatRequestCost(0.000001)).toBe("$0.000001");
-    expect(formatRequestCost(0.00000002)).toBe("$2.000000e-8");
-    expect(formatRequestCost(0)).toBe("$0.00");
-    expect(formatRequestCost(null)).toBe("--");
-    expect(formatRequestCost(Number.NaN)).toBe("--");
   });
 
   it("keeps compact K/M/B units stable across locales", async () => {
@@ -88,7 +76,6 @@ describe("formatters", () => {
       expect(formatCompactNumber(46_400)).toBe("46.4K");
       expect(formatCompactNumber(1_500_000)).toBe("1.5M");
       expect(formatCompactNumber(1_500_000_000)).toBe("1.5B");
-      expect(formatCurrency(12)).toBe("$12.00");
     } finally {
       await i18n.changeLanguage("en");
     }

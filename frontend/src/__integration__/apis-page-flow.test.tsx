@@ -204,6 +204,6 @@ describe("apis page integration", () => {
 		expect(await within(apiKeyInfo).findByText(/12K tok/)).toBeInTheDocument();
 		expect(await within(apiKeyInfo).findByText(/3K cached/)).toBeInTheDocument();
 		expect(await within(apiKeyInfo).findByText(/42 req/)).toBeInTheDocument();
-		expect(await within(apiKeyInfo).findByText(/\$0.42/)).toBeInTheDocument();
+		expect(within(apiKeyInfo).queryByText(/\$0.42/)).not.toBeInTheDocument();
 	});
 });

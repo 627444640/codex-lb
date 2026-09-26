@@ -48,9 +48,10 @@ def test_validate_model_enforcement_raises_typed_validation_error_when_enforced_
         )
 
 
-def test_limit_input_to_row_raises_typed_validation_error_for_credits_with_model_filter() -> None:
+@pytest.mark.parametrize("limit_type", [LimitType.CREDITS, LimitType.COST_USD])
+def test_limit_input_to_row_rejects_monetary_limits_with_model_filter(limit_type: LimitType) -> None:
     rule = LimitRuleInput(
-        limit_type=LimitType.CREDITS.value,
+        limit_type=limit_type.value,
         limit_window=LimitWindow.DAILY.value,
         max_value=100,
         model_filter="gpt-5",
@@ -58,6 +59,25 @@ def test_limit_input_to_row_raises_typed_validation_error_for_credits_with_model
     with pytest.raises(ApiKeyValidationError) as info:
         _limit_input_to_row(rule, key_id="key-1", now=__import__("datetime").datetime(2026, 5, 15))
     assert "credits" in str(info.value).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit_type", [LimitType.CREDITS, LimitType.COST_USD])
+async def test_limit_update_rejects_monetary_rules_before_usage_backfill(limit_type: LimitType) -> None:
+    rule = LimitRuleInput(
+        limit_type=limit_type.value,
+        limit_window=LimitWindow.DAILY.value,
+        max_value=100,
+    )
+    with pytest.raises(ApiKeyValidationError, match="use token limits"):
+        await _build_limit_rows_for_update(
+            key_id="key-1",
+            now=__import__("datetime").datetime(2026, 5, 15),
+            submitted_limits=[rule],
+            existing_limits=[],
+            reset_usage=False,
+            repository=None,
+        )
 
 
 @pytest.mark.asyncio

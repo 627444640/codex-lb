@@ -544,7 +544,7 @@ describe("ReportsPage", () => {
   it("renders a saved chart subset without changing reports query inputs", async () => {
     window.localStorage.setItem(
       REPORT_CHART_VISIBILITY_STORAGE_KEY,
-      JSON.stringify(["costByDay"]),
+      JSON.stringify(["tokensByDay"]),
     );
     useReportsMock.mockReturnValue(
       asUseReportsResult({
@@ -558,15 +558,15 @@ describe("ReportsPage", () => {
     renderWithProviders(<ReportsPage />);
 
     expect(
-      await screen.findByText("Cost by Day", {
+      await screen.findByText("Tokens by Day", {
         selector: "div.text-sm.font-semibold.text-foreground",
       }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Tokens by Day")).not.toBeInTheDocument();
     expect(screen.queryByText("Time to First Token")).not.toBeInTheDocument();
     expect(screen.queryByText("Tokens per Second")).not.toBeInTheDocument();
     expect(screen.queryByText("Queue Wait")).not.toBeInTheDocument();
-    expect(screen.getByText("Total Cost")).toBeInTheDocument();
+    expect(screen.queryByText("Total Cost")).not.toBeInTheDocument();
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
     expect(screen.getByText("Distribution by Model")).toBeInTheDocument();
     expect(screen.getByText("Daily Breakdown")).toBeInTheDocument();
 
@@ -575,7 +575,7 @@ describe("ReportsPage", () => {
     }
   });
 
-  it("renders all five line charts by default", async () => {
+  it("renders all four line charts by default", async () => {
     useReportsMock.mockReturnValue(
       asUseReportsResult({
         data: EMPTY_REPORT,
@@ -588,7 +588,6 @@ describe("ReportsPage", () => {
     renderWithProviders(<ReportsPage />);
 
     for (const heading of [
-      "Cost by Day",
       "Tokens by Day",
       "Time to First Token",
       "Tokens per Second",
@@ -598,10 +597,10 @@ describe("ReportsPage", () => {
     }
   });
 
-  it("renders the selected Cost by Day and Queue Wait charts", async () => {
+  it("renders the selected Tokens by Day and Queue Wait charts", async () => {
     window.localStorage.setItem(
       REPORT_CHART_VISIBILITY_STORAGE_KEY,
-      JSON.stringify(["queueWait", "costByDay"]),
+      JSON.stringify(["queueWait", "tokensByDay"]),
     );
     useReportsMock.mockReturnValue(
       asUseReportsResult({
@@ -614,9 +613,8 @@ describe("ReportsPage", () => {
 
     renderWithProviders(<ReportsPage />);
 
-    expect(await screen.findByText("Cost by Day")).toBeInTheDocument();
+    expect(await screen.findByText("Tokens by Day")).toBeInTheDocument();
     expect(await screen.findByText("Queue Wait")).toBeInTheDocument();
-    expect(screen.queryByText("Tokens by Day")).not.toBeInTheDocument();
     expect(screen.queryByText("Time to First Token")).not.toBeInTheDocument();
     expect(screen.queryByText("Tokens per Second")).not.toBeInTheDocument();
   });
@@ -634,7 +632,7 @@ describe("ReportsPage", () => {
 
     renderWithProviders(<ReportsPage />);
 
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (4)" }));
     for (const chartOption of screen.getAllByRole("menuitemcheckbox")) {
       await user.click(chartOption);
     }
@@ -645,7 +643,8 @@ describe("ReportsPage", () => {
     expect(screen.queryByText("Time to First Token")).not.toBeInTheDocument();
     expect(screen.queryByText("Tokens per Second")).not.toBeInTheDocument();
     expect(screen.queryByText("Queue Wait")).not.toBeInTheDocument();
-    expect(screen.getByText("Total Cost")).toBeInTheDocument();
+    expect(screen.queryByText("Total Cost")).not.toBeInTheDocument();
+    expect(screen.getByText("Tokens")).toBeInTheDocument();
     expect(screen.getByText("Distribution by Model")).toBeInTheDocument();
     expect(screen.getByText("Distribution by UserAgent")).toBeInTheDocument();
     expect(screen.getByText("Daily Breakdown")).toBeInTheDocument();
@@ -669,12 +668,12 @@ describe("ReportsPage", () => {
       <ReportsPage initialFilters={{ model: "gpt-5.1", useragent: "CLI" }} />,
     );
 
-    await screen.findByText("Cost by Day");
+    await screen.findByText("Tokens by Day");
     const callCountBeforeToggle = useReportsMock.mock.calls.length;
     const callsBeforeToggle = useReportsMock.mock.calls.slice(-2).map(
       ([filters, timeZone]) => [filters, timeZone],
     );
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
+    await user.click(screen.getByRole("button", { name: "Charts (4)" }));
     await user.click(
       screen.getByRole("menuitemcheckbox", { name: "Queue Wait" }),
     );
@@ -683,8 +682,7 @@ describe("ReportsPage", () => {
     expect(useReportsMock.mock.calls.slice(-2)).toEqual(callsBeforeToggle);
   });
 
-  it("keeps the model and user-agent metric toggles independent", async () => {
-    const user = userEvent.setup();
+  it("uses request distributions without monetary controls", async () => {
 
     useReportsMock.mockImplementation(() =>
       asUseReportsResult({
@@ -711,16 +709,9 @@ describe("ReportsPage", () => {
     expect(modelCard).not.toBeNull();
     expect(useragentCard).not.toBeNull();
 
-    await user.click(within(useragentCard as HTMLElement).getByRole("button", { name: /^req$/i }));
-
-    expect(within(modelCard as HTMLElement).getByRole("button", { name: /^cost$/i })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(within(useragentCard as HTMLElement).getByRole("button", { name: /^req$/i })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(within(modelCard as HTMLElement).getByTestId("model-distribution-center-value")).toHaveTextContent("3");
+    expect(within(useragentCard as HTMLElement).getByTestId("useragent-distribution-center-value")).toHaveTextContent("2");
+    expect(screen.queryByRole("button", { name: /^cost$/i })).not.toBeInTheDocument();
   });
 
   it("shows account option load failures with a retry button and recovers when retried", async () => {
@@ -907,6 +898,6 @@ describe("ReportsPage", () => {
 
     expect(createObjectURL).toHaveBeenCalledOnce();
     const csvContent = await blobText();
-    expect(csvContent).toContain("2030-01-15,42,2,1000,200,0,50,0.1500,1,0,0");
+    expect(csvContent).toContain("2030-01-15,42,2,1000,200,0,50,1,0,0");
   });
 });

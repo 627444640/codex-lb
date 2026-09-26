@@ -4,7 +4,6 @@ import pytest
 from sqlalchemy import select
 
 import app.modules.proxy.service as proxy_module
-from app.core.usage.pricing import PRICING_VERSION, UsageTokens, calculate_cost_from_usage, get_pricing_for_model
 from app.db.models import RequestLog
 from app.db.session import SessionLocal
 from tests.integration.test_proxy_images import _disable_http_bridge as _disable_http_bridge
@@ -16,7 +15,7 @@ pytestmark = pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("terminal", ["response.completed", "response.failed", "response.incomplete"])
 @pytest.mark.parametrize("first_terminal", [False, True])
-async def test_terminal_usage_survives_error_and_prices_actual_model(
+async def test_terminal_usage_survives_error_and_records_actual_model_without_cost(
     async_client, app_instance, monkeypatch, terminal, first_terminal
 ):
     await _import_account(async_client, "usage-terminal", "usage-terminal@example.invalid")
@@ -62,10 +61,8 @@ async def test_terminal_usage_survives_error_and_prices_actual_model(
         assert row.cache_write_tokens == 20
         assert row.model == "gpt-5.4"
         assert row.actual_model == "gpt-5.4-mini"
-        assert row.pricing_version == PRICING_VERSION
-        resolved = get_pricing_for_model("gpt-5.4-mini", None, None)
-        assert resolved is not None
-        assert row.cost_usd == calculate_cost_from_usage(UsageTokens(100, 30, 40, 20), resolved[1])
+        assert row.pricing_version is None
+        assert row.cost_usd is None
         assert row.status == ("success" if terminal == "response.completed" else "error")
 
 
@@ -73,7 +70,7 @@ async def test_terminal_usage_survives_error_and_prices_actual_model(
 @pytest.mark.parametrize("route", ["generations", "edits"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("image_usage_kind", ["known", "missing_modality", "missing"])
-async def test_image_request_log_replaces_host_tokens_and_cost(
+async def test_image_request_log_replaces_host_tokens_without_cost(
     async_client, app_instance, monkeypatch, route, stream, image_usage_kind
 ):
     await _import_account(async_client, "usage-image", "usage-image@example.invalid")
@@ -125,13 +122,9 @@ async def test_image_request_log_replaces_host_tokens_and_cost(
         assert row.model == "gpt-image-2"
         assert row.actual_model is None
         assert row.reasoning_tokens is None
-        assert row.pricing_version == PRICING_VERSION
+        assert row.pricing_version is None
         assert (row.input_tokens, row.output_tokens) == ((None, None) if image_usage_kind == "missing" else (7, 13))
-        if image_usage_kind == "known":
-            # GPT Image 2: 2 text inputs at $5/M, 5 image inputs at $8/M, 13 image outputs at $30/M.
-            assert row.cost_usd == pytest.approx(0.00044)
-        else:
-            assert row.cost_usd is None
+        assert row.cost_usd is None
 
 
 @pytest.mark.asyncio

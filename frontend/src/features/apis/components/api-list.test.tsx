@@ -6,6 +6,29 @@ import { ApiList } from "@/features/apis/components/api-list";
 import { createApiKey } from "@/test/mocks/factories";
 
 describe("ApiList", () => {
+  it("does not show a limit bar for legacy monetary limits", () => {
+    render(
+      <ApiList
+        apiKeys={[createApiKey({
+          limits: ["cost_usd", "credits"].map((limitType, index) => ({
+            id: index + 1,
+            limitType: limitType as "cost_usd" | "credits",
+            limitWindow: "daily",
+            maxValue: 10,
+            currentValue: 20,
+            modelFilter: null,
+            resetAt: "2026-09-25T00:00:00Z",
+          })),
+        })]}
+        selectedKeyId={null}
+        onSelect={() => {}}
+        onOpenCreate={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText("API Limit")).not.toBeInTheDocument();
+  });
+
   it("shows first-run empty copy when no API keys exist", () => {
     render(
       <ApiList apiKeys={[]} selectedKeyId={null} onSelect={() => {}} onOpenCreate={() => {}} />,

@@ -611,9 +611,8 @@ def _bin_demand_units(row: DemandBinLike) -> float:
     token_units = (
         max(0, row.input_tokens) + 0.25 * max(0, row.cached_input_tokens) + 4.0 * max(0, row.output_tokens)
     ) / 1000.0
-    cost_units = max(0.0, row.cost_usd) * 100.0
     request_units = max(0, row.request_count) * 5.0
-    return max(token_units, cost_units, request_units)
+    return max(token_units, request_units)
 
 
 def _quantile(values: list[float], quantile: str) -> float:

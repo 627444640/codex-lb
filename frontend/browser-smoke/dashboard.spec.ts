@@ -9,11 +9,16 @@ const REQUIRED_API_PATHS = [
   "/api/dashboard/projections",
   "/api/request-logs/options",
   "/api/request-logs",
-  "/api/settings/telemetry",
 ] as const;
 
 test("the built dashboard accepts real backend responses", async ({ page }) => {
   const apiFailures: string[] = [];
+  const telemetryRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/settings/telemetry")) {
+      telemetryRequests.push(request.url());
+    }
+  });
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
 
@@ -64,28 +69,14 @@ test("the built dashboard accepts real backend responses", async ({ page }) => {
   }
   DashboardProjectionsSchema.parse(await projectionsResponse.json());
 
-  // First run against an empty database resolves telemetry consent as
-  // undecided/default, so the informed-consent dialog must appear before
-  // anything else. Exercise it as a first-class scenario: verify the exact
-  // transmitted envelope is rendered, then keep telemetry enabled to unblock
-  // the dashboard underneath.
-  const consentDialog = page.getByRole("dialog", { name: "Anonymous telemetry" });
-  await expect(consentDialog).toBeVisible();
-  await expect(consentDialog.getByText('"instance_id"').first()).toBeVisible();
-  const consentDecision = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/settings/telemetry" && response.request().method() === "PUT",
-  );
-  await consentDialog.getByRole("button", { name: "Keep enabled" }).click();
-  expect((await consentDecision).ok()).toBe(true);
-  await expect(consentDialog).toBeHidden();
-
   await expect(page.getByRole("heading", { name: "Dashboard", exact: true })).toBeVisible();
   await expect(page.getByText("No accounts connected yet", { exact: true })).toBeVisible();
   await expect(page.getByText("No requests yet", { exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
 
   await page.waitForLoadState("networkidle");
+  expect(telemetryRequests).toEqual([]);
+  await expect(page.getByRole("dialog", { name: "Anonymous telemetry" })).toHaveCount(0);
   expect(apiFailures).toEqual([]);
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

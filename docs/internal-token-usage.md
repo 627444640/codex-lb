@@ -1,0 +1,37 @@
+# Internal token usage
+
+This internal distribution tracks token usage and operational request metrics. It does not calculate monetary estimates for new requests or provide billing controls. Anonymous collector reporting is [retired](telemetry.md).
+
+## What is recorded
+
+Request logs retain reported input, output, cache-read, cache-write and reasoning token evidence, requested and actual models, service tiers, status, latency and generation timing when available. Reasoning remains included in output tokens; cached reads and writes remain input subsets.
+
+New request logs store `cost_usd=null` and `pricing_version=null`. A model without a price is not rejected for pricing availability. Existing token limits and the success/failure settlement rules still apply, including the existing behavior when limited-key usage evidence is missing.
+
+The dashboard shows tokens, requests, cache use, latency, errors and request source IP. It has no monetary summary, currency chart, price editor or monetary-limit control. Reports retain token and timing charts, request-based model/User-Agent distributions, and a CSV with operational and token columns.
+
+## Existing records and limits
+
+Previously stored amounts, pricing-version strings and source-model prices are preserved. Compatible API fields may return stored historical amounts or their sums; reading them does not reprice old rows or estimate a value for missing amounts. Model-source edits that omit price fields preserve existing values.
+
+New `cost_usd` and price-weighted `credits` API-key rules are rejected with HTTP 400. Old monetary rules remain stored and inactive: they do not block otherwise permitted traffic, participate in settlement, or disappear during token-only rule edits. Ordinary token limits remain enforced. Provider-side account quotas and reset credits remain separate operational capabilities.
+
+The quota planner's old `max_warmup_credits_per_day` monetary budget is inactive and hidden. Mode, allowed times, evidence checks and maximum warmup counts remain in effect. A planner `expected_cost` value is a non-monetary scheduling penalty, not a currency amount.
+
+## Request source IP
+
+`clientIp` is the source address resolved at the service's trusted ingress. Direct traffic uses its socket peer. Forwarded headers are considered only under the existing configured trusted-proxy policy; arbitrary client headers cannot replace the address. This source may be shared by NAT or a reverse proxy and is not a unique device identifier.
+
+The same address is retained through Responses HTTP/SSE/WebSocket and bridge paths, compact and image requests, and auxiliary operations: transcription, file registration/finalization, thread goals, control requests and explicit client warmup. Successful and failed request-log rows preserve it when available. Scheduled warmup and automation have no client and keep null. Historical null values are not inferred or backfilled.
+
+Administrators see the IP column by default and can inspect or search available addresses. Guest responses and searches preserve the existing redaction boundary.
+
+## Data and service boundary
+
+This change requires no migration that deletes data. Historical telemetry columns and migrations remain, and shared encryption keys, accounts, credentials, token history and monetary history are preserved. Two inert pricing entry points remain solely because historical migrations import them; they return `None` and contain no pricing table.
+
+A source checkout and the installed running service are separate. Source validation does not restart, migrate or replace the service. A later deployment must use the project's backup, controlled rollout and independent verification procedure.
+
+---
+
+*Source of truth: [internal-token-usage](https://github.com/627444640/codex-lb/tree/v1.24.1/openspec/specs/internal-token-usage) · [api-keys](https://github.com/627444640/codex-lb/tree/v1.24.1/openspec/specs/api-keys) · [proxy-runtime-observability](https://github.com/627444640/codex-lb/tree/v1.24.1/openspec/specs/proxy-runtime-observability) · [quota-phase-planner](https://github.com/627444640/codex-lb/tree/v1.24.1/openspec/specs/quota-phase-planner)*

@@ -1,3 +1,5 @@
+> **Status: superseded for the internal distribution.** The [internal-token-only-usage change](../internal-token-only-usage/proposal.md) removes the collector, including opt-out sending. The content and checked tasks below describe the earlier change only; they are not current implementation or acceptance claims. This change has not been newly verified or archived as completed by the retirement work.
+
 ## 1. Snapshot Consent Contract
 
 - [x] 1.1 Add the active consent literal to snapshot schemas and introduce the typed opt-out event schema

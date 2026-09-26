@@ -30,6 +30,26 @@ describe("ApiKeyEditDialog", () => {
     );
   }
 
+  it("edits token limits without exposing or resubmitting retained monetary rules", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const apiKey = createApiKey();
+    apiKey.limits.push({ ...apiKey.limits[0], id: 99, limitType: "cost_usd", maxValue: 9_000_000 });
+    apiKey.limits.push({ ...apiKey.limits[0], id: 100, limitType: "credits", maxValue: 99 });
+    renderWithProviders(<ApiKeyEditDialog open busy={false} apiKey={apiKey} onOpenChange={vi.fn()} onSubmit={onSubmit} />);
+    expect(screen.queryByText(/Weekly cost limit/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cost \(/)).not.toBeInTheDocument();
+    const input = screen.getByLabelText("Weekly token limit");
+    await user.clear(input);
+    await user.type(input, "999999");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].limits).toEqual([
+      { limitType: "total_tokens", limitWindow: "weekly", maxValue: 999999, modelFilter: null },
+    ]);
+    expect(apiKey.limits.map((limit) => limit.limitType)).toContain("cost_usd");
+  });
+
   it("labels the reasoning effort trigger with its field and state", () => {
     renderWithProviders(
       <ApiKeyEditDialog
@@ -547,7 +567,7 @@ describe("hasLimitRuleChanges", () => {
   it("treats reordered identical rule sets as unchanged", () => {
     const initial: LimitRuleCreate[] = [
       { limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000, modelFilter: null },
-      { limitType: "cost_usd", limitWindow: "monthly", maxValue: 1_500_000, modelFilter: "gpt-5.1" },
+      { limitType: "input_tokens", limitWindow: "monthly", maxValue: 1_500_000, modelFilter: "gpt-5.1" },
     ];
     const reordered: LimitRuleCreate[] = [initial[1], initial[0]];
 

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { QuotaPlannerSection } from "@/features/quota-planner/components/quota-planner-section";
@@ -62,6 +62,21 @@ describe("QuotaPlannerSection", () => {
       warmNowMutation: mutationState,
       cancelDecisionMutation: mutationState,
     });
+  });
+
+  it("keeps scheduling observations and omits the retired monetary budget when saving", () => {
+    const hook = hookMocks.useQuotaPlanner();
+    hook.settingsQuery.data.maxWarmupCreditsPerDay = 50;
+    decision.details = { expected_cost: 2 };
+    render(<QuotaPlannerSection />);
+    expect(screen.getByText(/Scheduling penalty 2/)).toBeInTheDocument();
+    expect(document.getElementById("quota-planner-daily-warmup-credits")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "Asia/Taipei" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Planner" }));
+    const payload = hook.updateSettingsMutation.mutate.mock.calls[0][0];
+    expect(payload.timezone).toBe("Asia/Taipei");
+    expect(payload).not.toHaveProperty("maxWarmupCreditsPerDay");
+    expect(hook.settingsQuery.data.maxWarmupCreditsPerDay).toBe(50);
   });
 
   it("updates a decision Peak label when the date display format changes", () => {

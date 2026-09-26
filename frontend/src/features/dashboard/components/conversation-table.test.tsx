@@ -150,7 +150,6 @@ describe("ConversationTable", () => {
       "Models",
       "Requests",
       "Tokens",
-      "Cost",
       "Details",
     ]);
     expect(screen.getByText("conv_visible")).toBeInTheDocument();

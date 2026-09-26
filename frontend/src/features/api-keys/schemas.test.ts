@@ -255,12 +255,12 @@ describe("ApiKeyUpdateRequestSchema", () => {
   it("accepts limits array", () => {
     const parsed = ApiKeyUpdateRequestSchema.parse({
       limits: [
-        { limitType: "cost_usd", limitWindow: "daily", maxValue: 500000 },
+        { limitType: "input_tokens", limitWindow: "daily", maxValue: 500000 },
       ],
     });
 
     expect(parsed.limits).toHaveLength(1);
-    expect(parsed.limits![0].limitType).toBe("cost_usd");
+    expect(parsed.limits![0].limitType).toBe("input_tokens");
   });
 
   it("accepts resetUsage flag", () => {
@@ -331,4 +331,10 @@ it("rejects unsupported credits limit submissions", () => {
   const rule = { limitType: "credits", limitWindow: "daily", maxValue: 1 };
   expect(ApiKeyCreateRequestSchema.safeParse({ name: "test", limits: [rule] }).success).toBe(false);
   expect(ApiKeyUpdateRequestSchema.safeParse({ limits: [rule] }).success).toBe(false);
+});
+
+it.each(["cost_usd", "credits"])("rejects new %s limits while accepting legacy response records", (limitType) => {
+  const limit = { limitType, limitWindow: "weekly", maxValue: 1_000_000 };
+  expect(ApiKeyUpdateRequestSchema.safeParse({ limits: [limit] }).success).toBe(false);
+  expect(ApiKeyCreateRequestSchema.safeParse({ name: "internal", limits: [limit] }).success).toBe(false);
 });

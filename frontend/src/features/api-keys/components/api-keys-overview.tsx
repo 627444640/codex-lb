@@ -1,9 +1,9 @@
 import { useTranslation } from "react-i18next";
 
 import type { ApiKey } from "@/features/api-keys/schemas";
-import { formatCompactNumber, formatCurrency } from "@/utils/formatters";
+import { formatCompactNumber } from "@/utils/formatters";
 
-type UsageMetric = "requests" | "tokens" | "cost";
+type UsageMetric = "requests" | "tokens";
 
 type OverviewStatProps = {
   label: string;
@@ -45,22 +45,13 @@ function OverviewStat({ label, value, meta }: OverviewStatProps) {
   );
 }
 
-function formatMetricValue(metric: UsageMetric, value: number): string {
-  if (metric === "cost") {
-    return formatCurrency(value);
-  }
-  return formatCompactNumber(value);
-}
-
 function buildBreakdownRows(apiKeys: ApiKey[], metric: UsageMetric): BreakdownRow[] {
   const rows = apiKeys.reduce<Array<Omit<BreakdownRow, "share">>>((nextRows, apiKey) => {
     const usage = apiKey.usageSummary;
     const value =
-      metric === "cost"
-        ? usage?.totalCostUsd ?? 0
-        : metric === "tokens"
-          ? usage?.totalTokens ?? 0
-          : usage?.requestCount ?? 0;
+      metric === "tokens"
+        ? usage?.totalTokens ?? 0
+        : usage?.requestCount ?? 0;
 
     if (value > 0) {
       nextRows.push({
@@ -128,7 +119,7 @@ function BreakdownPanel({
                   <span className="text-muted-foreground">{row.labelSuffix}</span>
                 </span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {formatMetricValue(metric, row.value)} · {formatSharePercent(row.share)}
+                  {formatCompactNumber(row.value)} · {formatSharePercent(row.share)}
                 </span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -157,7 +148,6 @@ export function ApiKeysOverview({ apiKeys }: ApiKeysOverviewProps) {
   const usedKeys = apiKeys.filter((apiKey) => (apiKey.usageSummary?.requestCount ?? 0) > 0).length;
   const totalRequests = apiKeys.reduce((sum, apiKey) => sum + (apiKey.usageSummary?.requestCount ?? 0), 0);
   const totalTokens = apiKeys.reduce((sum, apiKey) => sum + (apiKey.usageSummary?.totalTokens ?? 0), 0);
-  const totalCostUsd = apiKeys.reduce((sum, apiKey) => sum + (apiKey.usageSummary?.totalCostUsd ?? 0), 0);
   const inactiveKeys = totalKeys - activeKeys;
   const idleKeys = totalKeys - usedKeys;
 
@@ -168,7 +158,7 @@ export function ApiKeysOverview({ apiKeys }: ApiKeysOverviewProps) {
         <div className="h-px flex-1 bg-border" />
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewStat label={t("apiKeys.overview.apiKeys")} value={formatCompactNumber(totalKeys)} meta={t("apiKeys.overview.expiredMeta", { count: formatCompactNumber(expiredKeys) })} />
         <OverviewStat label={t("apiKeys.overview.activeKeys")} value={formatCompactNumber(activeKeys)} meta={t("apiKeys.overview.inactiveMeta", { count: formatCompactNumber(inactiveKeys) })} />
         <OverviewStat label={t("apiKeys.overview.usedKeys")} value={formatCompactNumber(usedKeys)} meta={t("apiKeys.overview.idleMeta", { count: formatCompactNumber(idleKeys) })} />
@@ -177,14 +167,13 @@ export function ApiKeysOverview({ apiKeys }: ApiKeysOverviewProps) {
           value={formatCompactNumber(totalRequests)}
           meta={t("apiKeys.overview.tokensMeta", { count: formatCompactNumber(totalTokens) })}
         />
-        <OverviewStat label={t("apiKeys.overview.lifetimeCost")} value={formatCurrency(totalCostUsd)} meta={t("apiKeys.overview.lifetimeCostMeta")} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <BreakdownPanel
-          title={t("apiKeys.overview.costByKey")}
-          subtitle={t("apiKeys.overview.costByKeySubtitle")}
-          metric="cost"
+          title={t("apiKeys.overview.requestsByKey")}
+          subtitle={t("apiKeys.overview.requestsByKeySubtitle")}
+          metric="requests"
           apiKeys={apiKeys}
         />
         <BreakdownPanel

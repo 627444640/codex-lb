@@ -185,7 +185,7 @@ describe("RequestLogsResponseSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  it.each(["estimated", "unknown_pricing"] as const)("parses request rows with %s cost status", (costStatus) => {
+  it.each(["estimated", "unknown_pricing", "not_applicable"] as const)("parses request rows with %s cost status", (costStatus) => {
     const parsed = RequestLogsResponseSchema.parse({
       requests: [
         {

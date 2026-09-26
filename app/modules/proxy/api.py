@@ -169,7 +169,6 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyInvalidError,
     ApiKeyRateLimitExceededError,
-    ApiKeyRequestPricing,
     ApiKeyRequestUsageBudget,
     ApiKeySelfLimitData,
     ApiKeysService,
@@ -179,8 +178,6 @@ from app.modules.api_keys.service import (
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.model_sources.catalog import (
-    source_model_audio_cost_usd,
-    source_model_cost_usd,
     source_model_request_overrides,
     source_model_supported_tool_types,
     source_model_supports_reasoning,
@@ -236,7 +233,6 @@ from app.modules.proxy._service.support import (
 )
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.helpers import _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
 from app.modules.proxy.images_observability import (
     IMAGE_ROUTE_MODEL_STATE,
@@ -290,10 +286,8 @@ from app.modules.proxy.schemas import (
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 from app.modules.proxy.types import (
-    CreditStatusDetailsData,
     RateLimitResetCreditsData,
     RateLimitStatusPayloadData,
-    RateLimitWindowSnapshotData,
 )
 from app.modules.rate_limit_reset_credits.api import serialize_reset_credit_redeem
 from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
@@ -771,6 +765,7 @@ async def _thread_goal_proxy(
             method=request.method,
             codex_session_affinity=True,
             api_key=api_key,
+            client_ip=resolve_request_client_host(request),
         )
     except ProxyResponseError as exc:
         return _logged_error_json_response(request, exc.status_code, exc.payload)
@@ -944,6 +939,7 @@ async def _codex_control_proxy(
             api_key=api_key,
             privacy_policy=adapter.privacy_policy,
             success_gate=adapter.success_gate,
+            client_ip=resolve_request_client_host(request),
         )
     except ProxyResponseError as exc:
         if adapter.privacy_policy is CodexControlRequestPrivacyPolicy.PRIVATE_REALTIME:
@@ -1922,7 +1918,12 @@ async def _run_v1_warmup(
         )
 
     try:
-        result = await context.service.warmup(mode=mode, headers=request.headers, api_key=api_key)
+        result = await context.service.warmup(
+            mode=mode,
+            headers=request.headers,
+            api_key=api_key,
+            client_ip=resolve_request_client_host(request),
+        )
     except ValueError as exc:
         return _logged_error_json_response(
             request,
@@ -2059,21 +2060,13 @@ async def _build_codex_usage_payload_for_api_key(api_key: ApiKeyData) -> RateLim
     if usage is None:
         raise ProxyAuthError("Invalid API key")
 
-    key_limits = [_to_v1_usage_limit_response(limit) for limit in usage.limits]
-    primary_credit_limit = _select_codex_usage_limit(key_limits, "5h") or _select_codex_usage_limit(key_limits, "daily")
-    secondary_credit_limit = _select_codex_usage_limit(key_limits, "7d") or _select_codex_usage_limit(
-        key_limits, "weekly"
-    )
-    monthly_credit_limit = _select_codex_usage_limit(key_limits, "monthly")
-
+    # Internal token rules have no conversion to Codex's credit windows or
+    # monetary balance. /v1/usage exposes the measured token limits directly;
+    # retired historical credit rows must never mark this client exhausted.
     return RateLimitStatusPayloadData(
         plan_type="api_key",
-        rate_limit=_rate_limit_details(
-            _codex_usage_window_snapshot(primary_credit_limit),
-            _codex_usage_window_snapshot(secondary_credit_limit),
-            _codex_usage_window_snapshot(monthly_credit_limit),
-        ),
-        credits=_codex_usage_credit_snapshot(primary_credit_limit, secondary_credit_limit, monthly_credit_limit),
+        rate_limit=None,
+        credits=None,
     )
 
 
@@ -2219,53 +2212,6 @@ def _responses_cleanup_scheduler(service: object) -> _ResponsesCleanupScheduler 
     return None
 
 
-def _select_codex_usage_limit(
-    limits: list[V1UsageLimitResponse],
-    window: str,
-) -> V1UsageLimitResponse | None:
-    candidates = [
-        limit
-        for limit in limits
-        if limit.limit_window == window and limit.model_filter is None and limit.limit_type == "credits"
-    ]
-    return candidates[0] if candidates else None
-
-
-def _codex_usage_window_snapshot(limit: V1UsageLimitResponse | None) -> RateLimitWindowSnapshotData | None:
-    if limit is None or limit.max_value <= 0:
-        return None
-    reset_at = datetime.fromisoformat(limit.reset_at.replace("Z", "+00:00"))
-    reset_epoch = int(reset_at.timestamp())
-    now_epoch = int(time.time())
-    used_percent = max(0, min(100, int((limit.current_value / limit.max_value) * 100)))
-    window_seconds = {"5h": 18000, "daily": 86400, "7d": 604800, "weekly": 604800, "monthly": 2592000}.get(
-        limit.limit_window
-    )
-    return RateLimitWindowSnapshotData(
-        used_percent=used_percent,
-        limit_window_seconds=window_seconds,
-        reset_after_seconds=max(0, reset_epoch - now_epoch),
-        reset_at=reset_epoch,
-    )
-
-
-def _codex_usage_credit_snapshot(
-    primary_limit: V1UsageLimitResponse | None,
-    secondary_limit: V1UsageLimitResponse | None,
-    monthly_limit: V1UsageLimitResponse | None = None,
-) -> CreditStatusDetailsData | None:
-    preferred = monthly_limit or secondary_limit or primary_limit
-    if preferred is None or preferred.limit_type != "credits":
-        return None
-    return CreditStatusDetailsData(
-        has_credits=preferred.remaining_value > 0,
-        unlimited=False,
-        balance=str(preferred.remaining_value),
-        approx_local_messages=None,
-        approx_cloud_messages=None,
-    )
-
-
 def _codex_usage_reset_credits_from_request(request: Request) -> RateLimitResetCreditsData | None:
     usage_payload = getattr(request.state, "codex_usage_identity_payload", None)
     summary = getattr(usage_payload, "rate_limit_reset_credits", None)
@@ -2401,13 +2347,13 @@ async def backend_files_create(
         api_key,
         request_model=_FILES_CREATE_LIMIT_MODEL,
         request_service_tier=None,
-        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.create_file(
             payload.model_dump(mode="json", exclude_none=True),
             request.headers,
             api_key=api_key,
+            client_ip=resolve_request_client_host(request),
         )
     except FileProxyError as exc:
         error = _parse_error_envelope(exc.payload)
@@ -2449,13 +2395,13 @@ async def backend_files_finalize(
         api_key,
         request_model=_FILES_FINALIZE_LIMIT_MODEL,
         request_service_tier=None,
-        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         result = await context.service.finalize_file(
             file_id,
             request.headers,
             api_key=api_key,
+            client_ip=resolve_request_client_host(request),
         )
     except FileProxyError as exc:
         error = _parse_error_envelope(exc.payload)
@@ -3582,7 +3528,6 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
-        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_codex_models_response_body(api_key)
@@ -3700,7 +3645,6 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
-        request_pricing=ApiKeyRequestPricing(input_per_1m=0.0, output_per_1m=0.0),
     )
     try:
         return await _build_models_response_body(api_key)
@@ -4178,7 +4122,6 @@ async def v1_chat_completions(
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(responses_payload),
-        request_pricing=_source_request_pricing(source, request_model) if source is not None else None,
     )
     if source is not None:
         return await _source_chat_completion_response(
@@ -4417,7 +4360,6 @@ async def _source_embeddings_response(
         api_key,
         request_model=model,
         request_service_tier=None,
-        request_pricing=_source_request_pricing(source, model),
     )
     outbound = payload.model_dump(exclude_none=True)
     outbound["model"] = model
@@ -4502,7 +4444,6 @@ async def _source_audio_transcription_response(
         api_key,
         request_model=model,
         request_service_tier=None,
-        request_pricing=_source_request_pricing(source, model),
     )
     try:
         result = await forward_source_audio_transcription(
@@ -4526,46 +4467,33 @@ async def _source_audio_transcription_response(
         )
         return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
 
-    # ASR billing prefers audio duration: when the source model has a
-    # per-minute rate and the response carries a duration, settle cost from
-    # the duration with zero tokens. Only when there is no usable duration
-    # cost do we fall back to token usage (and fail closed for limited keys
-    # if neither is available).
-    audio_cost_usd = (
-        source_model_audio_cost_usd(source, model, result.audio_seconds) if result.audio_seconds is not None else None
-    )
-    if audio_cost_usd is not None:
-        settle_usage: SourceUsage | None = SourceUsage(input_tokens=0, output_tokens=0)
-        cost_override: float | None = audio_cost_usd
-    else:
-        settle_usage = result.usage
-        cost_override = None
-        if result.usage is None and _reservation_requires_usage(reservation):
-            await _release_reservation(reservation)
-            error = openai_error(
-                "usage_unavailable",
-                "OpenAI-compatible model source transcription response did not include token usage "
-                "or a usable duration for a limited API key",
-                error_type="server_error",
-            )
-            await _log_source_chat_completion(
-                request,
-                source=source,
-                api_key=api_key,
-                model=model,
-                status="error",
-                error_code="usage_unavailable",
-                error_message="source transcription response missing token usage and duration cost",
-                upstream_status_code=result.upstream_status_code,
-            )
-            return _logged_error_json_response(request, 502, error, headers=rate_limit_headers)
+    # Internal usage is measured in tokens. Audio duration cannot substitute
+    # for missing tokens when a key has token limits.
+    settle_usage = result.usage
+    if settle_usage is None and _reservation_requires_usage(reservation):
+        await _release_reservation(reservation)
+        error = openai_error(
+            "usage_unavailable",
+            "OpenAI-compatible model source transcription response did not include token usage for a limited API key",
+            error_type="server_error",
+        )
+        await _log_source_chat_completion(
+            request,
+            source=source,
+            api_key=api_key,
+            model=model,
+            status="error",
+            error_code="usage_unavailable",
+            error_message="source transcription response missing token usage",
+            upstream_status_code=result.upstream_status_code,
+        )
+        return _logged_error_json_response(request, 502, error, headers=rate_limit_headers)
 
     settled = await _settle_source_reservation(
         reservation,
         source=source,
         model=model,
         usage=settle_usage,
-        cost_usd_override=cost_override,
     )
     if not settled:
         await _log_source_chat_completion(
@@ -4592,7 +4520,6 @@ async def _source_audio_transcription_response(
         status="success",
         usage=settle_usage,
         timings=result.timings,
-        cost_usd_override=cost_override,
         upstream_status_code=result.upstream_status_code,
     )
     headers = dict(rate_limit_headers)
@@ -4623,7 +4550,6 @@ async def _source_responses_response(
         request_model=payload.model,
         request_service_tier=payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(payload),
-        request_pricing=_source_request_pricing(source, payload.model),
     )
     source_payload = payload.model_dump_for_forwarding()
     preserve_materialized_provider_alias = payload._codex_lb_provider_reasoning_effort_materialized and (
@@ -6444,6 +6370,7 @@ async def _transcribe_request(
             prompt=multipart.prompt,
             headers=request.headers,
             api_key=api_key,
+            client_ip=resolve_request_client_host(request),
         )
     except ProxyResponseError as exc:
         error = _parse_error_envelope(exc.payload)
@@ -7673,25 +7600,12 @@ async def _websocket_firewall_denial_response(websocket: WebSocket) -> JSONRespo
     )
 
 
-def _source_request_pricing(source: ModelSource, model: str) -> ApiKeyRequestPricing:
-    entry = next((entry for entry in source.models if entry.model == model and entry.is_enabled), None)
-    if entry is None:
-        return ApiKeyRequestPricing()
-    return ApiKeyRequestPricing(
-        input_per_1m=entry.input_per_1m,
-        cached_input_per_1m=entry.cached_input_per_1m,
-        output_per_1m=entry.output_per_1m,
-        audio_per_minute=entry.audio_per_minute,
-    )
-
-
 async def _enforce_request_limits(
     api_key: ApiKeyData | None,
     *,
     request_model: str | None,
     request_service_tier: str | None,
     request_usage_budget: ApiKeyRequestUsageBudget | None = None,
-    request_pricing: ApiKeyRequestPricing | None = None,
 ) -> ApiKeyUsageReservationData | None:
     if api_key is None:
         return None
@@ -7704,14 +7618,9 @@ async def _enforce_request_limits(
                 request_model=request_model,
                 request_service_tier=request_service_tier,
                 request_usage_budget=request_usage_budget,
-                request_pricing=request_pricing,
             )
         except ApiKeyRateLimitExceededError as exc:
-            message = (
-                str(exc)
-                if exc.code == "pricing_unavailable"
-                else f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-            )
+            message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
             raise ProxyRateLimitError(message, code=exc.code) from exc
         except ApiKeyInvalidError as exc:
             raise ProxyAuthError(str(exc)) from exc
@@ -7799,7 +7708,6 @@ async def _finalize_image_accounting(
     output_tokens = usage.output_tokens if usage else None
     cached_tokens = images_service_module.image_usage_detail_tokens(usage, "cached_tokens")
     cache_write_tokens = images_service_module.image_usage_detail_tokens(usage, "cache_write_tokens")
-    cost = images_service_module.image_usage_cost(usage, model)
     response_id = captured.get("response_id")
     if isinstance(response_id, str) and response_id:
         await service.rewrite_request_log_usage(
@@ -7809,7 +7717,7 @@ async def _finalize_image_accounting(
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,
-            cost_usd=cost.total_usd,
+            cost_usd=None,
         )
     await _finalize_image_reservation(
         service,
@@ -7820,7 +7728,6 @@ async def _finalize_image_accounting(
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
-        cost_override=cost,
     )
 
 
@@ -7858,7 +7765,6 @@ async def _settle_source_reservation(
     source: ModelSource,
     model: str,
     usage: SourceUsage | None,
-    cost_usd_override: float | None = None,
 ) -> bool:
     if reservation is None:
         return True
@@ -7866,7 +7772,6 @@ async def _settle_source_reservation(
         if usage is None:
             await _release_reservation(reservation)
             return True
-        cost_usd = cost_usd_override if cost_usd_override is not None else _source_usage_cost_usd(source, model, usage)
         async with get_background_session() as session:
             service = ApiKeysService(ApiKeysRepository(session))
             await service.finalize_usage_reservation(
@@ -7876,7 +7781,6 @@ async def _settle_source_reservation(
                 output_tokens=usage.output_tokens,
                 cached_input_tokens=usage.cached_input_tokens,
                 service_tier=None,
-                cost_override=UsageCostBreakdown(None, None, None, cost_usd),
             )
         return True
     except Exception:
@@ -7897,19 +7801,6 @@ async def _settle_source_reservation(
         return False
 
 
-def _source_usage_cost_usd(source: ModelSource, model: str, usage: SourceUsage | None) -> float | None:
-    if usage is None:
-        return None
-    cost_usd = source_model_cost_usd(
-        source,
-        model,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        cached_input_tokens=usage.cached_input_tokens,
-    )
-    return cost_usd
-
-
 async def _log_source_chat_completion(
     request: Request,
     *,
@@ -7919,7 +7810,6 @@ async def _log_source_chat_completion(
     status: str,
     usage: SourceUsage | None = None,
     timings: SourceTimings | None = None,
-    cost_usd_override: float | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
     upstream_status_code: int | None = None,
@@ -7938,9 +7828,6 @@ async def _log_source_chat_completion(
                 output_tokens=usage.output_tokens if usage is not None else None,
                 cached_input_tokens=usage.cached_input_tokens if usage is not None else None,
                 reasoning_tokens=usage.reasoning_tokens if usage is not None else None,
-                cost_usd=(
-                    cost_usd_override if cost_usd_override is not None else _source_usage_cost_usd(source, model, usage)
-                ),
                 latency_ms=timings.latency_ms if timings is not None else None,
                 latency_first_token_ms=(timings.latency_first_token_ms if timings is not None else None),
                 status=status,

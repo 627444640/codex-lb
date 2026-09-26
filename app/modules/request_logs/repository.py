@@ -18,10 +18,7 @@ from app.core.usage.logs import (
     CANCELLED_STATUS,
     CLIENT_DISCONNECT_ERROR_CODE,
     NON_ERROR_STATUSES,
-    RequestLogLike,
-    calculated_cost_from_log,
 )
-from app.core.usage.pricing import MODEL_SOURCE_PRICING_VERSION, PRICING_VERSION
 from app.core.usage.types import (
     BucketConversationAggregate,
     BucketModelAggregate,
@@ -1082,7 +1079,7 @@ class RequestLogsRepository:
                 archive_request_id=resolved_archive_request_id,
                 model=model,
                 actual_model=actual_model,
-                pricing_version=PRICING_VERSION if model_source_id is None else MODEL_SOURCE_PRICING_VERSION,
+                pricing_version=None,
                 cache_write_tokens=cache_write_tokens,
                 plan_type=resolved_plan_type,
                 source=source,
@@ -1131,13 +1128,8 @@ class RequestLogsRepository:
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 requested_at=requested_at or utcnow(),
             )
-            log.cost_usd = (
-                cost_usd
-                if cost_usd is not None
-                else None
-                if model_source_id is not None
-                else calculated_cost_from_log(typing_cast(RequestLogLike, log))
-            )
+            # Legacy callers may still pass a monetary override. New internal
+            # request logs retain measured tokens only, never a cost estimate.
             # Core insert instead of unit-of-work: the row is fully built
             # above, so the ORM flush (relationship cascade scan,
             # per-attribute history snapshots) is pure overhead on every
@@ -1213,11 +1205,8 @@ class RequestLogsRepository:
                         ).where(AccountUsageRollupState.id == 1)
                     )
                 ).first()
-                # Fetch the affected rows so we can recompute ``cost_usd``
-                # from the new model. ``add_log`` derives the cost at insert
-                # time from the original (host) model; without recomputing
-                # here, dashboards would mix the public ``gpt-image-*`` model
-                # label with host-model pricing and report inaccurate cost.
+                # Correct measured image token/model evidence without
+                # rewriting any historical monetary fields.
                 stmt = select(RequestLog).where(RequestLog.request_id == resolved_request_id)
                 if watermarks is not None:
                     # A row is un-folded by EVERY rollup only when it clears
@@ -1240,17 +1229,12 @@ class RequestLogsRepository:
                 for log in logs:
                     log.model = model
                     log.actual_model = model if usage is None else usage.actual_model
-                    log.pricing_version = PRICING_VERSION
-                    if usage is None:
-                        log.cost_usd = calculated_cost_from_log(typing_cast(RequestLogLike, log))
-                    else:
+                    if usage is not None:
                         log.input_tokens = usage.input_tokens
                         log.output_tokens = usage.output_tokens
                         log.cached_input_tokens = usage.cached_input_tokens
                         log.cache_write_tokens = usage.cache_write_tokens
                         log.reasoning_tokens = None
-                        # None explicitly clears host-model cost when image evidence is incomplete.
-                        log.cost_usd = usage.cost_usd
                 await self._session.commit()
             except sa_exc.ResourceClosedError:
                 return 0

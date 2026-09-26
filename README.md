@@ -21,8 +21,8 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 <table>
 <tr>
 <td><b>Account Pooling</b><br>Load balance across multiple ChatGPT accounts</td>
-<td><b>Usage Tracking</b><br>Per-account tokens, cost, 28-day trends</td>
-<td><b>API Keys</b><br>Per-key rate limits by token, cost, window, model</td>
+<td><b>Usage Tracking</b><br>Per-account tokens, requests, 28-day trends</td>
+<td><b>API Keys</b><br>Per-key token limits by window and model</td>
 </tr>
 <tr>
 <td><b>Dashboard Auth</b><br>Password + optional TOTP</td>
@@ -106,6 +106,7 @@ Full docs live at **<https://soju06.github.io/codex-lb/>**:
 - [Configuration](https://soju06.github.io/codex-lb/configuration/) — the few settings that matter
 - [Authentication](https://soju06.github.io/codex-lb/authentication/) — dashboard auth modes
 - [API keys](https://soju06.github.io/codex-lb/api-keys/) — protecting proxy routes
+- [Internal usage](docs/internal-token-usage.md) — token accounting, trusted client IP, and preserved historical data
 - [Routing](https://soju06.github.io/codex-lb/routing/) — strategy guide
 - [Database](https://soju06.github.io/codex-lb/database/) — SQLite / PostgreSQL, Postgres 16 → 18 upgrade
 - [Deployment](https://soju06.github.io/codex-lb/deployment/docker/) — [Docker](https://soju06.github.io/codex-lb/deployment/docker/), [Kubernetes](https://soju06.github.io/codex-lb/deployment/kubernetes/), [remote access](https://soju06.github.io/codex-lb/deployment/remote/)

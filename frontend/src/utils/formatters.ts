@@ -23,18 +23,6 @@ const compactFormatter = new Intl.NumberFormat("en-US", {
   notation: "compact",
   maximumFractionDigits: 2,
 });
-const currencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-const requestCostFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 6,
-});
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 const timeFormatters = new Map<string, Intl.DateTimeFormat>();
 const chartDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
@@ -160,22 +148,6 @@ export function formatNumber(value: unknown): string {
 export function formatCompactNumber(value: unknown): string {
   const numeric = toNumber(value);
   return numeric === null ? "--" : compactFormatter.format(numeric);
-}
-
-export function formatCurrency(value: unknown): string {
-  const numeric = toNumber(value);
-  return numeric === null ? "--" : currencyFormatter.format(numeric);
-}
-
-export function formatRequestCost(value: unknown): string {
-  const numeric = toNumber(value);
-  if (numeric === null) {
-    return "--";
-  }
-  if (numeric !== 0 && Math.abs(numeric) < 0.000001) {
-    return `$${numeric.toExponential(6)}`;
-  }
-  return requestCostFormatter.format(numeric);
 }
 
 export function formatPercent(value: unknown): string {

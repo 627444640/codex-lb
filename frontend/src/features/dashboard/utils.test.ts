@@ -937,12 +937,12 @@ describe("buildDashboardView", () => {
     });
 
     const view = buildDashboardView(overview, createDefaultRequestLogs(), false);
-    const burn = view.stats[3];
+    const burn = view.stats.find((stat) => stat.label.startsWith("Account burn"))!;
 
     expect(burn.label).toBe("Account burn projection (5h/7d)");
     expect(burn.value).toBe("0.7 / 0.8");
     expect(burn.meta).toBe("Projected account-equivalents: 0.7/5h · 0.8/7d");
-    expect(view.stats[4]?.label).toBe("Error rate (7d)");
+    expect(view.stats.at(-1)?.label).toBe("Error rate (7d)");
   });
 
   it("can hide the account burn rate card", () => {
@@ -954,7 +954,7 @@ describe("buildDashboardView", () => {
     });
 
     expect(view.stats.map((stat) => stat.label)).not.toContain("Account burn projection (5h/7d)");
-    expect(view.stats).toHaveLength(4);
+    expect(view.stats).toHaveLength(3);
   });
 
   it("counts quota-exceeded secondary windows as fully burned", () => {
@@ -977,13 +977,13 @@ describe("buildDashboardView", () => {
     });
 
     const view = buildDashboardView(overview, createDefaultRequestLogs(), false);
-    const burn = view.stats[3];
+    const burn = view.stats.find((stat) => stat.label.startsWith("Account burn"))!;
 
     expect(burn.value).toBe("0.0 / 1.0");
     expect(burn.meta).toBe("Projected account-equivalents: 0.0/5h · 1.0/7d");
   });
 
-  it("labels aggregate cost as known estimates alongside the average", () => {
+  it("ignores historical monetary totals while retaining token and request statistics", () => {
     const weeklyView = buildDashboardView(
       createDashboardOverview({
         summary: {
@@ -1064,11 +1064,12 @@ describe("buildDashboardView", () => {
       false,
     );
 
-    expect(weeklyView.stats[2]?.meta).toBe("Avg/day $8.00 · Known estimates only");
-    expect(dailyView.stats[2]?.meta).toBe("Avg/hr $1.00 · Known estimates only");
+    expect(weeklyView.stats.some((stat) => /cost|\$/i.test(`${stat.label} ${stat.value} ${stat.meta}`))).toBe(false);
+    expect(weeklyView.stats[1]?.value).toBe("45K");
+    expect(dailyView.stats.some((stat) => /cost|\$/i.test(`${stat.label} ${stat.value} ${stat.meta}`))).toBe(false);
   });
 
-  it("adds previous-window comparison indicators to requests tokens and cost cards", () => {
+  it("adds previous-window comparison indicators to request and token cards", () => {
     const overview = createDashboardOverview();
 
     const view = buildDashboardView(
@@ -1106,7 +1107,6 @@ describe("buildDashboardView", () => {
 
     expect(view.stats[0]?.comparison).toEqual({ text: "▲ 50%", tone: "positive" });
     expect(view.stats[1]?.comparison).toEqual({ text: "▼ 50%", tone: "negative" });
-    expect(view.stats[2]?.comparison).toEqual({ text: "▲ 50%", tone: "positive" });
     expect(view.stats[view.stats.length - 1]?.comparison).toBeUndefined();
   });
 
@@ -1201,7 +1201,7 @@ describe("buildDashboardView", () => {
     expect(zeroPreviousView.stats[2]?.comparison).toBeUndefined();
   });
 
-  it("places Conversations stat after Est. API Cost and before optional burn-rate/Error Rate", () => {
+  it("places Conversations stat after Tokens and before optional burn-rate/Error Rate", () => {
     const overview = createDashboardOverview({
       summary: {
         primaryWindow: {
@@ -1228,23 +1228,23 @@ describe("buildDashboardView", () => {
 
     const viewWithoutBurn = buildDashboardView(overview, createDefaultRequestLogs(), false);
 
-    const costIdx = viewWithoutBurn.stats.findIndex((s) => s.label.includes("Est. API Cost"));
+    const tokenIdx = viewWithoutBurn.stats.findIndex((s) => s.label.startsWith("Tokens"));
     const convIdx = viewWithoutBurn.stats.findIndex((s) => s.label.includes("Conversations"));
     const errorIdx = viewWithoutBurn.stats.findIndex((s) => s.label.includes("Error rate"));
 
-    expect(convIdx).toBeGreaterThan(costIdx);
+    expect(convIdx).toBeGreaterThan(tokenIdx);
     expect(convIdx).toBeGreaterThan(-1);
     expect(errorIdx).toBeGreaterThan(convIdx);
 
-    // With burn-rate enabled, conversation should still be between cost and burn-rate
+    // With burn-rate enabled, conversation should still be between tokens and burn-rate
     const viewWithBurn = buildDashboardView(overview, createDefaultRequestLogs(), { isDark: false, showAccountBurnrate: true });
 
-    const costIdxB = viewWithBurn.stats.findIndex((s) => s.label.includes("Est. API Cost"));
+    const tokenIdxB = viewWithBurn.stats.findIndex((s) => s.label.startsWith("Tokens"));
     const convIdxB = viewWithBurn.stats.findIndex((s) => s.label.includes("Conversations"));
     const burnIdxB = viewWithBurn.stats.findIndex((s) => s.label.includes("Account burn"));
     const errorIdxB = viewWithBurn.stats.findIndex((s) => s.label.includes("Error rate"));
 
-    expect(convIdxB).toBeGreaterThan(costIdxB);
+    expect(convIdxB).toBeGreaterThan(tokenIdxB);
     expect(burnIdxB).toBeGreaterThan(convIdxB);
     expect(errorIdxB).toBeGreaterThan(burnIdxB);
   });

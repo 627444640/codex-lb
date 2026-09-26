@@ -71,7 +71,8 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # fail-fast when CI or strict operators want config drift to abort startup.
 # 131 -> 133: sustained-overload isolation and error-rate weighting switches.
 # Operators need bounded disable controls while validating their actual account pool.
-MAX_SETTINGS_FIELDS = 133
+# 133 -> 131: anonymous usage telemetry and its collector endpoint were removed.
+MAX_SETTINGS_FIELDS = 131
 
 
 def test_generated_settings_reference_matches_code() -> None:
@@ -108,12 +109,15 @@ def _uncommented_assignments(text: str) -> list[tuple[str, str]]:
     return assignments
 
 
-def test_env_example_uncommented_values_match_code_defaults() -> None:
+def test_env_example_uncommented_values_match_code_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every active KEY=value in .env.example must equal the code default.
 
     Commented lines are exempt; today the file is fully commented out and
     copying it verbatim must change nothing (user-documentation spec).
     """
+    # _isolated_settings removes CODEX_LB_DATA_DIR as part of its defaults
+    # check. Keep that check away from the operator's real home directory.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     defaults = _isolated_settings()
     for key, value in _uncommented_assignments(ENV_EXAMPLE_PATH.read_text(encoding="utf-8")):
         if key == "PORT":

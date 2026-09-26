@@ -18,7 +18,6 @@ from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.plan_types import account_plan_matches_allowed, normalize_account_plan_type
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
-from app.core.usage.pricing import get_pricing_for_model
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountLimitWarmup, AccountStatus, DashboardSettings, UsageHistory
 from app.modules.accounts.auth_manager import AuthManager
@@ -436,7 +435,7 @@ class LimitWarmupService:
                             status="skipped",
                             completed_at=utcnow(),
                             error_code="model_unavailable",
-                            error_message="No eligible priced text model was available for warm-up",
+                            error_message="No eligible text model was available for warm-up",
                         )
                         latest_attempts[account.id] = completed or skipped
                     continue
@@ -525,7 +524,7 @@ class LimitWarmupService:
         if normalized and normalized.lower() != "auto":
             return normalized
 
-        candidates: list[tuple[float, str]] = []
+        candidates: list[str] = []
         for model in get_model_registry().get_models_with_fallback().values():
             if not model.supported_in_api:
                 continue
@@ -535,14 +534,10 @@ class LimitWarmupService:
                 account.plan_type, model.available_in_plans
             ):
                 continue
-            resolved_price = get_pricing_for_model(model.slug)
-            if resolved_price is None:
-                continue
-            _, price = resolved_price
-            candidates.append((price.input_per_1m + price.output_per_1m, model.slug))
+            candidates.append(model.slug)
         if not candidates:
             return None
-        return min(candidates, key=lambda item: (item[0], item[1]))[1]
+        return min(candidates)
 
     async def _send_warmup(
         self,

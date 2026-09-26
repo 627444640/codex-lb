@@ -730,8 +730,8 @@ excludes that owner.
 - **THEN** the service sends it on that socket without a new selector-based
   eligibility check
 
-### Requirement: Request logs persist requested, actual, and billable service tiers separately
-For Responses proxy traffic, the system MUST persist the operator-requested tier, the upstream-reported actual tier when available, and the effective billable tier used for pricing as separate request-log fields.
+### Requirement: Request logs persist requested, actual, and effective service tiers separately
+For Responses proxy traffic, the system MUST persist the operator-requested tier, the upstream-reported actual tier when available, and the effective compatibility tier as separate request-log fields.
 
 The legacy `fast` alias MUST be normalized to the canonical upstream value
 `priority` before forwarding and before it is stored as the requested tier.
@@ -743,21 +743,21 @@ authoritative actual tier even when it differs from the requested tier.
 - **AND** the upstream response later reports `service_tier: "default"`
 - **THEN** the persisted request log entry records `requested_service_tier = "priority"`
 - **AND** the persisted request log entry records `actual_service_tier = "default"`
-- **AND** the persisted request log entry records billable `service_tier = "default"`
+- **AND** the persisted request log entry records effective `service_tier = "default"`
 
 #### Scenario: Fast alias is logged as a priority request
 - **WHEN** a client sends a Responses request with `service_tier: "fast"`
 - **AND** the upstream response later reports `service_tier: "default"`
 - **THEN** the persisted request log entry records `requested_service_tier = "priority"`
 - **AND** the persisted request log entry records `actual_service_tier = "default"`
-- **AND** the persisted request log entry records billable `service_tier = "default"`
+- **AND** the persisted request log entry records effective `service_tier = "default"`
 
 #### Scenario: Upstream omits the actual tier
 - **WHEN** a client sends a Responses request with `service_tier: "priority"`
 - **AND** the upstream response omits `service_tier`
 - **THEN** the persisted request log entry records `requested_service_tier = "priority"`
 - **AND** the persisted request log entry records `actual_service_tier = null`
-- **AND** the persisted request log entry records billable `service_tier = "priority"`
+- **AND** the persisted request log entry records effective `service_tier = "priority"`
 
 ### Requirement: API key service tier enforcement applies to upstream Responses requests
 
@@ -1275,7 +1275,7 @@ contains a persisted response anchor rather than using alias enumeration order.
 
 ### Requirement: Responses account selection accounts for in-flight pressure
 
-For Responses API requests, usage-based routing MUST include immediate in-process account pressure in addition to persisted usage. Account selection MUST account for in-flight response-create work, active streams, leased token/cost estimates, recent selection pressure, account health, and configured account-local caps. Selection and lease acquisition MUST be atomic with respect to other in-process selections, and the critical section MUST NOT perform database calls, network calls, sleeps, or other blocking I/O.
+For Responses API requests, usage-based routing MUST include immediate in-process account pressure in addition to persisted usage. Account selection MUST account for in-flight response-create work, active streams, leased token pressure estimates, recent selection pressure, account health, and configured account-local caps. Selection and lease acquisition MUST be atomic with respect to other in-process selections, and the critical section MUST NOT perform database calls, network calls, sleeps, or other blocking I/O.
 
 #### Scenario: Concurrent burst spreads before upstream usage refreshes
 
@@ -3682,41 +3682,30 @@ SHALL be returned to the client with the upstream content type when present.
 
 #### Scenario: Limited key requires token usage
 
-- **GIVEN** an API key has token or cost limits
+- **GIVEN** an API key has token limits
 - **AND** a source-routed audio transcription response has no token-compatible
   usage fields
-- **AND** the source model declares no per-minute audio rate
 - **WHEN** the upstream source returns a successful transcription response
 - **THEN** the proxy releases the reservation
 - **AND** returns `usage_unavailable` instead of allowing unaccounted limited-key usage
 
-### Requirement: Audio transcription sources MAY bill by duration
+### Requirement: Audio transcription usage remains token-only
 
-The proxy SHALL support per-minute audio billing for source models that
-declare an `audio_per_minute` rate. When the rate is set and a source-routed
-`/v1/audio/transcriptions` response carries a positive audio duration
-(top-level `duration` seconds, or a `usage.seconds`/`usage.duration` fallback),
-the proxy MUST settle cost as `duration_minutes * audio_per_minute` with zero
-tokens, and MUST record that cost on the request log and against the API key's
-`cost_usd` limit. Duration billing MUST take precedence over token pricing on
-the transcription route. A model with no `audio_per_minute` rate MUST fall back
-to token-usage settlement.
+Source transcription requests MUST NOT compute charges from audio duration or retained model prices. Usable token evidence MUST govern applicable token-limit settlement. When a token-limited source response has no usable token usage, the existing `usage_unavailable` behavior MUST remain enforced; a stored audio rate MUST NOT substitute for token evidence.
 
-#### Scenario: Duration-priced model settles cost from audio length
+#### Scenario: Stored audio rate does not enable duration billing
 
-- **GIVEN** an audio-transcriptions source model with `audio_per_minute = 0.30`
-- **AND** an API key with a `cost_usd` limit
-- **WHEN** a transcription response reports `duration = 120` seconds and no token usage
-- **THEN** the API-key reservation is finalized with 0 tokens and $0.60 cost
-- **AND** the request log records `cost_usd = 0.60`
+- **GIVEN** a source model retains an old `audio_per_minute` value
+- **WHEN** a transcription response reports duration
+- **THEN** no duration-based monetary amount is calculated or stored
+- **AND** reported token usage is retained when available
 
-#### Scenario: Duration billing does not require token usage for limited keys
+#### Scenario: Duration alone cannot satisfy a token limit
 
-- **GIVEN** an audio-transcriptions source model with an `audio_per_minute` rate
-- **AND** an API key with token or cost limits
-- **WHEN** a transcription response carries a positive duration but no token usage
-- **THEN** the request succeeds and settles from duration
-- **AND** the proxy does not return `usage_unavailable`
+- **GIVEN** the key has an active token limit
+- **WHEN** a source transcription succeeds with duration but no token-compatible usage
+- **THEN** the existing missing-usage failure contract applies
+- **AND** dormant monetary limits do not alter that decision
 
 ### Requirement: Upstream Responses payloads omit client-omitted request fields
 
@@ -5331,7 +5320,7 @@ only an inactive `unknown` operation may enter a fresh recovery attempt.
 
 ### Requirement: Responses routes preserve the Ultrafast service tier
 
-Responses-compatible routes MUST accept the canonical `ultrafast` service tier and MUST forward it unchanged. When upstream reports the actual response tier, request logging MUST preserve `ultrafast` using the existing requested, actual, and billable tier contract.
+Responses-compatible routes MUST accept the canonical `ultrafast` service tier and MUST forward it unchanged. When upstream reports the actual response tier, request logging MUST preserve `ultrafast` using the existing requested, actual, and effective tier contract.
 
 #### Scenario: Explicit Ultrafast request is forwarded
 
@@ -5341,7 +5330,7 @@ Responses-compatible routes MUST accept the canonical `ultrafast` service tier a
 #### Scenario: Upstream confirms Ultrafast processing
 
 - **WHEN** upstream completes a request with `response.service_tier: "ultrafast"`
-- **THEN** the actual and billable request-log tiers are `ultrafast`
+- **THEN** the actual and effective request-log tiers are `ultrafast`
 
 ### Requirement: Account-bound retries remain on their dispatch owner
 

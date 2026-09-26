@@ -33,7 +33,7 @@ WebSocket, and supported control or auxiliary request-log paths.
 
 The dashboard overview shows **Active Conversations** for the selected `1d`,
 `7d`, or `30d` timeframe, the average requests per conversation, and a
-conversation trend alongside the other request, token, and cost metrics.
+conversation trend alongside the other request and token metrics.
 
 Open **Dashboard**, use the view selector next to the Requests heading, and
 choose **Conversations**. The view supports:
@@ -51,12 +51,12 @@ The conversation table shows:
 - Conversation ID
 - Representative account and API key, with counts for additional accounts
 - Representative model, with counts for additional models
-- Request count, total and cached tokens, and total cost
+- Request count and total and cached tokens
 
 Selecting **Details** opens a dialog with the conversation ID, start and latest
 timestamps, account count, total elapsed time, dominant user-agent group, and
 per-model/reasoning-effort totals for requests, elapsed time, input tokens,
-cached input tokens, output tokens, and cost.
+cached input tokens and output tokens.
 
 A conversation appears when it has at least one eligible request inside the
 selected activity window. Its displayed start time and aggregate totals still
@@ -104,7 +104,7 @@ Query parameters:
 The response contains `conversations`, `total`, and `hasMore`. Each list entry
 includes the conversation ID, first and last request timestamps, request count,
 representative account and model information, token totals, cached input
-tokens, and total cost.
+tokens. Compatible historical cost fields may remain in API responses, but the internal dashboard does not display monetary values.
 
 ### Get conversation details
 
@@ -115,7 +115,7 @@ GET /api/conversations/{conversation_id}
 The detail response includes `conversationId`, `start`, `latest`,
 `accountCount`, `totalElapsedTime`, `dominantUseragentGroup`, and
 `modelStats`. Each model statistic includes the model and reasoning effort,
-request count, elapsed time, input/output/cached token totals, and cost.
+request count, elapsed time and input/output/cached token totals. Historical monetary fields are compatibility data and are not repriced or displayed.
 
 Conversations are derived from eligible request-log rows. Empty conversation
 IDs and rows excluded by the request-log retention filters do not create a

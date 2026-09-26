@@ -21,8 +21,8 @@ ChatGPT 账户负载均衡器。聚合多个账户、追踪用量、管理 API K
 <table>
 <tr>
 <td><b>账户池化</b><br>在多个 ChatGPT 账户之间负载均衡</td>
-<td><b>用量追踪</b><br>按账户记录 token、成本及 28 天趋势</td>
-<td><b>API Key</b><br>按 token、成本、时间窗口、模型限流</td>
+<td><b>用量追踪</b><br>按账户记录 token、请求及 28 天趋势</td>
+<td><b>API Key</b><br>按 token、时间窗口和模型限流</td>
 </tr>
 <tr>
 <td><b>仪表盘鉴权</b><br>密码 + 可选 TOTP</td>
@@ -363,7 +363,9 @@ Authorization: Bearer sk-clb-...
 - `/backend-api/codex/*`
 - `/backend-api/transcribe`
 
-**创建 key**：仪表盘 → API Keys → 创建。完整 key 仅在创建时显示**一次**。Key 支持可选过期时间、模型限制以及限流（按 token / 成本、按天 / 周 / 月）。
+内部版仅记录 token 与运行指标，不计算新请求金额；历史金额及旧限额数据保留兼容。客户端 IP 沿现有可信代理策略记录，管理员默认可见，访客保持脱敏。详见 [内部用量说明](docs/internal-token-usage.md)。
+
+**创建 key**：仪表盘 → API Keys → 创建。完整 key 仅在创建时显示**一次**。Key 支持可选过期时间、模型限制以及限流（按 token、按天 / 周 / 月）。
 
 ## 配置
 

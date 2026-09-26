@@ -268,7 +268,7 @@ class ReportsRepository:
             )
             .where(and_(*conditions))
             .group_by(RequestLog.model)
-            .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+            .order_by(func.count().desc())
         )
         result = await self._session.execute(stmt)
         return [
@@ -299,7 +299,7 @@ class ReportsRepository:
             )
             .where(and_(*conditions))
             .group_by(RequestLog.account_id)
-            .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+            .order_by(func.count().desc())
         )
         result = await self._session.execute(stmt)
         rows = result.all()
@@ -345,7 +345,7 @@ class ReportsRepository:
             )
             .where(and_(*conditions))
             .group_by(useragent_group_bucket)
-            .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+            .order_by(func.count().desc())
         )
         result = await self._session.execute(stmt)
         return [

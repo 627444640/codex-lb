@@ -132,7 +132,7 @@ describe("ConversationDetailsDialog", () => {
     await sortBothDirections("Total elapsed", ["gpt-z (high)", "gpt-a (low)", "gpt-m (medium)"], ["gpt-m (medium)", "gpt-a (low)", "gpt-z (high)"]);
     await sortBothDirections("Total input", ["gpt-z (high)", "gpt-a (low)", "gpt-m (medium)"], ["gpt-m (medium)", "gpt-a (low)", "gpt-z (high)"]);
     await sortBothDirections("Total output", ["gpt-z (high)", "gpt-a (low)", "gpt-m (medium)"], ["gpt-m (medium)", "gpt-a (low)", "gpt-z (high)"]);
-    await sortBothDirections("Total cost", ["gpt-z (high)", "gpt-a (low)", "gpt-m (medium)"], ["gpt-m (medium)", "gpt-a (low)", "gpt-z (high)"]);
+    expect(screen.queryByRole("columnheader", { name: "Total cost" })).not.toBeInTheDocument();
   });
 
   it("loads lazily, shows the request-detail shell, and sorts returned rows client-side", async () => {
@@ -178,13 +178,12 @@ describe("ConversationDetailsDialog", () => {
       "Total elapsed",
       "Total input",
       "Total output",
-      "Total cost",
     ]);
 
     const rows = screen.getAllByRole("row");
     expect(rows[1]).toHaveTextContent("gpt-5.1");
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /total cost/i }));
+    await user.click(screen.getByRole("button", { name: /reqs/i }));
     expect(screen.getAllByRole("row")[1]).toHaveTextContent("gpt-5.4-mini (high)");
   });
 

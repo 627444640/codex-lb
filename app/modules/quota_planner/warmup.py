@@ -342,7 +342,7 @@ class QuotaWarmupService:
         if active_today >= settings.max_warmups_per_day:
             reason = "daily_warmup_count_budget_exhausted"
         else:
-            reason = "daily_warmup_credit_budget_exhausted"
+            reason = "warmup_claim_unavailable"
         row = await self._planner.update_decision_status(
             decision_id,
             status="skipped",
@@ -431,9 +431,6 @@ class QuotaWarmupService:
         active_today = await self._planner.count_active_warmups_since(today)
         if active_today >= settings.max_warmups_per_day:
             return False, "daily_warmup_count_budget_exhausted"
-        spent_today = await self._planner.warmup_cost_since(today)
-        if settings.max_warmup_credits_per_day <= 0 or spent_today >= settings.max_warmup_credits_per_day:
-            return False, "daily_warmup_credit_budget_exhausted"
 
         effect = await self._planner.latest_warmup_effect_observation(account_id=account.id, model=model)
         if not force_probe and (effect is None or effect.confidence not in {"observed", "known", "high"}):

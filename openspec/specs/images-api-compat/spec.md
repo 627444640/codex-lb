@@ -245,16 +245,17 @@ Byte-limit failures MUST return HTTP 413 with OpenAI error `code = payload_too_l
 - **AND** disconnect and cancellation are not converted to HTTP 413
 
 ### Requirement: Image request accounting uses public image usage
-Image request logs and successful API-key settlements MUST use the image tool usage and effective image model. They MUST NOT reuse host Responses token counts. Log model, usage, and cost correction MUST be atomic and serialized with rollup folding. Missing modality evidence required for image pricing MUST produce an unknown cost. GPT-Image-2.5 Sunburst and Flare MUST use USD-per-million rates of 5/1.25 for text input/cache, 8/2 for image input/cache, and 30 for image output. ChatGPT-Image-Latest MUST use 5/1.25 for text input/cache, 8/2 for image input/cache, 10 for text output and 32 for image output.
 
-#### Scenario: Host and image tool usage differ
-- **WHEN** a host response reports different tokens from its image tool result
-- **THEN** the image request log and successful settlement use the image tool tokens
+Image request logs and successful API-key settlement MUST use image-tool token usage and the effective image model rather than host Responses token counts. Model and usage correction MUST remain atomic and serialized with rollup folding. Every new image request MUST have null monetary cost and pricing version. Text/image modality evidence MUST NOT cause a price lookup or currency calculation.
+
+#### Scenario: Host and image-tool usage differ
+
+- **WHEN** a host response reports different tokens from its image-tool result
+- **THEN** the image request log and successful settlement use image-tool tokens
+- **AND** monetary fields remain null
 
 #### Scenario: Image usage lacks modality details
-- **WHEN** image usage omits details required to distinguish text from image pricing
-- **THEN** the log retains reported totals and does not assign a fabricated cost
 
-#### Scenario: Published image variants retain their modality rates
-- **WHEN** usage is recorded for Sunburst, Flare or ChatGPT-Image-Latest
-- **THEN** its cost uses the specified text/image rates and does not inherit an unverified family-prefix price
+- **WHEN** image usage reports totals without a text/image modality partition
+- **THEN** those reported totals remain available
+- **AND** no partition or monetary estimate is invented

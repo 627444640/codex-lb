@@ -69,7 +69,7 @@ describe("ApiDetail", () => {
 
 		expect(screen.getByRole("heading", { name: "Analytics Key" })).toBeInTheDocument();
 		expect(screen.getByText("Tokens")).toBeInTheDocument();
-		expect(screen.getByText("Cost")).toBeInTheDocument();
+		expect(screen.queryByText("Cost")).not.toBeInTheDocument();
 		expect(screen.getByTestId("api-trend-legend")).toBeInTheDocument();
 		expect(screen.getByRole("switch")).toBeInTheDocument();
 		expect(screen.getByText("Key Details")).toBeInTheDocument();
@@ -96,10 +96,10 @@ describe("ApiDetail", () => {
 		expect(screen.getByText(/280K tok/)).toBeInTheDocument();
 		expect(screen.getByText(/45K cached/)).toBeInTheDocument();
 		expect(screen.getByText(/350 req/)).toBeInTheDocument();
-		expect(screen.getByText(/\$2.47/)).toBeInTheDocument();
+		expect(screen.queryByText(/\$2.47/)).not.toBeInTheDocument();
 	});
 
-	it("renders unknown and deleted account buckets distinctly in the cost donut", async () => {
+	it("omits legacy account monetary distribution", async () => {
 		renderApiDetail({
 			usage7Day: createApiKeyUsage7Day({
 				accountCosts: [
@@ -109,11 +109,10 @@ describe("ApiDetail", () => {
 			}),
 		});
 
-		expect(await screen.findByText("Unknown Account")).toBeInTheDocument();
-		expect(screen.getByText("Deleted Account")).toBeInTheDocument();
+		expect(screen.queryByTestId("account-cost-panel")).not.toBeInTheDocument();
 	});
 
-	it("renders the donut and trend sections inside a shared usage panel", async () => {
+	it("renders token trends across the usage panel", async () => {
 		renderApiDetail({
 			trends: createApiKeyTrends({
 				cost: [{ t: "2026-01-01T00:00:00Z", v: 0.12 }],
@@ -126,12 +125,12 @@ describe("ApiDetail", () => {
 		});
 
 		const usagePanel = screen.getByTestId("api-usage-panel");
-		expect(usagePanel).toContainElement(await screen.findByTestId("account-cost-panel"));
+		expect(screen.queryByTestId("account-cost-panel")).not.toBeInTheDocument();
 		expect(usagePanel).toContainElement(screen.getByTestId("api-trend-panel"));
-		expect(screen.getByTestId("api-trend-panel")).toHaveClass("lg:border-l");
+		expect(screen.getByTestId("api-trend-panel")).toHaveClass("w-full");
 	});
 
-	it("does not render an empty trend pane when only donut data is available", async () => {
+	it("does not render a usage chart for legacy monetary data alone", async () => {
 		renderApiDetail({
 			trends: createApiKeyTrends({ cost: [], tokens: [] }),
 			usage7Day: createApiKeyUsage7Day({
@@ -140,24 +139,9 @@ describe("ApiDetail", () => {
 			}),
 		});
 
-		const usagePanel = screen.getByTestId("api-usage-panel");
-		expect(usagePanel).toContainElement(await screen.findByTestId("account-cost-panel"));
+		expect(screen.queryByTestId("api-usage-panel")).not.toBeInTheDocument();
 		expect(screen.queryByTestId("api-trend-panel")).not.toBeInTheDocument();
 		expect(screen.queryByText("Usage Trend")).not.toBeInTheDocument();
-	});
-
-	it("lets the donut use the full usage panel width when no trend data is available", async () => {
-		renderApiDetail({
-			trends: createApiKeyTrends({ cost: [], tokens: [] }),
-			usage7Day: createApiKeyUsage7Day({
-				accountCosts: [{ accountId: "acc-1", email: "a@example.com", costUsd: 0.12, isDeleted: false }],
-				totalCostUsd: 0.12,
-			}),
-		});
-
-		const donutWrapper = (await screen.findByTestId("account-cost-panel")).parentElement;
-		expect(donutWrapper).not.toHaveClass("lg:w-[25%]");
-		expect(donutWrapper).not.toHaveClass("lg:pr-4");
 	});
 
 	it("names the accumulated trend switch for assistive technology", () => {
