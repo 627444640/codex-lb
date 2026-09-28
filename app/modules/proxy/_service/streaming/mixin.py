@@ -299,7 +299,6 @@ from app.modules.proxy._service.support import (
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
-    OUTPUT_DELTA_EVENT_TYPES,
     TERMINAL_EVENT_TYPES,
     ResponseTiming,
     _ApiKeyReservationTouchState,
@@ -313,6 +312,7 @@ from app.modules.proxy._service.support import (
     _WebSocketUpstreamControl,
     finish_response_timing,
     observe_output_timing,
+    observe_verbatim_output_timing,
 )
 from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
@@ -768,10 +768,7 @@ class _StreamingMixin(_StreamingRetryMixin):
             async for line in iterator:
                 event_observed_at = time.monotonic()
                 if verbatim_type := _verbatim_relay_event_type(line, latency_first_token_ms, ttft_reasoning_deltas):
-                    if verbatim_type in OUTPUT_DELTA_EVENT_TYPES:
-                        observe_output_timing(
-                            timings, verbatim_type, parse_sse_data_json(line), observed_at=event_observed_at
-                        )
+                    observe_verbatim_output_timing(timings, verbatim_type, line, observed_at=event_observed_at)
                     await _touch_api_key_reservation()
                     if verbatim_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                         saw_text_delta = settlement.downstream_text_visible = True

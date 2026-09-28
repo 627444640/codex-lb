@@ -48154,10 +48154,11 @@ def test_normalize_stream_payload_for_http_block_still_rewrites_error_envelopes_
 
 
 @pytest.mark.asyncio
-async def test_stream_with_retry_relays_unmodified_canonical_delta_frames_verbatim(monkeypatch):
-    # Canonically framed delta frames retain upstream bytes. The deployed
-    # output-timing extension also parses text deltas to count qualified output
-    # chunks; that observation must not re-encode the bytes or change settlement.
+@pytest.mark.parametrize("delta_count", [1, 256])
+async def test_stream_with_retry_relays_unmodified_canonical_delta_frames_verbatim(monkeypatch, delta_count):
+    # Nonempty sample counts retain their meaning without decoding every delta.
+    # The observation must not re-encode upstream bytes or change settlement.
+    from app.modules.proxy._service import response_timing as timing_module
     from app.modules.proxy._service.streaming import mixin as streaming_mixin_module
 
     settings = _make_proxy_settings()
@@ -48174,7 +48175,9 @@ async def test_stream_with_retry_relays_unmodified_canonical_delta_frames_verbat
     )
     monkeypatch.setattr(service, "_ensure_fresh_with_budget", AsyncMock(return_value=account))
     mixin_parse = MagicMock(wraps=streaming_mixin_module.parse_sse_data_json)
+    fallback_parse = MagicMock(wraps=timing_module.parse_sse_data_json)
     monkeypatch.setattr(streaming_mixin_module, "parse_sse_data_json", mixin_parse)
+    monkeypatch.setattr(timing_module, "parse_sse_data_json", fallback_parse)
 
     verbatim_delta = (
         'event: response.output_text.delta\ndata: {"type": "response.output_text.delta", "delta": "안녕 upstream"}\n\n'
@@ -48183,7 +48186,8 @@ async def test_stream_with_retry_relays_unmodified_canonical_delta_frames_verbat
     async def fake_core_stream_responses(*_args: object, **_kwargs: object):
         yield 'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_verbatim"}}\n\n'
         yield 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"a"}\n\n'
-        yield verbatim_delta
+        for _ in range(delta_count):
+            yield verbatim_delta
         yield (
             'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_verbatim",'
             '"usage":{"input_tokens":3,"output_tokens":5}}}\n\n'
@@ -48208,19 +48212,17 @@ async def test_stream_with_retry_relays_unmodified_canonical_delta_frames_verbat
         )
     ]
 
-    # Both output deltas are observed for output timing, alongside the two
-    # lifecycle frames. Preserve the already-deployed timing contract.
-    assert mixin_parse.call_count == 4
+    # Created, first TTFT output, completed: independent of the delta count.
+    assert mixin_parse.call_count == 3
+    assert fallback_parse.call_count == 0
     # Upstream bytes are preserved exactly: raw UTF-8 and upstream key
     # spacing, not the ensure_ascii canonical re-encode.
-    assert chunks[2] == verbatim_delta
+    assert chunks[2:-1] == [verbatim_delta] * delta_count
     assert await service.drain_persistence_tasks(timeout_seconds=1)
     assert request_logs.calls[0]["status"] == "success"
-    assert request_logs.calls[0]["output_delta_count"] == 2
-    assert request_logs.calls[0]["latency_first_output_ms"] is not None
     assert request_logs.calls[0]["input_tokens"] == 3
     assert request_logs.calls[0]["output_tokens"] == 5
-    assert request_logs.calls[0]["output_delta_count"] == 2
+    assert request_logs.calls[0]["output_delta_count"] == delta_count + 1
     assert request_logs.calls[0]["latency_first_output_ms"] is not None
     assert request_logs.calls[0]["latency_first_output_ms"] == request_logs.calls[0]["latency_first_token_ms"]
 
