@@ -9,6 +9,6 @@
 ## 2. Scope and validation
 
 - [x] 2.1 Remove model-source hardening and entrypoint relocation; publish independently verified PRs and link them.
-- [ ] 2.2 Run affected backend/frontend checks, lint, typing and strict OpenSpec validation; record actual outcomes.
-- [ ] 2.3 Push follow-up commits, update PR scope and comment with evidence; read back GitHub state.
+- [x] 2.2 Run affected backend/frontend checks, lint, typing and strict OpenSpec validation; record actual outcomes.
+- [x] 2.3 Push follow-up commits, update PR scope and comment with evidence; read back GitHub state.
 - [ ] 2.4 Obtain maintainer decisions on metric definitions and the #2112 landing order before readiness.
