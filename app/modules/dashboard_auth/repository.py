@@ -5,6 +5,7 @@ from collections.abc import Callable
 from sqlalchemy import or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deployment_auth_policy import get_deployment_auth_policy
 from app.core.exceptions import DashboardSettingsConflictError
 from app.db.models import DashboardSettings
 from app.modules.settings.repository import SettingsRepository
@@ -86,6 +87,7 @@ class DashboardAuthRepository:
 
     async def clear_password_and_totp(self) -> DashboardSettings:
         def _mutate(row: DashboardSettings) -> None:
+            get_deployment_auth_policy().validate_password_removal()
             row.password_hash = None
             row.bootstrap_token_encrypted = None
             row.bootstrap_token_hash = None

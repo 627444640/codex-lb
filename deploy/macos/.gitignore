@@ -16,6 +16,7 @@
 !/tests/test_core.py
 !/tests/test_manage.py
 !/tests/integration_launchagent.py
+!/tests/integration_auth_policy.py
 /examples/*
 !/examples/deployment.example.json
 !/examples/versions.example.json

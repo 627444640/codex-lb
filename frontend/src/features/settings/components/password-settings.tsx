@@ -13,9 +13,10 @@ type PasswordDialog = "setup" | "change" | "remove" | "verify" | null;
 
 export type PasswordSettingsProps = {
   disabled?: boolean;
+  passwordRequiredByDeployment?: boolean;
 };
 
-export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
+export function PasswordSettings({ disabled = false, passwordRequiredByDeployment = false }: PasswordSettingsProps) {
   const { t } = useTranslation();
   const passwordRequired = useAuthStore((s) => s.passwordRequired);
   const authMode = useAuthStore((s) => s.authMode);
@@ -53,6 +54,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
             <div>
               <h3 className="text-sm font-semibold">{t("settings.password.title")}</h3>
               <p className="text-xs text-muted-foreground">{statusMessage}</p>
+              {passwordRequiredByDeployment ? <p className="text-xs text-muted-foreground">{t("settings.deploymentAuth.passwordRequired")}</p> : null}
             </div>
           </div>
 
@@ -74,7 +76,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                   size="sm"
                   variant="outline"
                   className="h-8 text-xs text-destructive hover:text-destructive"
-                  disabled={lock}
+                  disabled={lock || passwordRequiredByDeployment}
                   onClick={() => setActiveDialog("remove")}
                 >
                   {t("settings.password.actions.remove")}
@@ -119,7 +121,7 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
       <PasswordRemoveDialog
         open={activeDialog === "remove"}
         onOpenChange={closeIfMatches("remove")}
-        disabled={disabled}
+        disabled={disabled || passwordRequiredByDeployment}
       />
       <PasswordVerifyDialog
         open={activeDialog === "verify"}

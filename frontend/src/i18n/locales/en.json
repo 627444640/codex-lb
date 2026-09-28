@@ -1,4 +1,6 @@
 {
+  "settings.deploymentAuth.passwordRequired": "This deployment requires an administrator password. You can change it, but cannot remove it.",
+  "settings.deploymentAuth.apiKeyRequired": "This deployment requires API key authentication to remain enabled.",
   "usage.unknown": "Unknown",
   "usage.statusLabel": "Usage completeness",
   "usage.status.complete": "Complete usage",

@@ -411,7 +411,14 @@ class Settings(BaseSettings):
     )
     firewall_ip_cache_ttl_seconds: int = Field(default=30, gt=0)
     dashboard_auth_mode: DashboardAuthMode = DashboardAuthMode.STANDARD
+    deployment_auth_policy: Literal["standard", "managed"] = "standard"
     dashboard_trust_loopback_host_header_for_long_sessions: bool = False
+
+    @model_validator(mode="after")
+    def _validate_managed_auth_mode(self) -> "Settings":
+        if self.deployment_auth_policy == "managed" and self.dashboard_auth_mode != DashboardAuthMode.STANDARD:
+            raise ValueError("Managed deployment authentication requires standard dashboard authentication mode")
+        return self
 
     def upstream_websocket_proxy_env(self) -> Mapping[str, str | None]:
         return _effective_environ()

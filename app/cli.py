@@ -26,6 +26,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    auth_policy = subparsers.add_parser("auth-policy", help="Inspect deployment authentication policy.")
+    auth_checks = auth_policy.add_subparsers(dest="auth_policy_command", required=True)
+    auth_check = auth_checks.add_parser("check", help="Read authentication state without starting the server.")
+    auth_check.add_argument("--json", action="store_true", required=True, help="Emit the versioned JSON contract.")
+
     codex_sessions = subparsers.add_parser(
         "codex-sessions",
         help="Manage local Codex session metadata.",
@@ -85,6 +90,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
+
+    if args.command == "auth-policy":
+        from app.deployment_auth_check import check_auth_policy
+
+        raise SystemExit(check_auth_policy())
 
     if args.command == "codex-sessions":
         if args.codex_sessions_command == "retag":

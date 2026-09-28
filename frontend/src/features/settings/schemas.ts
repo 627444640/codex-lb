@@ -104,6 +104,12 @@ export const DashboardSettingsSchema = z
     totpRequiredOnLogin: z.boolean(),
     totpConfigured: z.boolean(),
     apiKeyAuthEnabled: z.boolean(),
+    deploymentAuthPolicy: z.object({
+      mode: z.enum(["standard", "managed"]),
+      adminPasswordRequired: z.boolean(),
+      apiKeyAuthRequired: z.boolean(),
+      guestPassword: z.literal("optional"),
+    }).optional(),
     hideUpstreamQuotaFromApiKeys: z.boolean().optional().default(false),
     limitWarmupEnabled: z.boolean().optional().default(false),
     limitWarmupWindows: LimitWarmupWindowsSchema.optional().default("both"),

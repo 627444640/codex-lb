@@ -23,7 +23,7 @@ import time
 import urllib.error
 import urllib.request
 
-from common import atomic_write, operation_lock, assert_https_ready, read_auth_state
+from common import atomic_write, operation_lock, assert_https_ready, read_policy_state
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG_PATH = ROOT / "config/deployment.json"
@@ -318,14 +318,13 @@ def status():
         result["database"] = {"state": "unknown", "error": type(exc).__name__}
     marker = (ROOT / "state/initialized.json").is_file()
     try:
-        auth = read_auth_state(ROOT)
-        auth = {key: bool(auth[key]) for key in ("password_configured", "api_key_auth_enabled", "guest_access_enabled")}
-        result["authentication"] = {"state": "known", **auth}
-        allowed = (
-            marker and auth["password_configured"] and auth["api_key_auth_enabled"] and not auth["guest_access_enabled"]
-        )
+        policy = read_policy_state(ROOT)
+        result["authentication"] = {"state": "known", **policy["state"]}
+        result["authentication_policy"] = policy
+        allowed = marker and policy["allowed"]
     except Exception as exc:
         result["authentication"] = {"state": "unknown", "error": type(exc).__name__}
+        result["authentication_policy"] = {"allowed": None, "violations": ["policy_state_unknown"]}
         allowed = None
     result["readiness"] = {
         "initialized_marker": marker,
