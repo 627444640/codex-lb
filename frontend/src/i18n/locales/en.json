@@ -1433,5 +1433,60 @@
   "dashboard.generationTpsStatus.invalid_sample": "TPS unavailable: timing or usage values are inconsistent.",
   "dashboard.generationTpsStatus.incomplete": "TPS unavailable: request did not complete successfully.",
   "reports.charts.tpsSamples": "{{count}} qualified samples · observed output-speed estimates",
-  "reports.charts.noQualifiedSpeedSamples": "No qualified output-speed samples. Legacy, incomplete and insufficient samples are excluded."
+  "reports.charts.noQualifiedSpeedSamples": "No qualified output-speed samples. Legacy, incomplete and insufficient samples are excluded.",
+  "statusPage": {
+    "title": "Email alerts and announcements",
+    "description": "Manage notifications here. The separate status page only displays published information.",
+    "emailEnabled": "Enable email alerts",
+    "emailHelp": "Send on confirmed incidents and recovery. Unchanged incidents stay quiet.",
+    "host": "SMTP server",
+    "sender": "Sender address",
+    "username": "SMTP username",
+    "recipients": "Recipients (comma separated)",
+    "port": "Port",
+    "encryption": "Encryption",
+    "password": "SMTP authorization code",
+    "passwordKept": "Already configured; leave blank to keep it",
+    "passwordNeeded": "Enter the mailbox SMTP authorization code",
+    "passwordHelp": "Stored privately on the server and never returned by the API.",
+    "saveEmail": "Save email settings",
+    "editNotice": "Edit announcement",
+    "newNotice": "New announcement",
+    "noticeTitle": "Announcement title",
+    "noticeBody": "Announcement body",
+    "noticeLevel": "Type",
+    "level": {
+      "info": "Notice",
+      "maintenance": "Maintenance",
+      "warning": "Warning"
+    },
+    "starts": "Start displaying (UTC+8)",
+    "ends": "Stop displaying (optional, UTC+8)",
+    "invalidNotice": "Enter a title, body and valid start/end times.",
+    "saveDraft": "Save draft",
+    "publish": "Publish announcement",
+    "withdraw": "Withdraw",
+    "saved": "Saved",
+    "retry": "Retry",
+    "loading": "Loading status settings…",
+    "disconnected": "The status service is not connected yet.",
+    "announcements": "Public announcements",
+    "edit": "Edit",
+    "noNotices": "No announcements yet.",
+    "deliveries": "Alert delivery history",
+    "noEvents": "No alert events yet.",
+    "state": {
+      "draft": "Draft",
+      "published": "Published / scheduled",
+      "withdrawn": "Withdrawn"
+    },
+    "delivery": {
+      "disabled": "Email disabled",
+      "pending": "Queued",
+      "retry": "Retry scheduled",
+      "failed": "Failed",
+      "sent": "Accepted by SMTP",
+      "superseded": "Recovered; old alert cancelled"
+    }
+  }
 }

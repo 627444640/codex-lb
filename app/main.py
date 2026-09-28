@@ -101,6 +101,7 @@ from app.modules.reports import api as reports_api
 from app.modules.request_logs import api as request_logs_api
 from app.modules.runtime import api as runtime_api
 from app.modules.settings import api as settings_api
+from app.modules.status_page import api as status_page_api
 from app.modules.sticky_sessions import api as sticky_sessions_api
 from app.modules.sticky_sessions.cleanup_scheduler import (
     _abandoned_bridge_retention_seconds,
@@ -838,6 +839,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_api.router)
     app.include_router(dashboard_auth_api.router)
     app.include_router(settings_api.router)
+    app.include_router(status_page_api.router)
     app.include_router(firewall_api.router)
     app.include_router(fleet_api.router)
     app.include_router(sticky_sessions_api.router)

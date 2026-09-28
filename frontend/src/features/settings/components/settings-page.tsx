@@ -21,6 +21,7 @@ import { PasswordSettings } from "@/features/settings/components/password-settin
 import { ResetCreditSettings } from "@/features/settings/components/reset-credit-settings";
 import { RoutingSettings } from "@/features/settings/components/routing-settings";
 import { SessionSettings } from "@/features/settings/components/session-settings";
+import { StatusPageSettings } from "@/features/settings/components/status-page-settings";
 import { SettingsSkeleton } from "@/features/settings/components/settings-skeleton";
 import { UpstreamProxySettings } from "@/features/settings/components/upstream-proxy-settings";
 import { StickySessionsSection } from "@/features/sticky-sessions/components/sticky-sessions-section";
@@ -115,6 +116,7 @@ export function SettingsPage() {
 
           <div className="space-y-4">
             <AppearanceSettings />
+            {canWrite ? <StatusPageSettings /> : null}
             <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             {canWrite ? (

@@ -1433,5 +1433,60 @@
   "dashboard.generationTpsStatus.invalid_sample": "无法估算 TPS：时间或用量记录不一致。",
   "dashboard.generationTpsStatus.incomplete": "无法估算 TPS：请求未成功完成。",
   "reports.charts.tpsSamples": "{{count}} 个合格样本 · 网关观测的输出速度估算",
-  "reports.charts.noQualifiedSpeedSamples": "暂无合格的输出速度样本。旧口径估算、未完成请求及采样不足的请求不参与统计。"
+  "reports.charts.noQualifiedSpeedSamples": "暂无合格的输出速度样本。旧口径估算、未完成请求及采样不足的请求不参与统计。",
+  "statusPage": {
+    "title": "邮件提醒与公告",
+    "description": "在此统一管理通知；独立状态页只展示已发布的信息。",
+    "emailEnabled": "启用邮件提醒",
+    "emailHelp": "异常确认及恢复时发送；相同故障持续时不重复通知。",
+    "host": "SMTP 服务器",
+    "sender": "发件邮箱",
+    "username": "SMTP 用户名",
+    "recipients": "收件邮箱（多个地址以逗号分隔）",
+    "port": "端口",
+    "encryption": "连接加密",
+    "password": "SMTP 授权码",
+    "passwordKept": "已配置，留空则保留现有授权码",
+    "passwordNeeded": "输入邮箱的 SMTP 授权码",
+    "passwordHelp": "仅保存在服务端私有文件中，接口不会回传授权码。",
+    "saveEmail": "保存邮件设置",
+    "editNotice": "编辑公告",
+    "newNotice": "新建公告",
+    "noticeTitle": "公告标题",
+    "noticeBody": "公告正文",
+    "noticeLevel": "公告类型",
+    "level": {
+      "info": "通知",
+      "maintenance": "维护",
+      "warning": "提醒"
+    },
+    "starts": "开始显示（UTC+8）",
+    "ends": "结束显示（选填，UTC+8）",
+    "invalidNotice": "请填写标题、正文，以及有效的开始和结束时间。",
+    "saveDraft": "保存草稿",
+    "publish": "发布公告",
+    "withdraw": "撤下公告",
+    "saved": "已保存",
+    "retry": "重试",
+    "loading": "正在读取通知设置…",
+    "disconnected": "尚未连接状态服务。",
+    "announcements": "页面公告",
+    "edit": "编辑",
+    "noNotices": "暂无公告。",
+    "deliveries": "邮件投递记录",
+    "noEvents": "暂无告警事件。",
+    "state": {
+      "draft": "草稿",
+      "published": "已发布／定时发布",
+      "withdrawn": "已撤下"
+    },
+    "delivery": {
+      "disabled": "邮件未启用",
+      "pending": "等待投递",
+      "retry": "等待重试",
+      "failed": "投递失败",
+      "sent": "SMTP 已接受",
+      "superseded": "已恢复，旧告警取消投递"
+    }
+  }
 }
