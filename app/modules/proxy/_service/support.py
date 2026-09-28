@@ -33,17 +33,17 @@ from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
 from app.core.upstream_proxy import ResolvedUpstreamRoute
 from app.core.utils.locks import fast_lock
-from app.core.utils.sse import sse_event_type_from_block
+from app.core.utils.sse import parse_sse_data_json, sse_event_type_from_block
 from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyRequestUsageBudget,
     ApiKeyUsageReservationData,
 )
+from app.modules.proxy._service.response_timing import OUTPUT_DELTA_EVENT_TYPES, has_non_reasoning_output
 from app.modules.proxy._service.response_timing import OUTPUT_EVENT_TYPES as OUTPUT_EVENT_TYPES
 from app.modules.proxy._service.response_timing import TERMINAL_EVENT_TYPES as TERMINAL_EVENT_TYPES
 from app.modules.proxy._service.response_timing import ResponseTiming as ResponseTiming
-from app.modules.proxy._service.response_timing import has_non_reasoning_output
 from app.modules.proxy._service.response_timing import observe_output_timing as observe_output_timing
 from app.modules.proxy.affinity import _AffinityPolicy
 from app.modules.proxy.affinity_observation import AffinityObservation
@@ -395,6 +395,17 @@ def _verbatim_relay_event_type(
     event_type = sse_event_type_from_block(line)
     if event_type is None or event_type in _MUST_PARSE_STREAM_EVENT_TYPES:
         return None
+    return event_type
+
+
+def _observe_verbatim_response_output(state: _StreamResponseTiming, line: str, now: float) -> str | None:
+    """Count classified output frames without decoding canonical JSON deltas."""
+    event_type = _verbatim_relay_event_type(line, state.latency_first_token_ms, state.ttft_reasoning_deltas)
+    if event_type in OUTPUT_EVENT_TYPES and state.latency_first_output_ms is None:
+        # Validate the first content anchor once, preserving the verbatim frame.
+        observe_output_timing(state, event_type, parse_sse_data_json(line), observed_at=now)
+    elif event_type in OUTPUT_DELTA_EVENT_TYPES:
+        state.output_delta_count += 1
     return event_type
 
 

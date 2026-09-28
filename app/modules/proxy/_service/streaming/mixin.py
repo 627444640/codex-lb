@@ -285,7 +285,6 @@ from app.modules.proxy._service.streaming.helpers import (
     _select_account_with_budget_for_stream as _select_account_with_budget_for_stream_helper,
 )
 from app.modules.proxy._service.streaming.helpers import _settle_background_ack as _settle_bg_ack
-from app.modules.proxy._service.streaming.helpers import _stream_responses as _stream_responses_helper
 from app.modules.proxy._service.streaming.protocol import _StreamingServiceProtocol
 from app.modules.proxy._service.streaming.retry import _StreamingRetryMixin
 from app.modules.proxy._service.support import (
@@ -293,18 +292,16 @@ from app.modules.proxy._service.support import (
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
-    OUTPUT_EVENT_TYPES,
     _ApiKeyReservationTouchState,
     _finalize_ttft_latency_ms,
     _observe_response_output_timing,
+    _observe_verbatim_response_output,
     _RequestLogFailureMetadata,
     _RetryableStreamError,
     _StreamResponseTiming,
     _StreamSettlement,
     _TerminalStreamError,
-    _verbatim_relay_event_type,
     _WebSocketUpstreamControl,
-    observe_output_timing,
 )
 from app.modules.proxy._service.support import (
     _HTTPBridgeOwnerForward as _HTTPBridgeOwnerForward,
@@ -431,12 +428,45 @@ def _facade() -> Any:
     return sys.modules["app.modules.proxy.service"]
 
 
+_REQUEST_TRANSPORT_HTTP = "http"
+
+
 class _StreamingMixin(_StreamingRetryMixin):
     _handle_stream_error = _handle_stream_error_helper
     _resolve_upstream_route_for_account = _resolve_upstream_route_for_account_helper
     _select_account_with_budget_for_stream = _select_account_with_budget_for_stream_helper
 
-    stream_responses = _stream_responses_helper
+    def stream_responses(
+        self,
+        payload: ResponsesRequest,
+        headers: Mapping[str, str],
+        *,
+        codex_session_affinity: bool = False,
+        propagate_http_errors: bool = False,
+        openai_cache_affinity: bool = False,
+        api_key: ApiKeyData | None = None,
+        api_key_reservation: ApiKeyUsageReservationData | None = None,
+        suppress_text_done_events: bool = False,
+        request_transport: str = _REQUEST_TRANSPORT_HTTP,
+        client_ip: str | None = None,
+        enforce_openai_sdk_contract: bool = True,
+    ) -> AsyncIterator[str]:
+        proxy = cast(_StreamingServiceProtocol, self)
+        _maybe_log_proxy_request_payload("stream", payload, headers)
+        filtered = _facade().filter_inbound_headers(headers)
+        return proxy._stream_with_retry(
+            payload,
+            filtered,
+            codex_session_affinity=codex_session_affinity,
+            propagate_http_errors=propagate_http_errors,
+            openai_cache_affinity=openai_cache_affinity,
+            api_key=api_key,
+            api_key_reservation=api_key_reservation,
+            suppress_text_done_events=suppress_text_done_events,
+            request_transport=request_transport,
+            client_ip=client_ip,
+            enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+        )
 
     async def _stream_once(
         self,
@@ -697,7 +727,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                             _facade()._SECURITY_WORK_AUTHORIZATION_REQUIRED_CODE,
                             upstream_error,
                         )
-                    if allow_retry and _facade()._should_retry_stream_error(code):
+                    if allow_retry and _facade()._should_retry_stream_error(code, error_message):
                         raise _RetryableStreamError(code, upstream_error, exclude_account=True)
                 terminal_stream_error = _TerminalStreamError(
                     error_code or code,
@@ -752,13 +782,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 raise terminal_stream_error
             async for line in iterator:
                 observed_at = clock.monotonic()
-                if verbatim_type := _verbatim_relay_event_type(
-                    line, output_timing.latency_first_token_ms, output_timing.ttft_reasoning_deltas
-                ):
-                    if verbatim_type in OUTPUT_EVENT_TYPES:
-                        observe_output_timing(
-                            output_timing, verbatim_type, parse_sse_data_json(line), observed_at=observed_at
-                        )
+                if verbatim_type := _observe_verbatim_response_output(output_timing, line, observed_at):
                     await _touch_api_key_reservation()
                     if verbatim_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                         saw_text_delta = settlement.downstream_text_visible = True
@@ -958,7 +982,7 @@ class _StreamingMixin(_StreamingRetryMixin):
             )
             error_message = error.message if error else None
             settlement.record_success = False
-            settlement.account_health_error = _facade()._should_penalize_stream_error(error_code)
+            settlement.account_health_error = _facade()._should_penalize_stream_error(error_code, error_message)
             raise
         except UpstreamProxyRouteError as exc:
             route_fail_closed_reason = exc.reason

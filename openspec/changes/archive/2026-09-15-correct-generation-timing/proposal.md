@@ -9,7 +9,6 @@ Request-list and report TPS currently use total request latency and a reasoning-
 - Persist upstream terminal timing independently and capture non-reasoning output evidence at upstream observation.
 - Qualify backend TPS estimates and distinguish historical or unavailable samples.
 - Use qualified samples and nullable medians in request lists and reports.
-- Preserve optional source reasoning/timing evidence and parse fragmented SSE metrics safely.
 
 ## Impact
 

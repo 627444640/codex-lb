@@ -217,10 +217,11 @@ class _RequestLogMixin:
         # Start-to-upstream-terminal latency stamped when the terminal frame was
         # parsed, before downstream delivery, terminal bookkeeping, settlement
         # and cleanup. Persisted separately from total latency; it also ends
-        # the throughput sample's span. For routing only, a missing terminal
-        # (no terminal frame was parsed) falls back to
-        # ``latency_ms``; such rows are error rows and are not sampled.
+        # the throughput sample's span unless a routing-only fallback is supplied.
+        # Missing receipt evidence remains null in persistence.
         latency_upstream_terminal_ms: int | None = None,
+        # Routing-only fallback for finalizers without a receipt stamp; never persisted.
+        routing_generation_end_ms: int | None = None,
     ) -> None:
         task = scheduler_for(self).create_task(
             self._persist_request_log(
@@ -344,13 +345,17 @@ class _RequestLogMixin:
             queued_wait_ms=queued_wait_ms,
             retried=upstream_retried,
         )
+        if routing_generation_end_ms is None:
+            routing_generation_end_ms = (
+                latency_ms if latency_upstream_terminal_ms is None else latency_upstream_terminal_ms
+            )
         record_tps_sample(
             balancer,
             account_id=account_id,
             status=status,
             request_kind=request_kind,
             model=model,
-            latency_ms=latency_ms if latency_upstream_terminal_ms is None else latency_upstream_terminal_ms,
+            latency_ms=routing_generation_end_ms,
             latency_first_token_ms=latency_first_token_ms,
             output_tokens=output_tokens,
             queued_wait_ms=queued_wait_ms,

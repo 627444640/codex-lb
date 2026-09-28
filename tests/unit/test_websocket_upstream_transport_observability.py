@@ -241,6 +241,7 @@ async def test_websocket_finalizer_records_bridge_upstream_transport_and_metric(
             "latency_bridge_queue_wait_ms": None,
             "latency_upstream_send_ms": None,
             "latency_upstream_terminal_ms": service.request_log_calls[0]["latency_upstream_terminal_ms"],
+            "routing_generation_end_ms": service.request_log_calls[0]["routing_generation_end_ms"],
             "upstream_retried": False,
             "prewarm_status": None,
             "prewarm_latency_ms": None,
@@ -260,6 +261,8 @@ async def test_websocket_finalizer_records_bridge_upstream_transport_and_metric(
         }
     ]
     assert service.request_log_calls[0]["latency_upstream_terminal_ms"] is None
+    routing_end_ms = cast(int, service.request_log_calls[0]["routing_generation_end_ms"])
+    assert 0 <= routing_end_ms <= cast(int, service.request_log_calls[0]["latency_ms"])
     assert metric_calls == [
         {
             "downstream_transport": "http",

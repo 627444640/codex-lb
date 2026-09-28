@@ -2,7 +2,7 @@
 
 - [x] 1.1 Preserve total latency and routing semantics; capture first non-reasoning output and terminal observations using the owner clock.
 - [x] 1.2 Add nullable request-log fields on the current migration head, with upgrade/downgrade and historical-row coverage.
-- [x] 1.3 Preserve optional source usage and safely parse source SSE/timing values.
+- [x] 1.3 Source usage/SSE hardening was extracted to independent PR #2521 after review.
 
 ## 2. Expose qualified metrics
 

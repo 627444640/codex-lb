@@ -6406,6 +6406,7 @@ class _WebSocketMixin:
         # Only a received final terminal supplies generation evidence. Total
         # latency below retains settlement and downstream completion time.
         upstream_terminal_at = request_state.upstream_terminal_at
+        routing_terminal_at = upstream_terminal_at if upstream_terminal_at is not None else clock_for(proxy).monotonic()
         # First-token clock start: the TTFT cohort sample is measured from the
         # ``response.create`` send, so bridge pre-send work (session lookup,
         # reconnect, prewarm, image inlining, slimming) that ``started_at``
@@ -6596,6 +6597,7 @@ class _WebSocketMixin:
                     latency_response_create_gate_wait_ms=request_state.latency_response_create_gate_wait_ms,
                     latency_bridge_queue_wait_ms=request_state.latency_bridge_queue_wait_ms,
                     latency_upstream_send_ms=latency_upstream_send_ms,
+                    routing_generation_end_ms=max(0, int((routing_terminal_at - request_state.started_at) * 1000)),
                     latency_upstream_terminal_ms=(
                         None
                         if upstream_terminal_at is None

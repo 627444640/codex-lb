@@ -602,7 +602,8 @@ async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_ra
     assert row["latency_upstream_terminal_ms"] == 1000
     assert row["latency_first_token_ms"] == 125
     assert row["latency_first_output_ms"] == 250
-    assert row["output_delta_count"] == 2
+    # Canonical output-event counts include empty frames without JSON inspection.
+    assert row["output_delta_count"] == 3
     assert chunks[1] == raw_first
     assert chunks[3] == raw_second
 

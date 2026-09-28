@@ -1,3 +1,8 @@
+> Historical validation below applies to the original September 15 candidate.
+> The September 28 review repair removes source hardening and entrypoint relocation.
+> Current validation and unresolved definitions are tracked in
+> `openspec/changes/address-generation-timing-review/`.
+
 # Context
 
 This is a focused port of the public timing fix onto current main. The upstream already separates terminal timing for routing throughput from total request latency; preserve both that distinction and the owner clock facade. Persist the terminal anchor for dashboard/report calculations, while routing weights retain their existing sampling definition.

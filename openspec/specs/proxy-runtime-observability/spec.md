@@ -1386,7 +1386,7 @@ SSE, WebSocket and HTTP bridge request logs MUST capture each upstream event's o
 
 ### Requirement: Output speed sample evidence is preserved
 
-New subscription-backed streaming logs MUST persist `latency_first_output_ms`, the first observed non-reasoning content time relative to the existing attempt/request-state anchor, and `output_delta_count`, the count of observed nonempty non-reasoning output chunks. Text, refusal and actual tool arguments/input MUST qualify; reasoning, metadata-only lifecycle events and empty deltas MUST NOT. These fields MUST remain nullable for historical and unsupported-source logs. Existing TTFT MAY still include visible reasoning or supported tool-start events and MUST be described as gateway-observed first output rather than model-internal or client end-to-end timing.
+New subscription-backed streaming logs MUST persist `latency_first_output_ms`, the first observed non-reasoning content time relative to the existing attempt/request-state anchor, and `output_delta_count`, the count of observed non-reasoning output events. After establishing the first content anchor, canonical output-delta frames MUST be counted by their event type without decoding their payloads. Text, refusal and actual tool arguments/input MUST qualify; reasoning and metadata-only lifecycle events MUST NOT qualify. Parsed empty deltas MUST NOT establish the first output anchor. These fields MUST remain nullable for historical and unsupported-source logs. Existing TTFT MAY still include visible reasoning or supported tool-start events and MUST be described as gateway-observed first output rather than model-internal or client end-to-end timing.
 
 #### Scenario: Reasoning precedes actual output
 
@@ -1421,26 +1421,3 @@ The request-log API MUST expose nullable `generation_tps` and a `generation_tps_
 - **THEN** the old TTFT-based formula may produce a value marked `legacy_estimate`
 - **AND** this value is excluded from qualified daily TPS medians
 - **AND** missing reasoning usage is not silently interpreted as zero
-
-### Requirement: Optional source metrics cannot interrupt valid forwarding
-
-Source usage parsing MUST preserve reported nonnegative integer reasoning tokens and reject boolean or database-integer-out-of-range token values. Missing reasoning details MUST remain unknown. Optional timing parsing MUST reject non-finite, negative, boolean, overflowing and database-integer-out-of-range values, including overflow when adding individually finite timings, without interrupting an otherwise valid upstream response. Streamed usage/metrics MUST parse complete SSE events, combining multiple data lines and preserving framing across chunk-split CRLF boundaries. Forwarded bytes MUST remain unchanged.
-
-#### Scenario: Overflowing timing sum is ignored
-
-- **GIVEN** individually finite source TTFT and generation timing whose sum overflows
-- **WHEN** the response is parsed
-- **THEN** optional timing remains absent and response forwarding completes normally
-
-#### Scenario: Multi-line usage event split at CRLF
-
-- **GIVEN** a valid SSE usage/metrics event contains several data lines and a network chunk ends between CR and LF
-- **WHEN** stream parsing completes
-- **THEN** usage, reasoning and timing match the equivalent single-chunk event
-
-#### Scenario: Unrepresentable source token count
-
-- **GIVEN** an upstream reports a token count outside the request-log database integer range
-- **WHEN** usage is parsed
-- **THEN** that usage is treated as unavailable rather than causing request-log persistence to overflow
-- **AND** the existing fail-closed behavior for API-key limits requiring usage is preserved

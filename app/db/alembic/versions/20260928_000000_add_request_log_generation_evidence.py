@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "20260915_010000_add_request_log_generation_evidence"
-down_revision = "20260913_000000_add_oidc_provider_flow"
+revision = "20260928_000000_add_request_log_generation_evidence"
+down_revision = "20260918_000000_merge_scim_and_overflow_heads"
 branch_labels = None
 depends_on = None
 
