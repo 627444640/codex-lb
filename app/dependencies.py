@@ -43,6 +43,7 @@ from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.request_logs.service import RequestLogsService
 from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import SettingsService
+from app.modules.status_page.service import StatusPageService
 from app.modules.sticky_sessions.service import StickySessionsService
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 from app.modules.usage.service import UsageService
@@ -72,6 +73,17 @@ class UsageContext:
 @dataclass(slots=True)
 class OauthContext:
     service: OauthService
+
+
+@dataclass(slots=True)
+class StatusPageContext:
+    service: StatusPageService
+
+
+def get_status_page_context() -> StatusPageContext:
+    from app.core.config.settings import get_settings
+
+    return StatusPageContext(service=StatusPageService(get_settings().data_dir / "status-monitor.json"))
 
 
 @dataclass(slots=True)
