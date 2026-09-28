@@ -46,3 +46,22 @@ Stored historical amounts and price-version strings remain readable for response
 Use the existing trusted-proxy resolver at each client entry, then pass its result explicitly through the service and log writer. Six auxiliary operation families now follow the same contract as Responses: transcription, file registration/finalization, thread goals, control operations and explicit warmup. Purely scheduled work has no client address. HTTP bridge forwarding retains its authenticated original-IP context. Arbitrary forwarded headers from untrusted peers cannot override the socket address.
 
 An IP describes the observed network source, which may be a NAT or trusted ingress address rather than a device's private interface. Admins can inspect it; guest views and search keep the existing redaction boundary. No historical IP backfill or additional migration is needed.
+
+## Internal canonical SSE observation
+
+The internal streaming observer preserves the existing nonempty-content sample
+contract while recognizing a bounded flat-object subset without JSON-object
+allocation. Empty strings remain unobserved; escaped/non-ASCII nonempty strings
+still count. Unknown, duplicate, escaped-key, nested, oversized or unusual numeric
+shapes use the existing decoder, retaining its error behavior. First-output,
+TTFT, terminal timing and the 100 ms/two-nonempty-chunk policy are unchanged.
+
+For example, reasoning at 125 ms, empty text at 200 ms, and actual output at 250
+and 750 ms still yield TTFT=125 ms, first output=250 ms and output count=2.
+Benchmarks show an observation-only benefit for supported frames and a small
+classification cost on fallback frames; they are not production speed measurements.
+See `openspec/changes/archive/2026-09-28-optimize-internal-stream-output-observation/verification.md`.
+
+This independent `feat` work is intended for later integration with status-page
+settings into internal v1.24.3. Combined integration and deployment are separate
+acceptance steps; the feature introduces no migration or release-version change.

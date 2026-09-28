@@ -42,6 +42,7 @@ from app.modules.proxy._service.response_timing import ResponseTiming as Respons
 from app.modules.proxy._service.response_timing import finish_response_timing as finish_response_timing
 from app.modules.proxy._service.response_timing import has_non_reasoning_output
 from app.modules.proxy._service.response_timing import observe_output_timing as observe_output_timing
+from app.modules.proxy._service.response_timing import observe_verbatim_output_timing as observe_verbatim_output_timing
 from app.modules.proxy.affinity import _AffinityPolicy
 from app.modules.proxy.load_balancer import (
     AccountLease,

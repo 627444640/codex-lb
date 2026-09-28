@@ -246,7 +246,28 @@ async def test_stream_responses_ttft_counts_reasoning_delta_as_first_token(monke
 
 
 @pytest.mark.asyncio
-async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_raw_frames(monkeypatch):
+@pytest.mark.parametrize(
+    ("first_payload", "has_output", "fallback_count"),
+    [
+        ('{"type":"response.output_text.delta", "delta":"你好"}', True, 0),
+        ('{"delta":""}', False, 0),
+        ('{"delta":"hello","extra":{"nested":true}}', True, 1),
+        ('{"delta":"hello","delta":""}', False, 1),
+        ('{"delta":"","delta":"hello"}', True, 1),
+        (r'{"\u0064elta":"hello"}', True, 1),
+        ('{"delta":null}', False, 1),
+        ('{"delta":"invalid",}', False, 1),
+    ],
+)
+async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_raw_frames(
+    monkeypatch, first_payload, has_output, fallback_count
+):
+    from unittest.mock import MagicMock
+
+    from app.modules.proxy._service import response_timing as timing_module
+
+    fallback_parse = MagicMock(wraps=timing_module.parse_sse_data_json)
+    monkeypatch.setattr(timing_module, "parse_sse_data_json", fallback_parse)
     settings = _make_proxy_settings()
     request_logs = _RequestLogsRecorder()
     service = ProxyService(_repo_factory(request_logs))
@@ -262,7 +283,7 @@ async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_ra
     )
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(return_value=account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
-    raw_first = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta", "delta":"你好"}\n\n'
+    raw_first = f"event: response.output_text.delta\ndata: {first_payload}\n\n"
     raw_second = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta", "delta":"!"}\n\n'
 
     async def fake_stream(*_args, **_kwargs):
@@ -291,8 +312,9 @@ async def test_stream_speed_uses_observed_events_before_cleanup_and_preserves_ra
     row = request_logs.calls[0]
     assert row["latency_ms"] == 1000
     assert row["latency_first_token_ms"] == 125
-    assert row["latency_first_output_ms"] == 250
-    assert row["output_delta_count"] == 2
+    assert row["latency_first_output_ms"] == (250 if has_output else 750)
+    assert row["output_delta_count"] == 1 + int(has_output)
+    assert fallback_parse.call_count == fallback_count
     assert chunks[1] == raw_first
     assert chunks[3] == raw_second
 

@@ -1,0 +1,72 @@
+{
+  "python": "3.13.15",
+  "platform": "Darwin arm64",
+  "iterations": 10000,
+  "repeats": 7,
+  "scope": "synthetic output observation only; negative change_percent means less time",
+  "results": [
+    {
+      "case": "short_text",
+      "frame_bytes": 209,
+      "parsed_median_us": 2.7392,
+      "fast_median_us": 1.5751,
+      "change_percent": -42.5
+    },
+    {
+      "case": "empty_text",
+      "frame_bytes": 172,
+      "parsed_median_us": 2.631,
+      "fast_median_us": 1.1257,
+      "change_percent": -57.21
+    },
+    {
+      "case": "unicode_text",
+      "frame_bytes": 193,
+      "parsed_median_us": 2.9968,
+      "fast_median_us": 1.3274,
+      "change_percent": -55.71
+    },
+    {
+      "case": "escaped_text",
+      "frame_bytes": 190,
+      "parsed_median_us": 2.6685,
+      "fast_median_us": 1.3157,
+      "change_percent": -50.69
+    },
+    {
+      "case": "tool_arguments",
+      "frame_bytes": 197,
+      "parsed_median_us": 2.7039,
+      "fast_median_us": 1.3418,
+      "change_percent": -50.37
+    },
+    {
+      "case": "large_1k_text",
+      "frame_bytes": 1196,
+      "parsed_median_us": 6.7071,
+      "fast_median_us": 4.4866,
+      "change_percent": -33.11
+    },
+    {
+      "case": "large_16k_text",
+      "frame_bytes": 16556,
+      "parsed_median_us": 70.5186,
+      "fast_median_us": 53.7964,
+      "change_percent": -23.71
+    },
+    {
+      "case": "fallback_nested_metadata",
+      "frame_bytes": 201,
+      "parsed_median_us": 2.699,
+      "fast_median_us": 4.0846,
+      "change_percent": 51.34
+    },
+    {
+      "case": "fallback_nonstring_delta",
+      "frame_bytes": 174,
+      "parsed_median_us": 2.5994,
+      "fast_median_us": 3.8471,
+      "change_percent": 48.0
+    }
+  ]
+}
