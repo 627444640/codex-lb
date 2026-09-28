@@ -57,8 +57,12 @@ class Client:
         headers = {"Content-Type": "application/json"}
         if key:
             headers["Authorization"] = "Bearer " + key
-        query = urllib.request.Request(self.base + path, headers=headers, method=method,
-                                       data=json.dumps(body).encode() if body is not None else None)
+        query = urllib.request.Request(
+            self.base + path,
+            headers=headers,
+            method=method,
+            data=json.dumps(body).encode() if body is not None else None,
+        )
         try:
             with self.opener.open(query, timeout=5) as response:
                 return response.status, json.load(response)
@@ -66,7 +70,7 @@ class Client:
             return exc.code, json.load(exc)
 
 
-RUNNER = '''import asyncio, os
+RUNNER = """import asyncio, os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from fastapi.responses import StreamingResponse
@@ -87,7 +91,7 @@ async def stream():
     return StreamingResponse(ticks(), media_type='text/event-stream')
 app.mount('/', backend)
 uvicorn.run(app, host='127.0.0.1', port=int(os.environ['ISOLATED_BACKEND_PORT']), proxy_headers=False, log_level='error')
-'''
+"""
 
 
 def run(backend, caddy):
@@ -101,35 +105,59 @@ def run(backend, caddy):
         for script in ("common.py", "supervise.py"):
             shutil.copy2(Path(__file__).resolve().parents[1] / "bin" / script, root / "bin" / script)
         backend_port, https_port = port(), port()
-        env = {key: value for key, value in os.environ.items() if not key.startswith("CODEX_LB_") and key != "PYTHONPATH"}
-        env.update({
-            "CODEX_LB_DATA_DIR": str(root / "data"),
-            "CODEX_LB_DATABASE_URL": "sqlite+aiosqlite:///" + str(root / "data/store.db"),
-            "CODEX_LB_ENCRYPTION_KEY_FILE": str(root / "data/encryption.key"),
-            "CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed",
-            "CODEX_LB_DASHBOARD_AUTH_MODE": "standard",
-            "CODEX_LB_UPSTREAM_BASE_URL": "http://127.0.0.1:9/disabled-upstream",
-            "ISOLATED_BACKEND_PORT": str(backend_port),
-        })
-        for name in ("OTEL", "MODEL_REGISTRY", "USAGE_REFRESH", "AUTH_GUARDIAN",
-                     "RATE_LIMIT_RESET_CREDITS_REFRESH", "QUOTA_PLANNER_SCHEDULER", "AUTOMATIONS_SCHEDULER",
-                     "LIVE_USAGE_INGESTION", "IMAGE_INLINE_FETCH", "LEADER_ELECTION", "STICKY_SESSION_CLEANUP"):
+        env = {
+            key: value for key, value in os.environ.items() if not key.startswith("CODEX_LB_") and key != "PYTHONPATH"
+        }
+        env.update(
+            {
+                "CODEX_LB_DATA_DIR": str(root / "data"),
+                "CODEX_LB_DATABASE_URL": "sqlite+aiosqlite:///" + str(root / "data/store.db"),
+                "CODEX_LB_ENCRYPTION_KEY_FILE": str(root / "data/encryption.key"),
+                "CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed",
+                "CODEX_LB_DASHBOARD_AUTH_MODE": "standard",
+                "CODEX_LB_UPSTREAM_BASE_URL": "http://127.0.0.1:9/disabled-upstream",
+                "ISOLATED_BACKEND_PORT": str(backend_port),
+            }
+        )
+        for name in (
+            "OTEL",
+            "MODEL_REGISTRY",
+            "USAGE_REFRESH",
+            "AUTH_GUARDIAN",
+            "RATE_LIMIT_RESET_CREDITS_REFRESH",
+            "QUOTA_PLANNER_SCHEDULER",
+            "AUTOMATIONS_SCHEDULER",
+            "LIVE_USAGE_INGESTION",
+            "IMAGE_INLINE_FETCH",
+            "LEADER_ELECTION",
+            "STICKY_SESSION_CLEANUP",
+        ):
             env[f"CODEX_LB_{name}_ENABLED"] = "false"
         runner = root / "runner.py"
         runner.write_text(RUNNER)
         config = root / "config/Caddyfile"
-        config.write_text("{\n admin off\n auto_https disable_redirects\n skip_install_trust\n"
-                          f" storage file_system {{\n root {root / 'caddy'}\n }}\n}}\n"
-                          f"https://127.0.0.1:{https_port} {{\n bind 127.0.0.1\n tls internal\n"
-                          f" reverse_proxy 127.0.0.1:{backend_port}\n}}\n")
-        deployment = {"data_dir": str(root / "data"),
-                      "backend": {"command": [str(backend)], "environment": env},
-                      "https": {"command": [str(caddy), "run", "--config", str(config)], "environment": {}}}
+        config.write_text(
+            "{\n admin off\n auto_https disable_redirects\n skip_install_trust\n"
+            f" storage file_system {{\n root {root / 'caddy'}\n }}\n}}\n"
+            f"https://127.0.0.1:{https_port} {{\n bind 127.0.0.1\n tls internal\n"
+            f" reverse_proxy 127.0.0.1:{backend_port}\n}}\n"
+        )
+        deployment = {
+            "data_dir": str(root / "data"),
+            "backend": {"command": [str(backend)], "environment": env},
+            "https": {"command": [str(caddy), "run", "--config", str(config)], "environment": {}},
+        }
         (root / "config/deployment.json").write_text(json.dumps(deployment))
         output = (root / "server.log").open("wb")
         try:
-            server = subprocess.Popen([str(backend.parent / "python"), str(runner)], cwd=root, env=env,
-                                      stdout=output, stderr=output, start_new_session=True)
+            server = subprocess.Popen(
+                [str(backend.parent / "python"), str(runner)],
+                cwd=root,
+                env=env,
+                stdout=output,
+                stderr=output,
+                start_new_session=True,
+            )
             processes.append(server)
             admin = Client(f"http://127.0.0.1:{backend_port}")
             wait_until(lambda: admin.request("/health/ready")[0] == 200)
@@ -142,8 +170,14 @@ def run(backend, caddy):
             (root / "state/initialized.json").write_text("{}")
 
             def start_https():
-                process = subprocess.Popen([sys.executable, str(root / "bin/supervise.py"), "https"],
-                                           cwd=root, env=env, stdout=output, stderr=output, start_new_session=True)
+                process = subprocess.Popen(
+                    [sys.executable, str(root / "bin/supervise.py"), "https"],
+                    cwd=root,
+                    env=env,
+                    stdout=output,
+                    stderr=output,
+                    start_new_session=True,
+                )
                 processes.append(process)
                 return process
 
@@ -153,8 +187,12 @@ def run(backend, caddy):
             https = Client(f"https://127.0.0.1:{https_port}", ca)
             wait_until(lambda: https.request("/health/ready")[0] == 200)
             assert https.request("/api/dashboard-auth/password/login", {"password": password})[0] == 200
-            stream_response = https.opener.open(urllib.request.Request(
-                https.base + "/__policy_test_stream", headers={"Authorization": "Bearer " + key}), timeout=30)
+            stream_response = https.opener.open(
+                urllib.request.Request(
+                    https.base + "/__policy_test_stream", headers={"Authorization": "Bearer " + key}
+                ),
+                timeout=30,
+            )
             samples, errors = [], []
             stop = threading.Event()
 
@@ -188,12 +226,18 @@ def run(backend, caddy):
                 time.sleep(3)
                 assert supervisor.poll() is None
             assert https.request("/api/settings", {"guestAccessEnabled": False}, "PUT")[0] == 200
-            assert https.request("/api/settings", {"guestAccessEnabled": True, "apiKeyAuthEnabled": False}, "PUT")[0] == 409
+            assert (
+                https.request("/api/settings", {"guestAccessEnabled": True, "apiKeyAuthEnabled": False}, "PUT")[0]
+                == 409
+            )
             assert https.request("/api/dashboard-auth/password", {"password": password}, "DELETE")[0] == 409
             assert len(re.findall("Started child pid=", (root / "logs/https.log").read_text())) == 1
             assert not errors and len(samples) > 50 and samples[-1] - samples[0] >= 10
-            report["guest_continuity"] = {"seconds": round(time.monotonic() - started, 2),
-                                          "stream_samples": len(samples), "proxy_restarts": 0}
+            report["guest_continuity"] = {
+                "seconds": round(time.monotonic() - started, 2),
+                "stream_samples": len(samples),
+                "proxy_restarts": 0,
+            }
             stop.set()
             reader.join(timeout=2)
             stream_response.close()
@@ -201,7 +245,9 @@ def run(backend, caddy):
             for field in ("api_key_auth_enabled", "password_hash"):
                 with sqlite3.connect(root / "data/store.db") as db:
                     original = db.execute(f"SELECT {field} FROM dashboard_settings WHERE id=1").fetchone()[0]
-                    db.execute(f"UPDATE dashboard_settings SET {field}=? WHERE id=1", (0 if field.startswith("api") else None,))
+                    db.execute(
+                        f"UPDATE dashboard_settings SET {field}=? WHERE id=1", (0 if field.startswith("api") else None,)
+                    )
                 supervisor.wait(timeout=40)
                 assert supervisor.returncode == 1
                 report[field + "_emergency"] = "passed"
@@ -209,7 +255,9 @@ def run(backend, caddy):
                     db.execute(f"UPDATE dashboard_settings SET {field}=? WHERE id=1", (original,))
                 supervisor = start_https()
                 wait_until(lambda: https.request("/health/ready")[0] == 200)
-            deployment["backend"]["environment"]["CODEX_LB_DATABASE_URL"] = "sqlite+aiosqlite:///" + str(root / "missing.db")
+            deployment["backend"]["environment"]["CODEX_LB_DATABASE_URL"] = "sqlite+aiosqlite:///" + str(
+                root / "missing.db"
+            )
             (root / "config/deployment.json").write_text(json.dumps(deployment))
             supervisor.wait(timeout=40)
             assert supervisor.returncode == 1 and not (root / "missing.db").exists()

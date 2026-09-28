@@ -1,7 +1,9 @@
 # fleet-summary Specification
 
 ## Purpose
-TBD - created by archiving change add-fleet-observability-endpoint. Update Purpose after archive.
+
+Expose authenticated fleet pressure, continuity and usage summaries while honoring API-key visibility policy and withholding sensitive account or request details.
+
 ## Requirements
 ### Requirement: Fleet observability requires API key authentication
 

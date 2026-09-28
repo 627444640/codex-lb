@@ -1,7 +1,9 @@
 # live-usage-ingestion Specification
 
 ## Purpose
-TBD - created by archiving change live-rate-limit-ingestion. Update Purpose after archive.
+
+Use observations from proxied responses to update passive account-usage snapshots with throttled, decoupled ingestion that does not impair request serving.
+
 ## Requirements
 ### Requirement: Proxied responses feed passive usage snapshots
 

@@ -1,7 +1,9 @@
 # unified-auth-export Specification
 
 ## Purpose
-TBD - created by archiving change unify-auth-export. Update Purpose after archive.
+
+Provide authenticated combined credential exports and a format-selecting dashboard flow with explicit warnings about the sensitivity of exported authentication data.
+
 ## Requirements
 ### Requirement: Combined auth export endpoint
 

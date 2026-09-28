@@ -1,7 +1,9 @@
 # account-identity Specification
 
 ## Purpose
-TBD - created by archiving change fix-shared-workspace-account-slots. Update Purpose after archive.
+
+Preserve separate local account slots when distinct email identities share an upstream workspace or account identifier, and expose useful workspace context in the dashboard.
+
 ## Requirements
 ### Requirement: Shared upstream workspace identities preserve account slots
 

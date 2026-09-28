@@ -1,7 +1,9 @@
 # account-pool-usage-v1-usage Specification
 
 ## Purpose
-TBD - created by archiving change add-account-pool-usage-to-v1-usage. Update Purpose after archive.
+
+Expose API-key-scoped pooled account capacity through the usage endpoint while respecting section selection and upstream-quota privacy controls.
+
 ## Requirements
 ### Requirement: /v1/usage response includes account_pool_usage
 

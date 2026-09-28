@@ -16,5 +16,5 @@
 - [x] Preserve the explicitly deferred production LB deployment boundary.
 
 ## Remaining environment acceptance
-- [ ] Browser visual readback (current desktop browser window unavailable).
+- [x] LB Settings browser interaction and visual readback at desktop/mobile widths, using an isolated backend and synthetic monitor responses.
 - [ ] Production LB rollout, only after the documented deployment hold is lifted.

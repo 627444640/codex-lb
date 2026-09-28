@@ -1,7 +1,9 @@
 # scheduler-coordination Specification
 
 ## Purpose
-TBD - created by archiving change harden-scheduler-leader-election. Update Purpose after archive.
+
+Coordinate singleton background work across replicas using atomic leader leases, consistent expiry checks, renewal and graceful release.
+
 ## Requirements
 ### Requirement: Singleton schedulers gate on the shared leader lease
 

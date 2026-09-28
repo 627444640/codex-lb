@@ -22,6 +22,7 @@ def managed_policy(monkeypatch):
 async def auth_snapshot():
     async with SessionLocal() as session:
         row = await session.get(DashboardSettings, 1)
+        assert row is not None
         return (
             row.password_hash,
             row.guest_password_hash,
@@ -52,6 +53,7 @@ async def test_managed_rejects_destructive_writes_atomically(async_client, manag
     }
     async with SessionLocal() as session:
         row = await session.get(DashboardSettings, 1)
+        assert row is not None
         row.totp_secret_encrypted = b"isolated-preservation-sentinel"
         await session.commit()
     before = await auth_snapshot()

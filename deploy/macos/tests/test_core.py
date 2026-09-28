@@ -58,17 +58,36 @@ class CoreTests(unittest.TestCase):
             common.assert_https_ready(self.root)
 
     def policy(self, allowed=True, guest=True):
-        return {"schemaVersion": 1, "mode": "managed", "allowed": allowed,
-                "requirements": {"mode": "managed", "adminPasswordRequired": True,
-                                 "apiKeyAuthRequired": True, "guestPassword": "optional"},
-                "state": {"password_configured": True, "api_key_auth_enabled": allowed,
-                          "guest_access_enabled": guest, "guest_password_configured": False},
-                "violations": [] if allowed else ["api_key_auth_required"]}
+        return {
+            "schemaVersion": 1,
+            "mode": "managed",
+            "allowed": allowed,
+            "requirements": {
+                "mode": "managed",
+                "adminPasswordRequired": True,
+                "apiKeyAuthRequired": True,
+                "guestPassword": "optional",
+            },
+            "state": {
+                "password_configured": True,
+                "api_key_auth_enabled": allowed,
+                "guest_access_enabled": guest,
+                "guest_password_configured": False,
+            },
+            "violations": [] if allowed else ["api_key_auth_required"],
+        }
 
     def configure_probe(self):
-        (self.root / "config/deployment.json").write_text(json.dumps({"backend": {
-            "command": ["/test/codex-lb", "--port", "1234"],
-            "environment": {"CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed"}}}))
+        (self.root / "config/deployment.json").write_text(
+            json.dumps(
+                {
+                    "backend": {
+                        "command": ["/test/codex-lb", "--port", "1234"],
+                        "environment": {"CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed"},
+                    }
+                }
+            )
+        )
 
     def test_guard_accepts_guests_and_uses_backend_environment(self):
         self.configure_probe()
@@ -88,11 +107,20 @@ class CoreTests(unittest.TestCase):
 
     def test_unknown_and_incompatible_probe_fail_closed(self):
         self.configure_probe()
-        samples = [(2, "{}"), (0, "not json"), (0, "[]"), (0, json.dumps({**self.policy(), "schemaVersion": 2})),
-                   (0, json.dumps({**self.policy(), "mode": "standard"})), (0, json.dumps({**self.policy(), "allowed": "true"})),
-                   (1, json.dumps(self.policy()))]
+        samples = [
+            (2, "{}"),
+            (0, "not json"),
+            (0, "[]"),
+            (0, json.dumps({**self.policy(), "schemaVersion": 2})),
+            (0, json.dumps({**self.policy(), "mode": "standard"})),
+            (0, json.dumps({**self.policy(), "allowed": "true"})),
+            (1, json.dumps(self.policy())),
+        ]
         for code, output in samples:
-            with self.subTest(code=code, output=output), patch("common.subprocess.run", return_value=Mock(returncode=code, stdout=output)):
+            with (
+                self.subTest(code=code, output=output),
+                patch("common.subprocess.run", return_value=Mock(returncode=code, stdout=output)),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "Cannot establish"):
                     common.read_policy_state(self.root)
         with patch("common.subprocess.run", side_effect=subprocess.TimeoutExpired("probe", 5)):

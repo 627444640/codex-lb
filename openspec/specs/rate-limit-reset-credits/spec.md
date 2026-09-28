@@ -1,7 +1,9 @@
 # rate-limit-reset-credits Specification
 
 ## Purpose
-TBD - created by archiving change add-rate-limit-reset-credits. Update Purpose after archive.
+
+Poll and expose account reset-credit availability and redeem eligible credits with serialized, idempotent coordination while keeping polling failures separate from account health.
+
 ## Requirements
 ### Requirement: Reset credits are polled per account on a fixed cadence
 

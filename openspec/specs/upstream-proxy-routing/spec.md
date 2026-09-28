@@ -1,7 +1,9 @@
 # upstream-proxy-routing Specification
 
 ## Purpose
-TBD - created by archiving change add-codex-proxy-pool-egress. Update Purpose after archive.
+
+Route account-bound upstream operations through configured proxy pools while preserving installation metadata, transport errors, route observations and credential boundaries.
+
 ## Requirements
 ### Requirement: Account-bound upstream traffic must use the bound proxy pool
 When an account has an explicit upstream proxy pool binding, every ChatGPT/OpenAI/Codex upstream operation using that account's credentials MUST resolve a route from the bound pool before opening a network connection.

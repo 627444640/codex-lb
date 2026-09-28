@@ -645,10 +645,12 @@ pathlib.Path(sys.argv[1]).write_text('final commit')
                 manage,
                 "read_policy_state",
                 return_value={
-                    "allowed": False, "violations": ["api_key_auth_required"], "state": {
-                    "password_configured": True,
-                    "api_key_auth_enabled": False,
-                    "guest_access_enabled": False,
+                    "allowed": False,
+                    "violations": ["api_key_auth_required"],
+                    "state": {
+                        "password_configured": True,
+                        "api_key_auth_enabled": False,
+                        "guest_access_enabled": False,
                     },
                 },
             ),

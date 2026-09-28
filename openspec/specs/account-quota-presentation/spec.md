@@ -1,7 +1,9 @@
 # account-quota-presentation Specification
 
 ## Purpose
-TBD - created by archiving change free-account-monthly-window. Update Purpose after archive.
+
+Present account quota windows and remaining capacity consistently across overview and trend surfaces, including monthly-only free accounts and zero-credit exclusions.
+
 ## Requirements
 ### Requirement: Free-account quota surfaces are monthly-only
 

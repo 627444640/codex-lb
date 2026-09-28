@@ -1,7 +1,9 @@
 # model-catalog-compat Specification
 
 ## Purpose
-TBD - created by archiving change populate-bootstrap-model-metadata. Update Purpose after archive.
+
+Provide a usable bootstrap model catalog and authoritative refreshed metadata across Codex-native and OpenAI-compatible surfaces, preserving context budgets and supported tiers.
+
 ## Requirements
 ### Requirement: Bootstrap model catalog is available before refresh
 

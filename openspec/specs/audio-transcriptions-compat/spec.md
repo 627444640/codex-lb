@@ -1,7 +1,9 @@
 # audio-transcriptions-compat Specification
 
 ## Purpose
-TBD - created by archiving change add-transcription-proxy-compat. Update Purpose after archive.
+
+Provide native and OpenAI-compatible audio transcription routes with consistent account selection, proxy policy, token refresh, retry and error behavior.
+
 ## Requirements
 ### Requirement: Native transcription proxy endpoint
 The system SHALL expose `POST /backend-api/transcribe` for multipart audio transcription requests. The endpoint MUST accept a multipart `file` part and MAY accept a `prompt` part, and MUST forward requests to upstream `/transcribe` using selected account credentials. While forwarding multipart form data, the service MUST strip inbound `Content-Type` header values case-insensitively so the upstream client can generate a correct boundary.

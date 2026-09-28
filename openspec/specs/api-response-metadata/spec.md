@@ -1,7 +1,9 @@
 # api-response-metadata Specification
 
 ## Purpose
-TBD - created by archiving change add-app-version-response-header. Update Purpose after archive.
+
+Identify the running application version on eligible HTTP responses while preserving explicit version headers and excluding server-error and WebSocket responses.
+
 ## Requirements
 ### Requirement: HTTP 2xx-4xx responses include the running app version header
 The system MUST attach `X-App-Version` to HTTP responses whose final status code is in the `200-499` range. The header value MUST equal the running codex-lb package version. This requirement applies across dashboard, health, proxy, and static-file HTTP routes, including handled framework or domain `4xx` responses. If a response already sets `X-App-Version`, the system MUST preserve the explicit value rather than overwrite it.

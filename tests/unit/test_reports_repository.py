@@ -1063,9 +1063,12 @@ async def test_aggregate_by_useragent_separates_real_unknown_from_missing_groups
         datetime(2026, 6, 2, 0, 0),
     )
 
-    assert [(row.useragent_group, row.cost_usd, row.request_count) for row in rows] == [
-        ("opencode", 0.5, 1),
-        ("Unknown", 0.4, 1),
-        ("CodexCLI", 0.3, 1),
-        ("Missing User-Agent", 0.1, 1),
-    ]
+    # All request counts are tied; verify distinct buckets without imposing a tie order.
+    assert sorted((row.useragent_group, row.cost_usd, row.request_count) for row in rows) == sorted(
+        [
+            ("opencode", 0.5, 1),
+            ("Unknown", 0.4, 1),
+            ("CodexCLI", 0.3, 1),
+            ("Missing User-Agent", 0.1, 1),
+        ]
+    )

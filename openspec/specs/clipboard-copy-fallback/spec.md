@@ -1,7 +1,9 @@
 # clipboard-copy-fallback Specification
 
 ## Purpose
-TBD - created by archiving change add-clipboard-fallback. Update Purpose after archive.
+
+Provide reliable clipboard copying through the browser clipboard API and a scoped fallback for environments where the secure API is unavailable.
+
 ## Requirements
 ### Requirement: Clipboard copy utility supports secure and fallback paths
 The frontend clipboard utility SHALL use `navigator.clipboard.writeText` when available in secure contexts and SHALL fall back to `document.execCommand("copy")` when the Clipboard API is unavailable or blocked.

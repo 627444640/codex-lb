@@ -20,3 +20,16 @@ Seven-day capacity is weighted by the inspected LB plan-capacity constants. Inco
 Example: an administrator saves a maintenance draft in Settings. It remains private. Publishing it with a future start date makes it appear in the centered announcement strip only at that time; withdrawal hides it immediately. A guest cannot read the draft or SMTP settings.
 
 The deployment record currently defers the LB v1.24.2 rollout. This integration is implemented in source, built into a wheel and exercised through an isolated LB/monitor pair; the separate public display can be updated without restarting production LB. Installing the wheel and connector into production requires the existing controlled deployment procedure and authorization for that rollout.
+
+## Local v1.24.3 integration — 2026-09-29
+
+The user authorized merging this LB integration together with the independent
+`feat` HTTP/SSE optimization into `v1.24.3`. The status-page source commit is
+`d9973baf`, the stream feature is `f353140e`, and both were merged without conflicts.
+The code retains the existing administrator boundary, optional/default-off
+connector and write-only SMTP credential behavior. No migration was added.
+
+Combined unit, API, frontend and isolated browser evidence is recorded in
+`openspec/changes/integrate-status-page-settings/verification.md`, with synthetic
+Settings screenshots. The production LB rollout hold remains; a local source
+merge is not installation or acceptance of the independent live monitor.

@@ -1,7 +1,9 @@
 # release-management Specification
 
 ## Purpose
-TBD - created by archiving change add-beta-release-channel. Update Purpose after archive.
+
+Coordinate beta and stable release preparation, publication and rollback metadata while preserving release-please ownership and stable artifact aliases.
+
 ## Requirements
 ### Requirement: Beta releases are prepared through release PRs
 
