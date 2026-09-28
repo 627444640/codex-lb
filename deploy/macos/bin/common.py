@@ -1,12 +1,12 @@
 """Small shared primitives; no credentials are read or printed here."""
 
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 import fcntl
 import json
 import os
 from pathlib import Path
 import re
-import sqlite3
+import subprocess
 import tempfile
 
 
@@ -41,33 +41,72 @@ def operation_lock(root):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def read_auth_state(root):
-    cfg = json.loads((Path(root) / "config/deployment.json").read_text())
-    db_path = Path(cfg["data_dir"]) / "store.db"
-    if not db_path.is_file():
-        raise RuntimeError("Backend database is missing")
+def read_policy_state(root):
     try:
-        with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
-            row = db.execute(
-                "SELECT password_hash IS NOT NULL AND length(password_hash) > 0, "
-                "api_key_auth_enabled, guest_access_enabled "
-                "FROM dashboard_settings WHERE id = 1"
-            ).fetchone()
-    except sqlite3.Error as exc:
-        raise RuntimeError("Cannot establish database authentication state: " + type(exc).__name__) from None
-    if row is None:
-        raise RuntimeError("Dashboard settings are not initialized")
-    return dict(zip(("password_configured", "api_key_auth_enabled", "guest_access_enabled"), map(bool, row)))
+        cfg = json.loads((Path(root) / "config/deployment.json").read_text())
+        env = os.environ.copy()
+        env.update(cfg["backend"].get("environment", {}))
+        result = subprocess.run(
+            [cfg["backend"]["command"][0], "auth-policy", "check", "--json"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if len(result.stdout) > 16384 or result.returncode not in (0, 1):
+            raise ValueError("Policy probe unavailable")
+        policy = json.loads(result.stdout)
+        if (
+            type(policy.get("schemaVersion")) is not int
+            or policy["schemaVersion"] != 1
+            or policy.get("mode") != "managed"
+            or type(policy.get("allowed")) is not bool
+            or policy["allowed"] != (result.returncode == 0)
+        ):
+            raise ValueError("Incompatible policy protocol")
+        state = policy["state"]
+        if not isinstance(state, dict) or any(
+            type(state.get(key)) is not bool
+            for key in (
+                "password_configured",
+                "api_key_auth_enabled",
+                "guest_access_enabled",
+                "guest_password_configured",
+            )
+        ):
+            raise ValueError("Invalid policy state")
+        violations = policy["violations"]
+        if (
+            not isinstance(violations, list)
+            or any(not isinstance(item, str) for item in violations)
+            or policy["allowed"] != (not violations)
+        ):
+            raise ValueError("Invalid policy verdict")
+        requirements = policy["requirements"]
+        if (
+            not isinstance(requirements, dict)
+            or requirements.get("mode") != "managed"
+            or type(requirements.get("adminPasswordRequired")) is not bool
+            or type(requirements.get("apiKeyAuthRequired")) is not bool
+            or requirements.get("guestPassword") != "optional"
+        ):
+            raise ValueError("Invalid policy requirements")
+        return policy
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        raise RuntimeError("Cannot establish installed deployment authentication policy") from None
+
+
+def read_auth_state(root):
+    return read_policy_state(root)["state"]
 
 
 def assert_https_ready(root):
     if not (Path(root) / "state/initialized.json").is_file():
         raise RuntimeError("Initialize dashboard password and API key authentication before exposing HTTPS")
-    state = read_auth_state(root)
-    if not state["password_configured"] or not state["api_key_auth_enabled"] or state["guest_access_enabled"]:
-        raise RuntimeError(
-            "HTTPS requires an actual dashboard password, API key auth enabled and guest access disabled"
-        )
+    policy = read_policy_state(root)
+    if not policy["allowed"]:
+        raise RuntimeError("HTTPS authentication policy: " + ", ".join(policy["violations"]))
 
 
 def redact(line):

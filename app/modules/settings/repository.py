@@ -9,6 +9,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
 from app.core.config.settings import get_settings
+from app.core.deployment_auth_policy import get_deployment_auth_policy
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import DashboardSettings
@@ -144,6 +145,7 @@ class SettingsRepository:
         clear_usage_history_retention: bool = False,
         expected_version: int | None = None,
     ) -> DashboardSettings:
+        get_deployment_auth_policy().validate_api_key_update(api_key_auth_enabled)
         settings = await self.get_or_create()
         if expected_version is not None and settings.version != expected_version:
             # Bind the CAS to the row this UPDATE targets: with

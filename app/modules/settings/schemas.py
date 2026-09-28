@@ -1,12 +1,26 @@
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from typing import Literal
 
+from pydantic import Field, field_validator, model_validator
+
+from app.core.deployment_auth_policy import get_deployment_auth_policy
 from app.modules.shared.schemas import DashboardModel
 
 _DEFAULT_WEEKLY_PACE_WORKING_DAYS = "0,1,2,3,4,5,6"
 _WEEKLY_PACE_SMOOTHING_MINUTES = (15, 30, 60, 120, 240)
 _HTTP_DOWNSTREAM_TRANSPORT_POLICY_PATTERN = r"^(smart|always_http|always_websocket|pinned)$"
+
+
+class DeploymentAuthPolicyResponse(DashboardModel):
+    mode: Literal["standard", "managed"]
+    admin_password_required: bool
+    api_key_auth_required: bool
+    guest_password: Literal["optional"]
+
+
+def _deployment_policy_response() -> DeploymentAuthPolicyResponse:
+    return DeploymentAuthPolicyResponse.model_validate(get_deployment_auth_policy().capabilities())
 
 
 def _normalize_weekly_pace_working_days(value: str | None) -> str | None:
@@ -32,6 +46,7 @@ class AdditionalQuotaPolicy(DashboardModel):
 
 
 class DashboardSettingsResponse(DashboardModel):
+    deployment_auth_policy: DeploymentAuthPolicyResponse = Field(default_factory=_deployment_policy_response)
     sticky_threads_enabled: bool
     upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
     prohibit_fast_mode: bool
@@ -89,6 +104,15 @@ class DashboardSettingsResponse(DashboardModel):
 
 
 class DashboardSettingsUpdateRequest(DashboardModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_deployment_policy_write(cls, value: object) -> object:
+        if isinstance(value, dict):
+            for key in ("deploymentAuthPolicy", "deployment_auth_policy"):
+                if key in value and value[key] != get_deployment_auth_policy().capabilities():
+                    raise ValueError("deploymentAuthPolicy is read-only")
+        return value
+
     expected_version: int | None = Field(default=None, ge=1)
     sticky_threads_enabled: bool | None = None
     upstream_stream_transport: str | None = Field(

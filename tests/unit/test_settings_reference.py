@@ -72,7 +72,11 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # 131 -> 133: sustained-overload isolation and error-rate weighting switches.
 # Operators need bounded disable controls while validating their actual account pool.
 # 133 -> 131: anonymous usage telemetry and its collector endpoint were removed.
-MAX_SETTINGS_FIELDS = 131
+# 131 -> 132: deployment_auth_policy (align-managed-auth-policy). The managed
+# wrapper requires password/API-key invariants while ordinary installations
+# retain removable authentication and alternative auth modes; a global default
+# would break those existing installations. Guest permissions remain unchanged.
+MAX_SETTINGS_FIELDS = 132
 
 
 def test_generated_settings_reference_matches_code() -> None:

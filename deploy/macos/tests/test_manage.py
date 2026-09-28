@@ -29,7 +29,7 @@ stub_common = types.ModuleType("common")
 stub_common.atomic_write = lambda path, content: path.write_text(content)
 stub_common.operation_lock = Mock()
 stub_common.assert_https_ready = Mock()
-stub_common.read_auth_state = Mock()
+stub_common.read_policy_state = Mock()
 spec = importlib.util.spec_from_file_location("isolated_manage", MANAGE)
 manage = importlib.util.module_from_spec(spec)
 with patch.dict(sys.modules, {"common": stub_common}):
@@ -643,11 +643,13 @@ pathlib.Path(sys.argv[1]).write_text('final commit')
             patch.object(manage, "probe", return_value=(None, "PermissionError")),
             patch.object(
                 manage,
-                "read_auth_state",
+                "read_policy_state",
                 return_value={
+                    "allowed": False, "violations": ["api_key_auth_required"], "state": {
                     "password_configured": True,
                     "api_key_auth_enabled": False,
                     "guest_access_enabled": False,
+                    },
                 },
             ),
         ):

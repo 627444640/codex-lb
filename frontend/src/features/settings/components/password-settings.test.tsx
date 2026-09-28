@@ -36,6 +36,14 @@ describe("PasswordSettings", () => {
     expect(screen.queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
   });
 
+  it("keeps password changes available while managed policy blocks removal", () => {
+    useAuthStore.setState({ passwordRequired: true, passwordSessionActive: true });
+    render(<PasswordSettings passwordRequiredByDeployment />);
+    expect(screen.getByRole("button", { name: "Change" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+    expect(screen.getByText(/This deployment requires an administrator password/)).toBeInTheDocument();
+  });
+
   it("shows change/remove buttons when password is configured", () => {
     useAuthStore.setState({ passwordRequired: true, passwordSessionActive: true });
     render(<PasswordSettings />);

@@ -125,7 +125,7 @@ export function SettingsPage() {
                 onRefresh={() => settingsQuery.refetch()}
               />
             ) : null}
-            {canWrite ? <PasswordSettings disabled={busy} /> : null}
+            {canWrite ? <PasswordSettings disabled={busy} passwordRequiredByDeployment={settings.deploymentAuthPolicy?.adminPasswordRequired} /> : null}
             {canWrite && passwordManagementEnabled ? (
               <SessionSettings settings={settings} busy={busy} onSave={handleSave} />
             ) : null}
@@ -137,6 +137,7 @@ export function SettingsPage() {
 
             <ApiKeysSection
               apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
+              authRequiredByDeployment={settings.deploymentAuthPolicy?.apiKeyAuthRequired}
               hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
               disabled={controlsDisabled}
               onApiKeyAuthEnabledChange={(enabled) =>

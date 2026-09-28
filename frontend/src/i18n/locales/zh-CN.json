@@ -1,4 +1,6 @@
 {
+  "settings.deploymentAuth.passwordRequired": "当前部署要求保留管理员密码，可以更换，不能移除。",
+  "settings.deploymentAuth.apiKeyRequired": "当前部署要求保持 API Key 认证开启。",
   "usage.unknown": "未知",
   "usage.statusLabel": "用量完整性",
   "usage.status.complete": "用量完整",

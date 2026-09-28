@@ -23,6 +23,7 @@ const ApiKeyEditDialog = lazy(() =>
 
 export type ApiKeysSectionProps = {
   apiKeyAuthEnabled: boolean;
+  authRequiredByDeployment?: boolean;
   hideUpstreamQuotaFromApiKeys: boolean;
   disabled?: boolean;
   onApiKeyAuthEnabledChange: (enabled: boolean) => void;
@@ -31,6 +32,7 @@ export type ApiKeysSectionProps = {
 
 export function ApiKeysSection({
   apiKeyAuthEnabled,
+  authRequiredByDeployment = false,
   hideUpstreamQuotaFromApiKeys,
   disabled = false,
   onApiKeyAuthEnabledChange,
@@ -99,6 +101,7 @@ export function ApiKeysSection({
 
       <ApiKeyAuthToggle
         enabled={apiKeyAuthEnabled}
+        requiredByDeployment={authRequiredByDeployment}
         disabled={busy}
         onChange={onApiKeyAuthEnabledChange}
       />

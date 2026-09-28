@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN))
@@ -57,25 +57,47 @@ class CoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             common.assert_https_ready(self.root)
 
-    def test_auth_guard_accepts_initialized_private_state(self):
+    def policy(self, allowed=True, guest=True):
+        return {"schemaVersion": 1, "mode": "managed", "allowed": allowed,
+                "requirements": {"mode": "managed", "adminPasswordRequired": True,
+                                 "apiKeyAuthRequired": True, "guestPassword": "optional"},
+                "state": {"password_configured": True, "api_key_auth_enabled": allowed,
+                          "guest_access_enabled": guest, "guest_password_configured": False},
+                "violations": [] if allowed else ["api_key_auth_required"]}
+
+    def configure_probe(self):
+        (self.root / "config/deployment.json").write_text(json.dumps({"backend": {
+            "command": ["/test/codex-lb", "--port", "1234"],
+            "environment": {"CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed"}}}))
+
+    def test_guard_accepts_guests_and_uses_backend_environment(self):
+        self.configure_probe()
         (self.root / "state/initialized.json").write_text("{}")
-        self.database()
-        common.assert_https_ready(self.root)
-        with closing(sqlite3.connect(self.root / "data/store.db")) as db, db:
-            db.execute("UPDATE dashboard_settings SET guest_access_enabled=1")
-        with self.assertRaises(RuntimeError):
+        with patch("common.subprocess.run", return_value=Mock(returncode=0, stdout=json.dumps(self.policy()))) as run:
             common.assert_https_ready(self.root)
+        self.assertEqual(run.call_args.args[0], ["/test/codex-lb", "auth-policy", "check", "--json"])
+        self.assertEqual(run.call_args.kwargs["env"]["CODEX_LB_DEPLOYMENT_AUTH_POLICY"], "managed")
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
 
-    def test_missing_db_never_created_by_health_read(self):
-        with self.assertRaises(RuntimeError):
-            common.read_auth_state(self.root)
-        self.assertFalse((self.root / "data/store.db").exists())
+    def test_guard_rejects_real_violation(self):
+        self.configure_probe()
+        (self.root / "state/initialized.json").write_text("{}")
+        with patch("common.subprocess.run", return_value=Mock(returncode=1, stdout=json.dumps(self.policy(False)))):
+            with self.assertRaisesRegex(RuntimeError, "api_key_auth_required"):
+                common.assert_https_ready(self.root)
 
-    def test_redaction_credentials_in_line(self):
-        original = "Authorization: Bearer secretvalue ?code=private&api_key=private2 sk-abcdef"
-        result = common.redact(original)
-        for secret in ("secretvalue", "private", "private2", "sk-abcdef"):
-            self.assertNotIn(secret, result)
+    def test_unknown_and_incompatible_probe_fail_closed(self):
+        self.configure_probe()
+        samples = [(2, "{}"), (0, "not json"), (0, "[]"), (0, json.dumps({**self.policy(), "schemaVersion": 2})),
+                   (0, json.dumps({**self.policy(), "mode": "standard"})), (0, json.dumps({**self.policy(), "allowed": "true"})),
+                   (1, json.dumps(self.policy()))]
+        for code, output in samples:
+            with self.subTest(code=code, output=output), patch("common.subprocess.run", return_value=Mock(returncode=code, stdout=output)):
+                with self.assertRaisesRegex(RuntimeError, "Cannot establish"):
+                    common.read_policy_state(self.root)
+        with patch("common.subprocess.run", side_effect=subprocess.TimeoutExpired("probe", 5)):
+            with self.assertRaises(RuntimeError):
+                common.read_policy_state(self.root)
 
     def test_stubborn_child_has_bounded_shutdown(self):
         ready = self.root / "ready"

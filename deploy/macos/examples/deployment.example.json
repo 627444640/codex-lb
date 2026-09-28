@@ -11,6 +11,7 @@
       "2455"
     ],
     "environment": {
+      "CODEX_LB_DEPLOYMENT_AUTH_POLICY": "managed",
       "CODEX_LB_DATA_DIR": "/absolute/path/to/codex-lb-runtime/data"
     }
   },
