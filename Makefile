@@ -104,7 +104,11 @@ typecheck:
 	uv sync --dev --frozen
 	uv run ty check
 
-.PHONY: test-deployment-macos
+.PHONY: test-deployment-macos test-status-monitor
+test-status-monitor:
+	cd deploy/status-monitor && ../../.venv/bin/python -m unittest discover -s tests -v
+	cd deploy/status-monitor && NODE_PATH="$(CURDIR)/frontend/node_modules" node --test tests/test_assistant_stream.mjs tests/test_assistant_ui.cjs
+
 test-deployment-macos:
 	uv run ruff check deploy/macos
 	uv run python -m unittest discover -s deploy/macos/tests -p 'test_*.py' -v
@@ -234,8 +238,8 @@ helm-smoke-kind:
 	KUBE_CONTEXT=kind-codex-lb-smoke IMAGE_REGISTRY=ghcr.io IMAGE_REPOSITORY=soju06/codex-lb IMAGE_TAG=ci ./scripts/helm-kind-smoke.sh external-db
 
 .PHONY: ci-fast ci
-ci-fast: lint typecheck frontend-test test-unit test-deployment-macos package
+ci-fast: lint typecheck frontend-test test-unit test-deployment-macos test-status-monitor package
 
 ci: frontend-lint frontend-typecheck frontend-test frontend-build lint typecheck \
-	test-unit test-deployment-macos test-integration-core test-integration-bridge test-e2e test-postgres \
+	test-unit test-deployment-macos test-status-monitor test-integration-core test-integration-bridge test-e2e test-postgres \
 	migration-check migration-check-postgres package docker helm-check helm-smoke-kind

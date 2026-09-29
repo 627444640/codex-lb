@@ -9,7 +9,19 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from app.core.exceptions import AppError
+from app.core.exceptions import (
+    DashboardBadRequestError,
+    DashboardConflictError,
+    DashboardNotFoundError,
+    DashboardServiceUnavailableError,
+    DashboardUpstreamError,
+)
+from app.modules.status_page.assistant_schemas import (
+    AssistantConfigurationResponse,
+    AssistantConfigurationUpdate,
+    AssistantConnectionTest,
+)
+from app.modules.status_page.guide_schemas import GuideListResponse, GuideRecord, GuideRevision, GuideWrite
 from app.modules.status_page.schemas import (
     AnnouncementSaved,
     AnnouncementUpdate,
@@ -21,16 +33,33 @@ from app.modules.status_page.schemas import (
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 
 
-class StatusPageUnavailable(AppError):
+class StatusPageUnavailable(DashboardServiceUnavailableError):
     status_code = 503
     code = "status_page_unavailable"
     message = "The status service is not connected or could not complete the request."
 
 
-class StatusPageControlRejected(AppError):
+class StatusPageControlRejected(DashboardBadRequestError):
     status_code = 400
     code = "status_page_configuration_rejected"
-    message = "Check the email configuration, authorization code and announcement schedule."
+    message = "Check the submitted status-page settings or content."
+
+
+class StatusPageContentConflict(DashboardConflictError):
+    status_code = 409
+    code = "status_page_content_conflict"
+    message = "This guide changed or was deleted. Refresh the list before saving again."
+
+
+class StatusPageContentNotFound(DashboardNotFoundError):
+    status_code = 404
+    code = "status_page_content_not_found"
+    message = "The requested status-page content no longer exists."
+
+
+class AssistantTestFailed(DashboardUpstreamError):
+    code = "troubleshooting_model_test_failed"
+    message = "The model test did not complete. Check the saved address, model permissions, API key and daily quota."
 
 
 class MonitorConnection(BaseModel):
@@ -77,21 +106,27 @@ class StatusPageService:
 
     async def _request(
         self,
-        method: Literal["GET", "POST", "PUT"],
+        method: Literal["GET", "POST", "PUT", "DELETE"],
         path: str,
         response_type: type[ResponseT],
         content: str | None = None,
+        *,
+        timeout: float = 8,
     ) -> ResponseT:
         try:
             connection, token = await asyncio.to_thread(self._connection)
-            async with httpx.AsyncClient(timeout=8, trust_env=False, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
                 response = await client.request(
                     method,
                     f"{connection.url}{path}",
                     content=content,
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 )
-            if response.status_code in {400, 404, 422}:
+            if response.status_code == 409:
+                raise StatusPageContentConflict()
+            if response.status_code == 404:
+                raise StatusPageContentNotFound()
+            if response.status_code in {400, 422}:
                 raise StatusPageControlRejected()
             response.raise_for_status()
             return response_type.model_validate_json(response.content)
@@ -115,3 +150,45 @@ class StatusPageService:
             AnnouncementSaved,
             payload.model_dump_json(by_alias=False),
         )
+
+    async def list_guides(self) -> GuideListResponse:
+        if not self._connection_file.exists():
+            return GuideListResponse(available=False)
+        return await self._request("GET", "/internal/guides", GuideListResponse)
+
+    async def save_guide(self, payload: GuideWrite, guide_id: int | None = None) -> GuideRecord:
+        return await self._request(
+            "POST" if guide_id is None else "PUT",
+            "/internal/guides" if guide_id is None else f"/internal/guides/{guide_id}",
+            GuideRecord,
+            payload.model_dump_json(by_alias=False),
+        )
+
+    async def delete_guide(self, guide_id: int, payload: GuideRevision, *, restore: bool = False) -> GuideRecord:
+        return await self._request(
+            "POST" if restore else "DELETE",
+            f"/internal/guides/{guide_id}" + ("/restore" if restore else ""),
+            GuideRecord,
+            payload.model_dump_json(by_alias=False),
+        )
+
+    async def get_assistant_configuration(self) -> AssistantConfigurationResponse:
+        if not self._connection_file.exists():
+            return AssistantConfigurationResponse(available=False)
+        return await self._request("GET", "/internal/assistant", AssistantConfigurationResponse)
+
+    async def update_assistant_configuration(
+        self, payload: AssistantConfigurationUpdate
+    ) -> AssistantConfigurationResponse:
+        data = payload.model_dump(mode="json", by_alias=False, exclude={"api_key"})
+        data["api_key"] = payload.api_key.get_secret_value() if payload.api_key else None
+        return await self._request("PUT", "/internal/assistant", AssistantConfigurationResponse, json.dumps(data))
+
+    async def test_assistant_connection(self) -> AssistantConnectionTest:
+        try:
+            result = await self._request("POST", "/internal/assistant/test", AssistantConnectionTest, "{}", timeout=55)
+        except (StatusPageUnavailable, StatusPageControlRejected, StatusPageContentNotFound, StatusPageContentConflict):
+            raise AssistantTestFailed() from None
+        if not result.ok:
+            raise AssistantTestFailed()
+        return result

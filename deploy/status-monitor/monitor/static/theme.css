@@ -1,0 +1,103 @@
+/* Design tokens and local fonts from Codex LB frontend/src/index.css. */
+@font-face {
+  font-family: "Geist Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/GeistSans-Variable.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("/static/fonts/jetbrains-mono-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  --radius: 0.375rem;
+  --shadow-xs: 0 1px 2px oklch(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 3px oklch(0 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.04);
+  --shadow-md: 0 4px 8px -2px oklch(0 0 0 / 0.08), 0 2px 4px -2px oklch(0 0 0 / 0.04);
+  --background: oklch(0.985 0.002 260);
+  --foreground: oklch(0.13 0.028 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.13 0.028 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.13 0.028 260);
+  --primary: oklch(0.488 0.185 264);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.958 0.008 264);
+  --secondary-foreground: oklch(0.25 0.03 264);
+  --muted: oklch(0.955 0.006 264);
+  --muted-foreground: oklch(0.50 0.015 264);
+  --accent: oklch(0.955 0.012 264);
+  --accent-foreground: oklch(0.25 0.03 264);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.920 0.005 264);
+  --input: oklch(0.920 0.005 264);
+  --ring: oklch(0.488 0.185 264);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.975 0.004 264);
+  --sidebar-foreground: oklch(0.13 0.028 260);
+  --sidebar-primary: oklch(0.488 0.185 264);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.955 0.012 264);
+  --sidebar-accent-foreground: oklch(0.25 0.03 264);
+  --sidebar-border: oklch(0.915 0.008 264);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --shadow-xs: 0 1px 2px oklch(0 0 0 / 0.15);
+  --shadow-sm: 0 1px 3px oklch(0 0 0 / 0.20), 0 1px 2px oklch(0 0 0 / 0.15);
+  --shadow-md: 0 4px 8px -2px oklch(0 0 0 / 0.30), 0 2px 4px -2px oklch(0 0 0 / 0.20);
+  --background: oklch(0 0 0);
+  --foreground: oklch(0.95 0 0);
+  --card: oklch(0.145 0 0);
+  --card-foreground: oklch(0.95 0 0);
+  --popover: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.95 0 0);
+  --primary: oklch(0.68 0.10 245);
+  --primary-foreground: oklch(0.12 0 0);
+  --secondary: oklch(0.22 0 0);
+  --secondary-foreground: oklch(0.90 0 0);
+  --muted: oklch(0.22 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.22 0 0);
+  --accent-foreground: oklch(0.90 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(0.26 0 0);
+  --input: oklch(0.26 0 0);
+  --ring: oklch(0.65 0.10 245);
+  --chart-1: oklch(0.488 0.12 245);
+  --chart-2: oklch(0.696 0.08 162.48);
+  --chart-3: oklch(0.769 0.09 70.08);
+  --chart-4: oklch(0.627 0.13 303.9);
+  --chart-5: oklch(0.645 0.12 16.439);
+  --sidebar: oklch(0.14 0 0);
+  --sidebar-foreground: oklch(0.95 0 0);
+  --sidebar-primary: oklch(0.65 0.10 245);
+  --sidebar-primary-foreground: oklch(0.95 0 0);
+  --sidebar-accent: oklch(0.22 0 0);
+  --sidebar-accent-foreground: oklch(0.90 0 0);
+  --sidebar-border: oklch(0.26 0 0);
+  --sidebar-ring: oklch(0.556 0 0);
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Codex LB 常见错误的原因与解决方法">
+  <title>Codex LB · 错误排查</title>
+  <link rel="icon" href="/static/favicon.svg?v=codex-lb" type="image/svg+xml">
+  <script src="/static/theme.js?v=light"></script>
+  <link rel="stylesheet" href="/static/theme.css"><link rel="stylesheet" href="/static/style.css"><script src="/static/troubleshooting.js" type="module"></script>
+</head>
+<body>
+  <header class="site-header"><div class="shell header-inner">
+    <a class="brand" href="/" aria-label="Codex LB 服务状态首页"><span class="brand-mark" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 32 32" focusable="false"><path stroke="currentColor" stroke-linecap="round" stroke-width="2.484" d="M22.356 19.797H17.17M9.662 12.29l1.979 3.576a.511.511 0 0 1-.005.504l-1.974 3.409M30.758 16c0 8.15-6.607 14.758-14.758 14.758-8.15 0-14.758-6.607-14.758-14.758C1.242 7.85 7.85 1.242 16 1.242c8.15 0 14.758 6.608 14.758 14.758Z"/></svg></span><span>Codex LB <span class="brand-sub">/ 服务状态</span></span></a>
+    <nav aria-label="页面导航"><a href="/#overview">概览</a><a href="/static/troubleshooting.html" class="active" aria-current="page">错误排查</a></nav>
+  </div></header>
+  <main class="shell">
+    <section class="intro"><div class="intro-title"><h1>错误排查</h1><span class="intro-label">TROUBLESHOOTING</span></div><p class="small-note">查找常见错误的原因与解决方法</p></section>
+    <section class="section-block assistant-panel" aria-labelledby="assistant-title">
+      <div class="section-heading"><h2 id="assistant-title">智能排查</h2><span class="section-hint" id="assistant-state">正在检查可用状态</span></div>
+      <div class="panel assistant-card">
+        <p class="assistant-description">粘贴报错或描述遇到的问题，依据已发布的指南获取排查建议和来源。</p>
+        <div id="assistant-messages" class="assistant-messages" role="log" aria-label="排查对话" aria-live="polite" hidden></div>
+        <form id="assistant-form">
+          <label class="card-label" for="assistant-question">你的问题</label>
+          <textarea id="assistant-question" rows="3" maxlength="2000" placeholder="例如：出现 payload_too_large，切换内网地址后仍然失败…" disabled></textarea>
+          <div class="assistant-actions"><span class="footnote">Enter 发送 · Shift+Enter 换行 · 最多 2000 字</span><div><button id="assistant-clear" class="text-button" type="button">清空对话</button><button id="assistant-stop" class="text-button" type="button" hidden>停止生成</button><button id="assistant-send" class="text-button assistant-send" type="submit" disabled>发送问题</button></div></div>
+          <p id="assistant-feedback" class="assistant-feedback" role="status" aria-live="polite"></p>
+        </form>
+        <p class="assistant-disclaimer">回答用于辅助排查，不代表已检查你的设备。本页不保存聊天记录；内容将发送给管理员配置的模型，请勿包含 API Key、密码或敏感信息。</p>
+        <noscript><p class="footnote">开启 JavaScript 后可使用智能排查，下方指南仍可直接阅读。</p></noscript>
+      </div>
+    </section>
+    <section class="section-block" id="troubleshooting" aria-labelledby="troubleshooting-title">
+      <div class="section-heading"><h2 id="troubleshooting-title">常见问题</h2><span class="section-hint">按错误信息查找</span></div>
+      <div class="panel troubleshooting-panel">
+        <!-- PUBLISHED_GUIDES -->
+      </div>
+    </section>
+  </main><footer class="shell footer"><span><span class="footer-dot"></span> Codex LB Monitor</span><span>常见问题与接入指南 · 时间均为 UTC+8</span></footer>
+</body></html>
