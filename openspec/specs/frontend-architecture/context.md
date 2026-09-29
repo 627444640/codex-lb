@@ -1,7 +1,30 @@
 # Context: frontend-architecture
 
 Normative requirements live in [`spec.md`](./spec.md). This document currently
-covers the progressive-disclosure navigation and settings model.
+covers dashboard behavior and its implementation context.
+
+## Internal fork version display
+
+The internal fork displays the selected version as `1.24.3内部版` in Chinese,
+`1.24.3 internal` in English, or `1.24.3 내부 버전` in Korean. The label is
+presentation-only: package metadata, `/api/runtime/version`, `X-App-Version`,
+and release comparisons continue to use the numeric version.
+
+The footer prefers the runtime API and falls back to Vite's `__APP_VERSION__`,
+which is read from `frontend/package.json`. For later internal versions, use
+`scripts.release_versions.update_project_versions(root, version)` to synchronize
+`pyproject.toml`, `app/__init__.py`, `frontend/package.json`, both Helm chart
+version fields, and the editable package in `uv.lock`. Verify with
+`python -m scripts.verify_release_version`; do not hard-code a release number
+in the footer or change release-please's last-published manifest merely to
+label a development build.
+
+For example, a backend reporting `1.24.4` changes the Chinese label to
+`1.24.4内部版` even if the frontend was built at `1.24.3`. An API outage uses
+the build version instead. A source edit alone does not update an installed
+service: rebuild and deploy the matching frontend/backend through the normal
+deployment process. Browser query caching can retain a previously fetched
+version until refresh or refetch.
 
 ## Progressive disclosure (nav + settings)
 

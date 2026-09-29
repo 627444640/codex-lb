@@ -1314,6 +1314,7 @@
   "statusBar.updateAvailable": "새 버전이 있습니다. 릴리스 노트를 엽니다.",
   "statusBar.updateAvailableWithVersion": "새 버전이 있습니다: {{version}}. 릴리스 노트를 엽니다.",
   "statusBar.version": "버전:",
+  "statusBar.internalVersion": "{{version}} 내부 버전",
   "stickySessions.actions.deleteFiltered": "필터된 항목 삭제",
   "stickySessions.actions.deleteSessions": "Session 삭제",
   "stickySessions.actions.purge": "정리",

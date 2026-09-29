@@ -209,7 +209,8 @@ export function StatusBar({ onHeightChange }: StatusBarProps = {}) {
           </span>
           <span className="inline-flex items-center gap-1.5">
             <Tag className="h-3 w-3" aria-hidden="true" />
-            <span className="font-medium">{t("statusBar.version")}</span> {currentVersion}
+            <span className="font-medium">{t("statusBar.version")}</span>
+            <span>{t("statusBar.internalVersion", { version: currentVersion })}</span>
             {showUpdateAvailable ? (
               <a
                 aria-label={updateLabel}

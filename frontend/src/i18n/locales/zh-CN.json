@@ -1333,6 +1333,7 @@
   "statusBar.stale": "已过期",
   "statusBar.routing": "路由策略：",
   "statusBar.version": "版本：",
+  "statusBar.internalVersion": "{{version}}内部版",
   "statusBar.updateAvailable": "有新版本可用。打开发布说明。",
   "statusBar.updateAvailableWithVersion": "有新版本可用：{{version}}。打开发布说明。",
   "statusBar.repositoryLabel": "打开官方 GitHub 仓库",

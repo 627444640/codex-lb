@@ -207,6 +207,29 @@ describe("StatusBar", () => {
     expect(link).toHaveAttribute("href", "https://github.com/Soju06/codex-lb/releases/latest");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
+    expect(screen.getByText("1.19.0 internal")).toBeInTheDocument();
+  });
+
+  it.each(["1.24.3", "1.24.4"])("shows runtime version %s with the Chinese internal label", async (version) => {
+    server.use(
+      http.get("/api/runtime/version", () =>
+        HttpResponse.json({
+          currentVersion: version,
+          latestVersion: null,
+          updateAvailable: false,
+          checkedAt: "2026-09-29T00:00:00Z",
+          releaseUrl: "https://github.com/Soju06/codex-lb/releases/latest",
+        }),
+      ),
+    );
+    await i18n.changeLanguage("zh-CN");
+    try {
+      renderStatusBar();
+
+      expect(await screen.findByText(`${version}内部版`)).toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("does not show an update link when the runtime version check fails", async () => {
@@ -219,6 +242,7 @@ describe("StatusBar", () => {
     renderStatusBar();
 
     expect(await screen.findByText("Version:")).toBeInTheDocument();
+    expect(screen.getByText(`${__APP_VERSION__} internal`)).toBeInTheDocument();
     expect(
       screen.queryByRole("link", {
         name: /New version available/,

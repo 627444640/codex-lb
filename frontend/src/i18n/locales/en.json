@@ -1333,6 +1333,7 @@
   "statusBar.stale": "Stale",
   "statusBar.routing": "Routing:",
   "statusBar.version": "Version:",
+  "statusBar.internalVersion": "{{version}} internal",
   "statusBar.updateAvailable": "New version available. Open release notes.",
   "statusBar.updateAvailableWithVersion": "New version available: {{version}}. Open release notes.",
   "statusBar.repositoryLabel": "Open official GitHub repository",
