@@ -10,6 +10,6 @@
 
 - [x] 2.1 Verify FAQ rendering, clipboard behavior, guide CRUD and the absence of model interfaces/network calls.
 - [x] 2.2 Run relevant backend/frontend/monitor checks, build the candidate and validate OpenSpec strictly.
-- [ ] 2.3 Audit publication content, commit on the fix branch, merge into v1.24.3 and push explicit refs.
-- [ ] 2.4 Back up, archive the saved assistant configuration privately, deploy the candidate and restart after idle checks.
-- [ ] 2.5 Independently verify the running FAQ, retired APIs, preserved data, health and remote refs; archive the completed change.
+- [x] 2.3 Audit publication content, commit on the fix branch, merge into v1.24.3 and push explicit refs.
+- [x] 2.4 Back up, archive the saved assistant configuration privately, deploy the candidate and restart after idle checks.
+- [x] 2.5 Independently verify the running FAQ, retired APIs, preserved data, health and remote refs; archive the completed change.
