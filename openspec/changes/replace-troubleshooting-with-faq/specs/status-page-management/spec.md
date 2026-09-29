@@ -1,44 +1,42 @@
-# status-page-management Specification
+## REMOVED Requirements
 
-## Purpose
-Manage alerts, announcements and FAQ guides through existing administrator settings while keeping the public status and FAQ surfaces separate and free of chat or model inference.
+### Requirement: Administrators configure the troubleshooting model
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-## Requirements
+### Requirement: Chat answers use published troubleshooting evidence
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-### Requirement: Status-page administration belongs to Codex LB Settings
-The system SHALL provide email alert configuration and announcement management inside the existing Codex LB Settings page. These APIs SHALL require the existing dashboard administrator write permission for both reads and writes. The independent status page MUST NOT provide a second administrator login or browser administrative mutation API.
+### Requirement: Troubleshooting assistant retains exactly one model
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-#### Scenario: Administrator manages announcements
-- **WHEN** an administrator saves a draft, publishes, schedules or withdraws an announcement in Settings
-- **THEN** the monitor persists the change and its public page displays only currently published announcements
-- **AND** the existing dashboard session is sufficient without another login
+### Requirement: Public inference is bounded and separate from administration
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-#### Scenario: Guest cannot read private configuration
-- **WHEN** a guest or unauthenticated remote caller requests status-page administration
-- **THEN** private configuration, drafts and notification history are withheld
+### Requirement: Troubleshooting chat streams diffusion snapshots
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-### Requirement: Service control credentials stay server-side
-The Settings backend SHALL use a private configuration file under the LB data directory to connect to a literal loopback monitor address. It MUST authenticate service calls using a private credential file, reject non-loopback or redirecting control destinations, validate typed responses and redact upstream errors. SMTP passwords and control credentials MUST NOT be returned by any read endpoint.
+### Requirement: Diffusion streams fail safely and release capacity
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-#### Scenario: Integration has not been configured
-- **WHEN** no connector configuration exists
-- **THEN** Settings reports the status service as disconnected and does not send network requests
+### Requirement: Mercury diffusion uses a bounded interactive request profile
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-#### Scenario: SMTP authorization code is unchanged
-- **WHEN** an administrator updates mail settings with no replacement password
-- **THEN** the existing protected password is retained
-- **AND** reads report only whether a password is configured
+### Requirement: Coalesced diffusion snapshots remain visible
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-### Requirement: Public status uses reduced capacity and daily availability
-The independent public response and display SHALL expose only the capacity-weighted remaining seven-day percentage, never account counts or per-account capacity-readiness counters. The display SHALL render daily probe availability as a calendar heatmap with Asia/Taipei dates, distinguish days without valid samples, center announcements in a full-width top row, and place incident history in a full-width bottom section.
+### Requirement: Marked diffusion drafts tolerate unstable answer field names
+**Reason**: The maintainer retired the FAQ assistant and model functionality.
+**Migration**: Remove active model interfaces and ignore legacy assistant state; preserve guide content and historical archives.
 
-#### Scenario: Capacity data is incomplete
-- **WHEN** an eligible account's seven-day sample is missing or stale, or its plan weight is unknown
-- **THEN** the aggregate percentage is unknown rather than silently excluding that account
-
-#### Scenario: A day has no observations
-- **WHEN** no valid readiness probes exist for a calendar day
-- **THEN** the heatmap marks the day as unknown and does not invent a normal rate
+## MODIFIED Requirements
 
 ### Requirement: Administrators manage troubleshooting content
 The system SHALL allow existing dashboard administrators to list, search, create, edit, order, publish, withdraw, delete and restore structured troubleshooting guides in Settings. Reads and mutations MUST use the existing administrator-only service control channel. Structured content SHALL contain error code, title, signature, scope, cause, ordered solutions, limitations and an optional HTTP(S) address. No raw HTML SHALL be interpreted. Mutations of existing guides MUST require the current revision and return a conflict when it is stale.
@@ -51,15 +49,6 @@ The system SHALL allow existing dashboard administrators to list, search, create
 #### Scenario: Stale editor saves
 - **WHEN** a second administrator submits an outdated revision
 - **THEN** the update fails with a conflict and the newer content remains unchanged
-
-### Requirement: Guide deletion is recoverable
-The monitor SHALL soft-delete guides and omit deleted, draft and withdrawn guides from public rendering and public data. Restoring a deleted guide MUST restore it as a draft requiring explicit publication. Existing static guides SHALL be imported exactly once, and restart MUST NOT overwrite edits or resurrect deleted guides.
-
-#### Scenario: Administrator deletes and restores a published guide
-- **WHEN** the guide is deleted
-- **THEN** it disappears publicly but remains in the administrator's deleted list
-- **WHEN** the administrator restores it using the current revision
-- **THEN** it becomes a private draft
 
 ### Requirement: Public troubleshooting remains independent and safe
 The existing independent FAQ page SHALL render published guides on the server without depending on status polling or client-side API availability. All administrator text MUST be HTML-escaped, addresses MUST reject non-HTTP(S) schemes and embedded credentials, and private content MUST NOT be embedded in public HTML or responses. Public users MUST NOT receive monitor credentials or an administrator mutation interface.
@@ -83,6 +72,8 @@ The repository SHALL include the independently runnable monitor component under 
 #### Scenario: Existing deployment uses customized guides
 - **WHEN** the source-distribution examples are updated
 - **THEN** no existing runtime guide database or running service is modified
+
+## ADDED Requirements
 
 ### Requirement: FAQ naming and legacy navigation
 The independent guide page SHALL be named Frequently Asked Questions (常见问题), and public navigation and administrator guide-management labels SHALL use that name. Its canonical address SHALL be `/static/faq.html`. The previous `/static/troubleshooting.html` address MUST redirect to the FAQ page while existing guide slugs remain unchanged. Published content and copyable addresses MUST remain readable without status polling or model configuration.

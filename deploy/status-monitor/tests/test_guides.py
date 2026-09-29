@@ -36,7 +36,7 @@ class GuideTests(unittest.TestCase):
         return response.json()
 
     def page(self):
-        return self.client.get("/static/troubleshooting.html").text
+        return self.client.get("/static/faq.html").text
 
     def test_seed_once_and_full_lifecycle_survives_restart(self):
         initial = self.client.get("/internal/guides", headers=self.headers).json()["guides"]

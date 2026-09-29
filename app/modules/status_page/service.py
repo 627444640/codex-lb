@@ -14,12 +14,6 @@ from app.core.exceptions import (
     DashboardConflictError,
     DashboardNotFoundError,
     DashboardServiceUnavailableError,
-    DashboardUpstreamError,
-)
-from app.modules.status_page.assistant_schemas import (
-    AssistantConfigurationResponse,
-    AssistantConfigurationUpdate,
-    AssistantConnectionTest,
 )
 from app.modules.status_page.guide_schemas import GuideListResponse, GuideRecord, GuideRevision, GuideWrite
 from app.modules.status_page.schemas import (
@@ -55,11 +49,6 @@ class StatusPageContentNotFound(DashboardNotFoundError):
     status_code = 404
     code = "status_page_content_not_found"
     message = "The requested status-page content no longer exists."
-
-
-class AssistantTestFailed(DashboardUpstreamError):
-    code = "troubleshooting_model_test_failed"
-    message = "The model test did not complete. Check the saved address, model permissions, API key and daily quota."
 
 
 class MonitorConnection(BaseModel):
@@ -171,24 +160,3 @@ class StatusPageService:
             GuideRecord,
             payload.model_dump_json(by_alias=False),
         )
-
-    async def get_assistant_configuration(self) -> AssistantConfigurationResponse:
-        if not self._connection_file.exists():
-            return AssistantConfigurationResponse(available=False)
-        return await self._request("GET", "/internal/assistant", AssistantConfigurationResponse)
-
-    async def update_assistant_configuration(
-        self, payload: AssistantConfigurationUpdate
-    ) -> AssistantConfigurationResponse:
-        data = payload.model_dump(mode="json", by_alias=False, exclude={"api_key"})
-        data["api_key"] = payload.api_key.get_secret_value() if payload.api_key else None
-        return await self._request("PUT", "/internal/assistant", AssistantConfigurationResponse, json.dumps(data))
-
-    async def test_assistant_connection(self) -> AssistantConnectionTest:
-        try:
-            result = await self._request("POST", "/internal/assistant/test", AssistantConnectionTest, "{}", timeout=55)
-        except (StatusPageUnavailable, StatusPageControlRejected, StatusPageContentNotFound, StatusPageContentConflict):
-            raise AssistantTestFailed() from None
-        if not result.ok:
-            raise AssistantTestFailed()
-        return result

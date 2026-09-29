@@ -7,11 +7,6 @@ from fastapi import APIRouter, Depends, Request
 from app.core.auth.dependencies import require_dashboard_admin_access, set_dashboard_error_format
 from app.core.exceptions import DashboardPermissionError
 from app.dependencies import StatusPageContext, get_status_page_context
-from app.modules.status_page.assistant_schemas import (
-    AssistantConfigurationResponse,
-    AssistantConfigurationUpdate,
-    AssistantConnectionTest,
-)
 from app.modules.status_page.guide_schemas import GuideListResponse, GuideRecord, GuideRevision, GuideWrite
 from app.modules.status_page.schemas import (
     AnnouncementSaved,
@@ -98,25 +93,3 @@ async def restore_guide(
     guide_id: int, payload: GuideRevision, ctx: StatusPageContext = Depends(get_status_page_context)
 ) -> GuideRecord:
     return await ctx.service.delete_guide(guide_id, payload, restore=True)
-
-
-@router.get("/assistant", response_model=AssistantConfigurationResponse)
-async def get_assistant_configuration(
-    ctx: StatusPageContext = Depends(get_status_page_context),
-) -> AssistantConfigurationResponse:
-    return await ctx.service.get_assistant_configuration()
-
-
-@router.put("/assistant", response_model=AssistantConfigurationResponse)
-async def update_assistant_configuration(
-    payload: AssistantConfigurationUpdate,
-    ctx: StatusPageContext = Depends(get_status_page_context),
-) -> AssistantConfigurationResponse:
-    return await ctx.service.update_assistant_configuration(payload)
-
-
-@router.post("/assistant/test", response_model=AssistantConnectionTest)
-async def test_assistant_connection(
-    ctx: StatusPageContext = Depends(get_status_page_context),
-) -> AssistantConnectionTest:
-    return await ctx.service.test_assistant_connection()

@@ -13,7 +13,12 @@ The `/project-conventions` skill is auto-activated on code edits (PreToolUse gua
 | Convention | Location | When |
 |-----------|----------|------|
 | Code Conventions (Full) | `/project-conventions` skill | On code edit (auto-enforced) |
-| Git Workflow | `.agents/conventions/git-workflow.md` | Commit / PR |
+| Git Workflow | `.agents/conventions/git-workflow.md` | Before any requested modification; commit / merge / PR |
+
+Every requested modification in this fork MUST start on a fresh `fix/` branch
+from the current target branch before files are edited. After validation,
+commit on that fix branch and merge it back into the recorded target with
+`--no-ff`. See the Git Workflow convention for publication scope.
 
 ## Workflow (OpenSpec-first)
 

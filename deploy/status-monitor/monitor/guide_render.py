@@ -8,7 +8,7 @@ from .guides import GuideRecord
 
 def render_guides(guides: list[GuideRecord]) -> str:
     if not guides:
-        return '<p class="empty-copy">暂无已发布的排查指南。</p>'
+        return '<p class="empty-copy">暂无已发布的常见问题。</p>'
     parts = []
     for guide in guides:
         e = escape
