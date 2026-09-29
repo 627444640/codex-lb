@@ -1,0 +1,11 @@
+.venv/
+runtime/
+__pycache__/
+*.pyc
+*.db
+*.db-*
+*.sqlite*
+*.log
+control-token.txt
+troubleshooting-assistant.json
+smtp-password.txt

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from tempfile import SpooledTemporaryFile
@@ -12,6 +13,7 @@ from aiohttp import web
 from aiohttp.multipart import BodyPartReader
 from sqlalchemy import select
 
+from app.core.types import JsonValue
 from app.core.utils.time import utcnow
 from app.db.models import ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
@@ -126,6 +128,64 @@ async def source_upstream() -> AsyncIterator[Callable[[_UpstreamHandler], Awaita
 
     for runner in runners:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_source_diffusion_preserves_parameters_and_full_text_snapshots(async_client, source_upstream):
+    model = "mercury-2.5"
+    snapshots = ["first draft", "revised"]
+    payloads: list[dict[str, JsonValue]] = [
+        {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]} for text in snapshots
+    ]
+    payloads.append(
+        {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+        }
+    )
+    raw = b"".join(("data: " + json.dumps(payload) + "\n\n").encode() for payload in payloads) + b"data: [DONE]\n\n"
+
+    async def diffusion(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        assert request.path == "/v1/chat/completions"
+        assert body["stream"] is True and body["diffusing"] is True
+        assert body["model"] == model
+        assert body["max_completion_tokens"] == 2048
+        assert body["response_format"]["type"] == "json_schema"
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for offset in range(0, len(raw), 17):
+            await response.write(raw[offset : offset + 17])
+        await response.write_eof()
+        return response
+
+    base_url = await source_upstream(diffusion)
+    await _create_model_source(async_client, name="synthetic-diffusion", model=model, base_url=base_url)
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "Synthetic test"}],
+            "stream": True,
+            "diffusing": True,
+            "max_completion_tokens": 2048,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.content == raw
 
 
 @pytest.mark.asyncio
