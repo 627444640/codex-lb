@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -22,6 +23,8 @@ from .assistant_settings import AssistantSettings, AssistantStored
 from .assistant_stream import DiffusionState, ModelSnapshot, SSEDecoder
 from .guides import GuideRecord, GuideRepository
 from .store import Store
+
+log = logging.getLogger(__name__)
 
 
 class AssistantError(Exception):
@@ -134,6 +137,8 @@ class TroubleshootingAssistant:
         if self.active >= 2:
             raise AssistantError(429, "busy", "当前咨询较多，请稍后再试。")
         self.active += 1
+        state = DiffusionState()
+        stage, effort = "reservation", "provider_default"
         try:
             await asyncio.to_thread(self.reserve, config.daily_request_limit)
             evidence = [
@@ -184,7 +189,12 @@ class TroubleshootingAssistant:
                     },
                 },
             }
-            decoder, state = SSEDecoder(), DiffusionState()
+            if config.model in {"mercury-2", "mercury-2.5", "mercury2.5"}:
+                # Mercury's default reasoning shares the completion budget with the answer.
+                payload["reasoning_effort"] = "instant"
+            effort = payload.get("reasoning_effort", "provider_default")
+            stage = "upstream_stream"
+            decoder = SSEDecoder()
             last_preview = None
             async with asyncio.timeout(50):
                 async with httpx.AsyncClient(
@@ -212,15 +222,27 @@ class TroubleshootingAssistant:
                                     if preview != last_preview:
                                         last_preview = preview
                                         yield ModelSnapshot(preview)
+            stage = "termination"
             if not state.done or not state.stopped or decoder.buffer or decoder.lines:
                 raise ValueError("Incomplete diffusion stream")
+            stage = "answer_schema"
             answer = ModelAnswer.model_validate_json(state.text)
+            stage = "citations"
             ids = {g.id for g in guides}
             if guides and (not answer.source_ids or not set(answer.source_ids) <= ids):
                 raise ValueError("Ungrounded source identifiers")
             answer.answer = redact_credentials(answer.answer.replace(config.api_key.get_secret_value(), "[已隐藏凭据]"))
             yield answer
-        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError, ValidationError):
+        except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError, ValidationError) as exc:
+            log.warning(
+                "Troubleshooting stream failed stage=%s error_type=%s finish=%s events=%d text_chars=%d reasoning=%s",
+                stage,
+                type(exc).__name__,
+                state.finish_reason,
+                state.events,
+                len(state.text),
+                effort,
+            )
             raise AssistantError(
                 502, "model_unavailable", "模型生成未完成或结果未通过校验，请稍后再试，或直接查看下方指南。"
             ) from None

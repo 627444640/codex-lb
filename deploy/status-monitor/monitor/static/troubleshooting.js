@@ -41,6 +41,20 @@ if(assistantForm){
     return item;
   }
   function setBusy(value){busy=value;send.disabled=busy||!enabled;question.disabled=busy||!enabled;clear.disabled=busy;stop.hidden=!busy;send.textContent=busy?"生成中…":"发送问题";}
+  function waitForDraftPaint(signal){
+    return new Promise((resolve,reject)=>{
+      let frame=null,timer=null;
+      function cleanup(){if(frame!==null)cancelAnimationFrame(frame);if(timer!==null)clearTimeout(timer);signal.removeEventListener("abort",aborted);}
+      function finished(){cleanup();resolve();}
+      function aborted(){cleanup();reject(new DOMException("Stopped","AbortError"));}
+      if(signal.aborted){aborted();return;}
+      signal.addEventListener("abort",aborted,{once:true});
+      if(document.visibilityState!=="visible"){finished();return;}
+      // Only display real received snapshots. Allow a paint even if the next event is already buffered.
+      timer=setTimeout(finished,100);
+      frame=requestAnimationFrame(()=>{frame=null;clearTimeout(timer);timer=setTimeout(finished,65);});
+    });
+  }
   async function availability(){
     try{
       const response=await fetch("/api/troubleshooting/assistant",{cache:"no-store",signal:AbortSignal.timeout(8000)});
@@ -66,10 +80,11 @@ if(assistantForm){
         let error;try{error=await response.json();}catch{throw Error("智能排查暂时不可用，请稍后再试。");}
         throw Error(error.error?.message||error.detail||"智能排查暂时不可用，请稍后再试。");
       }
-      const result=await readAssistantStream(response,snapshot=>{
+      const result=await readAssistantStream(response,async snapshot=>{
         if(!draft)draft=bubble("assistant","",[],true);
         draft.querySelector("p").textContent=snapshot||"正在整理回答…";
         messages.scrollTop=messages.scrollHeight;
+        await waitForDraftPaint(controller.signal);
       });
       draft?.remove();draft=null;
       bubble("assistant",result.answer,result.sources);

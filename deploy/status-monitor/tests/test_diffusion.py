@@ -13,11 +13,15 @@ from monitor.assistant_schemas import ChatRequest, ChatResponse
 from monitor.assistant_stream import DiffusionState, ModelSnapshot, SSEDecoder, answer_preview
 
 
-def frame(text, finish=None):
+def frame(text, finish=None, *, diffusing=False):
     return (
         "data: "
         + json.dumps(
-            {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": finish}]}, ensure_ascii=False
+            {
+                "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": finish}],
+                **({"diffusion_meta": {"diffusion_content": True, "diffusion_progress": 0.0}} if diffusing else {}),
+            },
+            ensure_ascii=False,
         )
         + "\r\n\r\n"
     ).encode()
@@ -71,6 +75,20 @@ class DecoderTests(unittest.TestCase):
             for _ in range(1100):
                 decoder.feed(b":" + b"x" * 4096 + b"\n\n")
 
+    def test_marked_diffusion_can_present_a_denoising_field_name_but_not_citation_scaffolding(self):
+        noisy = '{\n  Wxnswer": "实际Xy初稿\n尚在修订", "source_ids": [2]}'
+        self.assertEqual(answer_preview(noisy), "")
+        self.assertEqual(answer_preview(noisy, diffusing=True), "实际Xy初稿\n尚在修订")
+        self.assertEqual(answer_preview('{"source_ids":"[2]"', diffusing=True), "")
+        self.assertEqual(answer_preview("{garbled without a string delimiter", diffusing=True), "")
+        self.assertEqual(answer_preview('{"ansxer":"真实初稿","source_ids":[2]}', diffusing=True), "真实初稿")
+        missing_colon = '{\n  c%~SxHSH+ "这是一段超过十六字的真实扩散初稿，内容仍在修订中", "source_ids":[2]}'
+        self.assertEqual(answer_preview(missing_colon), "")
+        self.assertEqual(
+            answer_preview(missing_colon, diffusing=True), "这是一段超过十六字的真实扩散初稿，内容仍在修订中"
+        )
+        self.assertEqual(answer_preview('{broken "[12345678901234567890]"}', diffusing=True), "")
+
 
 class DiffusionTests(unittest.TestCase):
     setUp = helpers.AssistantTests.setUp
@@ -86,6 +104,11 @@ class DiffusionTests(unittest.TestCase):
             self.assertEqual(request.url.path, "/v1/chat/completions")
             self.assertTrue(payload["stream"] and payload["diffusing"])
             self.assertEqual(payload["response_format"]["type"], "json_schema")
+            self.assertEqual(payload["max_completion_tokens"], 2048)
+            if payload["model"] in {"mercury-2", "mercury-2.5", "mercury2.5"}:
+                self.assertEqual(payload["reasoning_effort"], "instant")
+            else:
+                self.assertNotIn("reasoning_effort", payload)
             return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, stream=stream)
 
         return stream, patch(
@@ -97,6 +120,25 @@ class DiffusionTests(unittest.TestCase):
         return next(
             g.id for g in self.app.state.guides.list(public=True) if g.slug == "error-websocket-payload-too-large"
         )
+
+    def test_mercury_answers_use_instant_reasoning_without_relaxing_stream_validation(self):
+        for model in ("mercury-2.5", "mercury-2", "mercury2.5"):
+            with self.subTest(model=model):
+                self.configure(model=model)
+                source = self.source_id()
+                stream, mock = self.model_packets(
+                    [
+                        frame(answer("收到的实际初稿", source)),
+                        frame(answer("完整的指南答案", source), "stop"),
+                        b"data: [DONE]\n\n",
+                    ]
+                )
+                with mock:
+                    response = self.ask(stream=True)
+                self.assertIn("event: completed", response.text)
+                self.assertNotIn("event: error", response.text)
+                self.assertTrue(stream.closed)
+                self.assertEqual(self.app.state.assistant.active, 0)
 
     def test_browser_stream_replaces_drafts_and_only_completes_after_valid_terminal(self):
         self.configure()
@@ -119,6 +161,74 @@ class DiffusionTests(unittest.TestCase):
         self.assertEqual(len(events[-1][1]["sources"]), 1)
         self.assertTrue(stream.closed)
         self.assertEqual(self.app.state.assistant.active, 0)
+
+    def test_real_diffusion_shape_survives_noisy_keys_and_duplicate_stop_marker(self):
+        self.configure(model="mercury-2.5")
+        source = self.source_id()
+        noisy = '{\n  Wxnswer": "实际Xy初稿仍在修订", "source_ids": [' + str(source) + "]}"
+        stream, mock = self.model_packets(
+            [
+                frame(noisy, diffusing=True),
+                frame(answer("最终指南建议", source), "stop", diffusing=True),
+                b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+                b"data: [DONE]\n\n",
+            ]
+        )
+        with mock:
+            response = self.ask(stream=True)
+        events = [json.loads(part.split("data: ", 1)[1]) for part in response.text.strip().split("\n\n")]
+        self.assertEqual(events[0], {"text": "实际Xy初稿仍在修订"})
+        self.assertEqual(events[1], {"text": "最终指南建议"})
+        self.assertEqual(events[2]["answer"], "最终指南建议")
+        self.assertTrue(stream.closed)
+
+    def test_noisy_delimiter_draft_is_presented_before_final_answer(self):
+        self.configure(model="mercury-2.5")
+        noisy = '{\n  c%~SxHSH+ "这是一段超过十六字的真实扩散初稿，内容仍在修订中"}'
+        stream, mock = self.model_packets(
+            [
+                frame(noisy, diffusing=True),
+                frame(answer("最终指南建议", self.source_id()), "stop"),
+                b"data: [DONE]\n\n",
+            ]
+        )
+        with mock:
+            response = self.ask(stream=True)
+        events = [json.loads(part.split("data: ", 1)[1]) for part in response.text.strip().split("\n\n")]
+        self.assertEqual(events[0], {"text": "这是一段超过十六字的真实扩散初稿，内容仍在修订中"})
+        self.assertEqual(events[-1]["answer"], "最终指南建议")
+
+    def test_noisy_final_json_is_never_accepted_as_a_completed_answer(self):
+        self.configure(model="mercury-2.5")
+        stream, mock = self.model_packets(
+            [
+                frame('{Wxnswer": "未完成的初稿"}', diffusing=True),
+                frame('{Wxnswer": "仍未完成"}', "stop", diffusing=True),
+                b"data: [DONE]\n\n",
+            ]
+        )
+        with mock:
+            response = self.ask(stream=True)
+        self.assertIn("event: error", response.text)
+        self.assertNotIn("event: completed", response.text)
+
+    def test_failure_diagnostics_contain_only_stream_metadata(self):
+        self.configure(model="mercury-2.5")
+        stream, mock = self.model_packets(
+            [
+                frame(answer("PRIVATE_MODEL_CONTENT", 999999), "stop"),
+                b"data: [DONE]\n\n",
+            ]
+        )
+        with mock, self.assertLogs("monitor.assistant", level="WARNING") as captured:
+            response = self.ask(stream=True)
+        self.assertIn("event: error", response.text)
+        message = "\n".join(captured.output)
+        self.assertIn("stage=citations", message)
+        self.assertIn("reasoning=instant", message)
+        self.assertNotIn("PRIVATE_MODEL_CONTENT", message)
+        self.assertNotIn(helpers.SYNTHETIC_KEY, message)
+        self.assertNotIn("999999", message)
 
     def test_bad_terminal_or_invalid_citations_discard_provisional_answer(self):
         self.configure()

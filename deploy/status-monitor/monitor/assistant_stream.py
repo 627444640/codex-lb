@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from itertools import islice
 
 MAX_STREAM_BYTES = 4 * 1024 * 1024
 MAX_EVENT_BYTES = 256 * 1024
@@ -46,30 +47,64 @@ class SSEDecoder:
         return events
 
 
-def answer_preview(snapshot: str) -> str:
+def _noisy_answer_value(snapshot: str) -> str:
+    """The answer is the only long string in the requested schema.
+
+    Denoising may remove a key's quote or colon, changing quote pairing. Try
+    bounded, overlapping string starts rather than returning the JSON wrapper.
+    """
+    best = ""
+    decoder = json.JSONDecoder(strict=False)
+    for match in islice(re.finditer('"', snapshot), 32):
+        try:
+            text, _ = decoder.raw_decode(snapshot, match.start())
+        except ValueError:
+            continue
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if (
+            len(text) > max(15, len(best))
+            and not text.startswith((":", ",", "{", "}", "[", "]"))
+            and re.search(r"[^\W\d_]", text)
+        ):
+            best = text[:6000]
+    return best
+
+
+def answer_preview(snapshot: str, *, diffusing: bool = False) -> str:
     """Expose only the answer field, never JSON scaffolding or citation IDs."""
     try:
         value = json.loads(snapshot)
-        text = value.get("answer", "") if isinstance(value, dict) else ""
-        return text[:6000] if isinstance(text, str) else ""
+        text = value.get("answer") if isinstance(value, dict) else None
+        if isinstance(text, str):
+            return text[:6000]
+        if not diffusing:
+            return ""
     except ValueError:
         pass
     match = re.match(r'^\s*\{\s*"answer"\s*:\s*"', snapshot)
+    if not match and diffusing:
+        # Inception denoises the JSON syntax too. The requested first field is
+        # the answer string; expose its value only when the delimiter survives.
+        match = re.match(r'^\s*\{\s*([^{}:\r\n]{1,48}?)\s*:\s*"', snapshot)
+        if match and match.group(1).strip().strip('"') == "source_ids":
+            return ""
     if not match:
-        return ""
+        return _noisy_answer_value(snapshot) if diffusing else ""
     remainder = snapshot[match.end() :]
     try:
-        text, _ = json.JSONDecoder().raw_decode('"' + remainder)
+        text, _ = json.JSONDecoder(strict=not diffusing).raw_decode('"' + remainder)
         return text[:6000] if isinstance(text, str) else ""
     except ValueError:
         # Hold a trailing partial escape until the next full snapshot arrives.
         for trim in range(min(7, len(remainder) + 1)):
             prefix = remainder[: len(remainder) - trim] if trim else remainder
             try:
-                return json.loads('"' + prefix + '"')[:6000]
+                return json.loads('"' + prefix + '"', strict=not diffusing)[:6000]
             except ValueError:
                 continue
-    return ""
+    return _noisy_answer_value(snapshot) if diffusing else ""
 
 
 class DiffusionState:
@@ -77,8 +112,11 @@ class DiffusionState:
         self.text = ""
         self.stopped = False
         self.done = False
+        self.events = 0
+        self.finish_reason: str | None = None
 
     def consume(self, data: str) -> str | None:
+        self.events += 1
         if self.done:
             raise ValueError("Data after stream terminator")
         if data.strip() == "[DONE]":
@@ -102,6 +140,8 @@ class DiffusionState:
             raise ValueError("Invalid delta")
         content = delta.get("content")
         finish = choice.get("finish_reason")
+        if finish is not None:
+            self.finish_reason = finish if finish in {"stop", "length", "content_filter", "tool_calls"} else "other"
         if finish not in (None, "stop"):
             raise ValueError("Incomplete model answer")
         updated = None
@@ -111,7 +151,9 @@ class DiffusionState:
             if len(content.encode("utf-8")) > MAX_SNAPSHOT_BYTES:
                 raise ValueError("Snapshot too large")
             self.text = content
-            updated = answer_preview(content)
+            metadata = payload.get("diffusion_meta")
+            diffusing = finish is None and isinstance(metadata, dict) and metadata.get("diffusion_content") is True
+            updated = answer_preview(content, diffusing=diffusing)
         if finish == "stop":
             self.stopped = True
         return updated

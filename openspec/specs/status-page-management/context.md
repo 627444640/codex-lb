@@ -57,3 +57,39 @@ The selected troubleshooting model defaults to the official `mercury-2.5` identi
 The browser requests SSE using `stream: true` on the public chat POST. The monitor sends `stream: true` and `diffusing: true` to its configured Chat Completions gateway. Provider `delta.content` values are full snapshots, not append-only deltas. Only the provisional `answer` field is exposed as a replacement snapshot; citation IDs/JSON scaffolding are never shown as drafts. A valid `stop` and `[DONE]`, final answer/citation checks and current guide revisions are required for a completed event. Only completed answers enter history. A stop button/page close aborts the reader; cancellation closes the upstream and releases concurrency. Legacy callers that omit `stream` still receive one validated JSON answer.
 
 The gateway's external-source path already preserves unknown provider parameters and raw SSE bytes; regression coverage now checks diffusion passthrough. Existing usage-limited source keys intentionally buffer streams until usage settlement. That policy is unchanged: it can delay all snapshots until the end, and operators must verify the chosen key/gateway path before claiming live diffusion. Do not disable quota protections or synthesize animation to conceal buffering. The new default is `mercury-2.5`; valid saved `mercury2.5` aliases remain as administrator choices until explicitly edited.
+
+## Live Mercury diffusion compatibility
+
+Live provider probes on 2026-09-29 found two behaviors that synthetic full-JSON
+fixtures did not reproduce. Default `medium` reasoning consumed most of the
+2048-token budget and ended a guide-shaped response with `finish_reason: length`
+before an answer could be validated. The known Mercury 2 / 2.5 identifiers now
+request `reasoning_effort: instant`; the token budget, saved provider/model/key,
+request controls and final answer/citation validation remain unchanged. This
+uses Inception's [documented reasoning profile](https://docs.inceptionlabs.ai/capabilities/reasoning-efforts).
+
+Real intermediate snapshots explicitly carry
+`diffusion_meta.diffusion_content: true`, and even the `answer` field name can
+be noisy. For those non-terminal frames only, a surviving first-string-value
+delimiter can identify provisional answer text without displaying its damaged
+key or the known citation field. If the key delimiter is also corrupted, a
+bounded scan of at most 32 quote starts can identify a surviving longer text
+fragment: the answer is the only string value in the requested schema. Numeric
+citation lists and short field names are excluded. Unidentifiable frames are
+omitted. Final JSON
+is always parsed and validated strictly; the relaxed draft extraction never
+promotes a malformed answer to completion.
+
+The provider can deliver multiple real snapshots within milliseconds. The
+browser now awaits its snapshot callback, allowing a rendering frame and a
+short 65 ms presentation before consuming the next event. A 100 ms fallback
+prevents a suspended animation frame from stalling the stream, hidden tabs skip
+pacing, and abort interrupts the wait. All displayed text comes from actual
+received snapshots; no fake denoising text is generated. Providers can still
+supply only one safely identifiable snapshot for a short answer. These changes
+do not remove upstream or gateway buffering and do not replace live-provider
+acceptance with an animation.
+
+Failed streams log only the processing stage, exception type, normalized finish
+reason, event count, text length and reasoning profile. Questions, history,
+answer content, source identifiers and credentials are not logged.

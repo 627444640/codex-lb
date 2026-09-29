@@ -4,7 +4,7 @@ export async function readAssistantStream(response, onSnapshot) {
   }
   const reader = response.body.getReader(), decoder = new TextDecoder("utf-8", {fatal:true});
   let buffer = "", kind = "", lines = [], eventSize = 0, total = 0;
-  function line(value) {
+  async function line(value) {
     eventSize += value.length + 1;
     if (eventSize > 262144) throw Error("流式回答过大，请简化问题后再试。");
     if (value !== "") {
@@ -20,7 +20,7 @@ export async function readAssistantStream(response, onSnapshot) {
     if (name === "error") throw Error(typeof payload.message === "string" ? payload.message.slice(0,400) : "模型生成未完成。");
     if (name === "snapshot") {
       if (typeof payload.text !== "string" || payload.text.length > 6000) throw Error("流式回答格式不正确。");
-      onSnapshot(payload.text); return null;
+      await onSnapshot(payload.text); return null;
     }
     if (name !== "completed" || typeof payload.answer !== "string" || !payload.answer || payload.answer.length > 6000 ||
         !Array.isArray(payload.sources) || payload.sources.length > 3 || typeof payload.model_used !== "boolean" ||
@@ -35,7 +35,7 @@ export async function readAssistantStream(response, onSnapshot) {
       buffer += decoder.decode(value, {stream:!done});
       let match;
       while ((match = /\r\n|\n|\r(?=[\s\S])/.exec(buffer))) {
-        const result = line(buffer.slice(0,match.index)); buffer = buffer.slice(match.index+match[0].length);
+        const result = await line(buffer.slice(0,match.index)); buffer = buffer.slice(match.index+match[0].length);
         if (result) return result;
       }
       if (buffer.length+eventSize > 262144) throw Error("流式回答过大，请稍后再试。");

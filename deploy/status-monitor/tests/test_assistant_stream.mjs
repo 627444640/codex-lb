@@ -35,3 +35,14 @@ test('SSE comments and multiline data are decoded',async()=>{
 test('unterminated oversized frame is bounded',async()=>{
   await assert.rejects(readAssistantStream(response('data: '+ 'x'.repeat(262145),4096),()=>{}),/过大/);
 });
+test('coalesced events wait for snapshot presentation before advancing or completing',async()=>{
+  const text=event('snapshot',{text:'实际初稿'})+event('snapshot',{text:'实际修订稿'})+event('completed',final);
+  const shown=[],pending=[];let completed=false;
+  const result=readAssistantStream(response(text,100000),async value=>{
+    shown.push(value);await new Promise(resolve=>pending.push(resolve));
+  }).then(value=>{completed=true;return value;});
+  const tick=()=>new Promise(resolve=>setImmediate(resolve));
+  await tick();assert.deepEqual(shown,['实际初稿']);assert.equal(completed,false);
+  pending.shift()();await tick();assert.deepEqual(shown,['实际初稿','实际修订稿']);assert.equal(completed,false);
+  pending.shift()();assert.deepEqual(await result,final);assert.equal(completed,true);
+});
