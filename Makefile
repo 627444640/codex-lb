@@ -107,7 +107,7 @@ typecheck:
 .PHONY: test-deployment-macos test-status-monitor
 test-status-monitor:
 	cd deploy/status-monitor && ../../.venv/bin/python -m unittest discover -s tests -v
-	cd deploy/status-monitor && NODE_PATH="$(CURDIR)/frontend/node_modules" node --test tests/test_assistant_stream.mjs tests/test_assistant_ui.cjs
+	cd deploy/status-monitor && NODE_PATH="$(CURDIR)/frontend/node_modules" node --test tests/test_faq_ui.cjs
 
 test-deployment-macos:
 	uv run ruff check deploy/macos

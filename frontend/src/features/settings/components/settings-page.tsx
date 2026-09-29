@@ -23,7 +23,6 @@ import { RoutingSettings } from "@/features/settings/components/routing-settings
 import { SessionSettings } from "@/features/settings/components/session-settings";
 import { StatusPageSettings } from "@/features/settings/components/status-page-settings";
 import { TroubleshootingSettings } from "@/features/settings/components/troubleshooting-settings";
-import { TroubleshootingAssistantSettings } from "@/features/settings/components/troubleshooting-assistant-settings";
 import { SettingsSkeleton } from "@/features/settings/components/settings-skeleton";
 import { UpstreamProxySettings } from "@/features/settings/components/upstream-proxy-settings";
 import { StickySessionsSection } from "@/features/sticky-sessions/components/sticky-sessions-section";
@@ -120,7 +119,6 @@ export function SettingsPage() {
             <AppearanceSettings />
             {canWrite ? <StatusPageSettings /> : null}
             {canWrite ? <TroubleshootingSettings /> : null}
-            {canWrite ? <TroubleshootingAssistantSettings /> : null}
             <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             {canWrite ? (

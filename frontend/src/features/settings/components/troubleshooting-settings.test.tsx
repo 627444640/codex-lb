@@ -35,6 +35,7 @@ beforeEach(() => {
 describe("TroubleshootingSettings", () => {
   it("creates a private draft and previews markup as text", async () => {
     const user = userEvent.setup(); const { container } = mount();
+    expect(screen.getByRole("heading", { name: "Frequently asked questions" })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "New guide" }));
     for (const [label, value] of [["Error code or identifier", "TEST"], ["Guide title", "New test guide"],
       ["Symptoms", "A symptom"], ["Cause", "<img src=x onerror=alert(1)>"], ["Solution steps", "First step\n\nSecond step"]]) {

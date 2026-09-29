@@ -117,6 +117,14 @@ describe("SettingsPage", () => {
   const settings = createDashboardSettings();
   const upstreamAdmin = { endpoints: [], pools: [], bindings: [], routingEnabled: false, defaultPoolId: null };
 
+  it("keeps FAQ management and removes assistant configuration", () => {
+    renderSettings();
+    expect(screen.getByRole("heading", { name: "Frequently asked questions" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Troubleshooting assistant" })).not.toBeInTheDocument();
+    expect(document.getElementById("troubleshooting-assistant-settings")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Test saved model" })).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     useAuthStore.setState({
       authMode: "standard",

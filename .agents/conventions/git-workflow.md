@@ -1,7 +1,7 @@
 # Git Workflow & Contribution
 
-1. **Important**: Create branches, commits, or PRs **only upon explicit user request**. Implicit actions are not allowed.
-2. **Branch Naming**: Use prefixes like `feature/`, `fix/`, `chore/` (e.g., `feature/add-login`).
+1. **Maintainer workflow (2026-09-30)**: Every requested modification in this fork starts on a **fresh `fix/` branch** based on the branch currently being updated. Complete the change and its checks on that fix branch, then merge it back into the starting branch with `--no-ff`. Do not reuse a previous fix branch or edit the target branch directly. This standing instruction authorizes the branch, commits and merge needed for an explicitly requested change. Pushes and PR creation still require authorization in the user's task scope.
+2. **Branch Naming**: Use `fix/<short-change-description>-<date>` for each new modification (e.g., `fix/faq-without-llm-20260930`). Record the starting target branch before switching.
 3. **Commit Messages**: Follow [Conventional Commits](https://www.conventionalcommits.org/).
    - Format: `<type>(<scope>): <description>`
    - Types: `feat`, `fix`, `docs`, `refactor`, `chore`, `test`
@@ -14,10 +14,13 @@
 5. **Workflow**:
 
    ```bash
-   git checkout -b feature/add-login
+   git switch -c fix/add-login-20260930
    git commit -m "feat(api): add auth endpoint"
+   # After validation, switch back to the recorded target and merge:
+   git switch <starting-branch>
+   git merge --no-ff fix/add-login-20260930
    # Only on explicit request:
-   git push -u origin feature/add-login
+   git push origin <starting-branch> fix/add-login-20260930
    gh pr create --title "feat(api): add auth endpoint" --body "..."
    ```
 
