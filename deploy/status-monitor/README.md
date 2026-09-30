@@ -20,7 +20,9 @@ Initialization creates a private `runtime/config.json` and service-control crede
 .venv/bin/python -m monitor serve --host 127.0.0.1 --port 2466
 ```
 
-Prepare the optional LB connector in its data directory as described in the operator guide. Keep the connector and credential files private (0600); do not put their contents in Git or the browser. Public deployment requires a separately configured HTTPS reverse proxy. The optional `scripts/service.py` manages only a macOS per-user LaunchAgent and refuses to overwrite a conflicting existing definition; it is not run automatically.
+Prepare the optional LB connector in its data directory as described in the operator guide. Keep the connector and credential files private (0600); do not put their contents in Git or the browser. The monitor process remains on loopback even when the public page is opened by other LAN clients. Use a separate HTTPS reverse-proxy listener (the maintained macOS example uses port `2467`) and keep the `/internal/*` control paths denied at that proxy. Set `origin` to the canonical HTTPS LAN origin and list any additional LAN host aliases in `allowed_hosts`; do not use a cleartext non-loopback listener. The optional `scripts/service.py` manages only a macOS per-user LaunchAgent and refuses to overwrite a conflicting existing definition; it is not run automatically.
+
+For the current single-host LAN deployment, the public status page is served at `https://192.168.3.182:2467/` (the mDNS alias `https://123Mac.local:2467/` is also accepted). LAN clients must trust the Caddy internal CA certificate. The Settings connector remains `http://127.0.0.1:2466` and is never replaced with the LAN URL. These addresses are deployment values, not portable source defaults; update the private runtime copy when the host address changes.
 
 Customize seeded guide addresses through **Settings → Frequently asked questions**. Distributed addresses are examples, not working endpoints. Seed import runs only once; subsequent starts retain administrator edits, withdrawals and soft deletions.
 

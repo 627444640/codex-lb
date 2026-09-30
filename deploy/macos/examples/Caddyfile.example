@@ -24,3 +24,22 @@ https://localhost:8443 {
         header_up -CF-Connecting-IP
     }
 }
+
+# Optional LAN-only read-only status monitor. Keep the monitor process itself
+# on 127.0.0.1:2466. Replace the example hostname with the LAN hostname or IP
+# that is covered by the internal CA certificate and monitor `origin`.
+https://status.example.lan:2467 {
+    bind 0.0.0.0
+    tls internal
+    @outside not remote_ip 127.0.0.1/32 ::1/128 192.168.3.0/24
+    respond @outside "Access limited to the configured local network." 403
+    @control path /internal/*
+    respond @control "Not Found" 404
+    reverse_proxy 127.0.0.1:2466 {
+        header_up X-Forwarded-For {client_ip}
+        header_up -Forwarded
+        header_up -X-Real-IP
+        header_up -True-Client-IP
+        header_up -CF-Connecting-IP
+    }
+}

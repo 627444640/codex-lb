@@ -68,7 +68,14 @@ def create_app(settings: Settings, *, run_collector=True, collector=collect, con
     app.state.store = store
     app.state.guides = guides
     app.add_middleware(
-        TrustedHostMiddleware, allowed_hosts=[urlsplit(settings.origin).hostname, "127.0.0.1", "localhost"]
+        TrustedHostMiddleware,
+        allowed_hosts=list(
+            dict.fromkeys(
+                host.lower()
+                for host in [urlsplit(settings.origin).hostname, *settings.allowed_hosts, "127.0.0.1", "localhost"]
+                if host
+            )
+        ),
     )
 
     def authenticated_control(request):

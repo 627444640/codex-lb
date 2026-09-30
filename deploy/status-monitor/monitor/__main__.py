@@ -34,6 +34,7 @@ def main():
             "source_db": str(Path.home() / ".codex-lb/store.db"),
             "state_dir": ".",
             "origin": "http://127.0.0.1:2466",
+            "allowed_hosts": [],
             "title": "Codex LB",
             "poll_seconds": 60,
             "smtp": {
