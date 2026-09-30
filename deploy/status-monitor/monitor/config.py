@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +15,7 @@ class Settings:
     source_db: Path
     state_dir: Path
     origin: str = "http://127.0.0.1:2466"
+    allowed_hosts: tuple[str, ...] = field(default_factory=tuple)
     title: str = "Codex LB"
     poll_seconds: int = 60
     stale_seconds: int = 900
@@ -65,6 +68,16 @@ class Settings:
             raise ValueError("Origin must not contain credentials or parameters")
         if u.scheme == "http" and u.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Non-local deployment requires HTTPS")
+        if not isinstance(self.allowed_hosts, (tuple, list)):
+            raise ValueError("Allowed hosts must be a list")
+        for host in self.allowed_hosts:
+            if not isinstance(host, str) or not host or host != host.strip():
+                raise ValueError("Allowed hosts must contain trimmed host names")
+            try:
+                ip_address(host)
+            except ValueError:
+                if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", host):
+                    raise ValueError("Invalid allowed host") from None
         if not 10 <= self.poll_seconds <= 3600 or not 60 <= self.stale_seconds <= 86400:
             raise ValueError("Invalid monitoring interval")
         if not 60 <= self.request_window_seconds <= 3600 or not 1 <= self.retention_days <= 365:
@@ -100,6 +113,8 @@ def load_settings(path: Path):
         data[key] = p if p.is_absolute() else base / p
     if "checks" in data:
         data["checks"] = tuple(data["checks"])
+    if "allowed_hosts" in data:
+        data["allowed_hosts"] = tuple(data["allowed_hosts"])
     if data.get("smtp", {}).get("password_file"):
         p = Path(data["smtp"]["password_file"]).expanduser()
         data["smtp"]["password_file"] = str(p if p.is_absolute() else base / p)

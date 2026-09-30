@@ -111,6 +111,29 @@ class Fixture(unittest.TestCase):
 
 
 class CollectorTests(Fixture):
+    def test_allowed_hosts_accepts_lan_aliases_and_rejects_malformed_values(self):
+        self.assertEqual(
+            Settings(
+                source_db=self.source,
+                state_dir=self.root / "lan-monitor",
+                origin="https://192.168.3.182:2467",
+                allowed_hosts=("123Mac.local",),
+                checks=(),
+            )
+            .validate()
+            .allowed_hosts,
+            ("123Mac.local",),
+        )
+        for host in ("*", "status.example/path", "status.example:2467", "status example"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                Settings(
+                    source_db=self.source,
+                    state_dir=self.root / "lan-monitor",
+                    origin="https://192.168.3.182:2467",
+                    allowed_hosts=(host,),
+                    checks=(),
+                ).validate()
+
     def test_actual_weekly_primary_not_fabricated_five_hours(self):
         p = read_source(self.settings, self.now)["pool"]
         self.assertEqual(p["quota_ready"], 1)
@@ -309,6 +332,22 @@ class ControlTests(Fixture):
             self.assertNotIn(key, response.text)
         for path in ("/admin", "/api/admin/overview", "/static/admin.html", "/static/admin.js"):
             self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_trusted_host_accepts_configured_lan_aliases_only(self):
+        settings = Settings(
+            source_db=self.source,
+            state_dir=self.root / "lan-host-monitor",
+            origin="https://192.168.3.182:2467",
+            allowed_hosts=("123Mac.local",),
+            checks=(),
+        )
+        app = create_app(settings, run_collector=False)
+        with TestClient(app, base_url=settings.origin, client=("192.168.3.88", 32100)) as lan:
+            self.assertEqual(lan.get("/").status_code, 200)
+        with TestClient(app, base_url="https://123Mac.local:2467", client=("192.168.3.88", 32100)) as alias:
+            self.assertEqual(alias.get("/static/faq.html").status_code, 200)
+        with TestClient(app, base_url="https://unlisted.example:2467", client=("192.168.3.88", 32100)) as unknown:
+            self.assertEqual(unknown.get("/").status_code, 400)
 
     def test_control_requires_private_token_and_loopback_peer(self):
         self.assertEqual(self.client.get("/internal/settings").status_code, 401)

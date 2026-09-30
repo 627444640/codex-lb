@@ -43,6 +43,29 @@ The LaunchAgent labels are `com.local.codex-lb` and
 labels and the fixed ports belong to the intended deployment before using
 the management commands. The source checkout does not install LaunchAgents.
 
+## LAN status monitor exposure
+
+The independent status monitor should remain bound to `127.0.0.1:2466`. To
+make its read-only status and FAQ pages available on the private LAN, add a
+separate Caddy HTTPS site on port `2467` that reverse-proxies to that loopback
+listener. Use the existing internal CA and restrict the site with a
+`remote_ip` matcher for the configured LAN CIDR plus loopback. Return a denial
+for `/internal/*` before the reverse proxy; those paths are the private
+Settings connector and must not become LAN routes.
+
+The monitor `origin` must be the canonical HTTPS LAN origin, for example
+`https://192.168.3.182:2467`, and `allowed_hosts` may list a second LAN alias
+such as `123Mac.local`. The Codex LB Settings connector continues to use
+`http://127.0.0.1:2466` and its private token file. LAN clients need the
+Caddy internal CA root certificate. Do not bind the monitor directly to a
+non-loopback cleartext address.
+
+Back up the private monitor configuration and Caddyfile before changing this
+listener. Validate the adapted Caddyfile, the loopback health endpoint, the
+LAN HTTPS overview and FAQ, the proxy-level `/internal/*` denial, and an
+outside-LAN denial. Rollback restores only the saved monitor origin/host list
+and Caddy site block, then reloads the existing jobs.
+
 ## Initialization and commands
 
 CLI help can be viewed directly without creating any runtime configuration:
