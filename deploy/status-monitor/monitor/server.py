@@ -67,14 +67,11 @@ def create_app(settings: Settings, *, run_collector=True, collector=collect, con
     app = FastAPI(title="Codex LB Status", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.guides = guides
+    configured_hosts = [urlsplit(settings.origin).hostname, *settings.allowed_hosts, "127.0.0.1", "localhost"]
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=list(
-            dict.fromkeys(
-                host.lower()
-                for host in [urlsplit(settings.origin).hostname, *settings.allowed_hosts, "127.0.0.1", "localhost"]
-                if host
-            )
+            dict.fromkeys(candidate for host in configured_hosts if host for candidate in (host, host.lower()))
         ),
     )
 

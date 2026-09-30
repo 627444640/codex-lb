@@ -345,7 +345,10 @@ class ControlTests(Fixture):
         with TestClient(app, base_url=settings.origin, client=("192.168.3.88", 32100)) as lan:
             self.assertEqual(lan.get("/").status_code, 200)
         with TestClient(app, base_url="https://123Mac.local:2467", client=("192.168.3.88", 32100)) as alias:
-            self.assertEqual(alias.get("/static/faq.html").status_code, 200)
+            self.assertEqual(
+                alias.get("/static/faq.html", headers={"Host": "123Mac.local:2467"}).status_code,
+                200,
+            )
         with TestClient(app, base_url="https://unlisted.example:2467", client=("192.168.3.88", 32100)) as unknown:
             self.assertEqual(unknown.get("/").status_code, 400)
 
