@@ -53,10 +53,11 @@ WEEKLY_WEIGHTS = {
 }
 
 
-def weekly_capacity(pool):
+def weekly_capacity_details(pool):
     if pool is None:
-        return None
+        return None, None
     numerator = denominator = 0.0
+    resets = []
     for plan in pool["plans"]:
         if not plan["active"]:
             continue
@@ -69,11 +70,17 @@ def weekly_capacity(pool):
             or weekly["known"] != weekly["expected"]
             or plan["plan"] not in WEEKLY_WEIGHTS
         ):
-            return None
+            return None, None
+        if weekly.get("next_reset_at") is not None:
+            resets.append(weekly["next_reset_at"])
         weight = WEEKLY_WEIGHTS[plan["plan"]] * plan["active"]
         numerator += weight * weekly["remaining_percent"]
         denominator += weight
-    return round(numerator / denominator, 2) if denominator else None
+    return (round(numerator / denominator, 2), min(resets) if resets else None) if denominator else (None, None)
+
+
+def weekly_capacity(pool):
+    return weekly_capacity_details(pool)[0]
 
 
 class Store:
@@ -291,6 +298,7 @@ class Store:
             s["components"] = [
                 {"id": c["id"], "name": c["name"], "status": "unknown", "detail": "采样已过期"} for c in s["components"]
             ]
+        weekly_remaining_percent, weekly_next_reset_at = weekly_capacity_details(s["pool"])
         # Explicit output contract: never serialize Settings, auth, or SMTP objects.
         return {
             "title": self.settings.title,
@@ -299,7 +307,10 @@ class Store:
             "stale": stale,
             "poll_seconds": self.settings.poll_seconds,
             "components": s["components"],
-            "capacity": {"weekly_remaining_percent": weekly_capacity(s["pool"])},
+            "capacity": {
+                "weekly_remaining_percent": weekly_remaining_percent,
+                "weekly_next_reset_at": weekly_next_reset_at,
+            },
             "requests": s["requests"],
             "history": self.history(now),
             "incidents": self.incidents(),

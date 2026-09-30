@@ -20,6 +20,8 @@ function render(s){
   $("weekly-percent").textContent=percent(weekly);
   $("weekly-progress").value=weekly??0;
   $("weekly-progress").setAttribute("aria-label",`7 日剩余容量 ${percent(weekly)}`);
+  const weeklyReset=s.capacity?.weekly_next_reset_at;
+  $("weekly-reset").textContent=weeklyReset==null?"下一次重置：—":`下一次重置：${date(weeklyReset)}`;
   $("components").replaceChildren();
   for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`);main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(labels[c.status]));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
   if(!s.components?.length)$("components").append(el("p","empty-copy","等待健康检查"));
