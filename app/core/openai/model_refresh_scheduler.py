@@ -340,7 +340,7 @@ async def _ensure_fresh_with_transport_recovery(
     try:
         return await auth_manager.ensure_fresh(account, force=force)
     except RefreshError as exc:
-        if not exc.transport_error or transport_recovery.attempted:
+        if not exc.transport_error or not exc.retryable_same_contract or transport_recovery.attempted:
             raise
 
         await _refresh_http_client_after_transport_error(account, exc)

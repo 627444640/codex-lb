@@ -550,6 +550,8 @@ class UsageUpdater:
         access_token_override: str | None = None,
     ) -> AccountRefreshResult:
         access_token = access_token_override or self._encryptor.decrypt(account.access_token_encrypted)
+        # Bind permanent status changes to the credential version used by this request.
+        attempted_refresh_token_encrypted = account.refresh_token_encrypted
         payload: UsagePayload | None = None
         try:
             route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
@@ -569,7 +571,11 @@ class UsageUpdater:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         except UsageFetchError as exc:
             if _should_deactivate_for_usage_error(exc):
-                await self._deactivate_for_client_error(account, exc)
+                await self._deactivate_for_client_error(
+                    account,
+                    exc,
+                    expected_refresh_token_encrypted=attempted_refresh_token_encrypted,
+                )
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
             if access_token_override is not None:
                 _mark_usage_refresh_auth_cooldown(account.id, exc.status_code)
@@ -583,6 +589,7 @@ class UsageUpdater:
                 _mark_usage_refresh_auth_cooldown(account.id, exc.status_code)
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
+            attempted_refresh_token_encrypted = account.refresh_token_encrypted
             try:
                 route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
                 payload = await fetch_usage(
@@ -601,7 +608,11 @@ class UsageUpdater:
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
             except UsageFetchError as retry_exc:
                 if _should_deactivate_for_usage_error(retry_exc):
-                    await self._deactivate_for_client_error(account, retry_exc)
+                    await self._deactivate_for_client_error(
+                        account,
+                        retry_exc,
+                        expected_refresh_token_encrypted=attempted_refresh_token_encrypted,
+                    )
                 else:
                     _mark_usage_refresh_auth_cooldown(account.id, retry_exc.status_code)
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
@@ -752,7 +763,13 @@ class UsageUpdater:
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
         return AccountRefreshResult(usage_written=usage_written)
 
-    async def _deactivate_for_client_error(self, account: Account, exc: UsageFetchError) -> None:
+    async def _deactivate_for_client_error(
+        self,
+        account: Account,
+        exc: UsageFetchError,
+        *,
+        expected_refresh_token_encrypted: bytes,
+    ) -> None:
         if not self._auth_manager:
             return
         reason = f"Usage API error: HTTP {exc.status_code} - {exc.message}"
@@ -770,7 +787,20 @@ class UsageUpdater:
             exc.message,
             get_request_id(),
         )
-        await self._auth_manager._repo.update_status(account.id, status, reason)
+        repo = cast(AccountsRepositoryWithStatusComparePort, self._auth_manager._repo)
+        updated = await repo.update_status_if_current(
+            account.id,
+            status,
+            reason,
+            expected_status=account.status,
+            expected_deactivation_reason=account.deactivation_reason,
+            expected_reset_at=account.reset_at,
+            expected_blocked_at=account.blocked_at,
+            expected_refresh_token_encrypted=expected_refresh_token_encrypted,
+        )
+        if not updated:
+            await self._sync_account_from_repo(account)
+            return
         account.status = status
         account.deactivation_reason = reason
         mark_account_routing_unavailable(account.id)
@@ -912,7 +942,7 @@ class UsageUpdater:
     async def _sync_account_from_repo(self, account: Account) -> None:
         if not self._accounts_repo:
             return
-        stored = await self._accounts_repo.get_by_id(account.id)
+        stored = await self._accounts_repo.get_by_id_fresh(account.id)
         if stored is None:
             return
         account.chatgpt_account_id = stored.chatgpt_account_id
@@ -1351,6 +1381,8 @@ _DEACTIVATING_USAGE_MESSAGE_HINTS = (
 
 
 def _should_deactivate_for_usage_error(exc: UsageFetchError) -> bool:
+    if exc.code == "token_expired":
+        return False
     if exc.status_code in _DEACTIVATING_USAGE_STATUS_CODES:
         return True
     if exc.code in PERMANENT_FAILURE_CODES:

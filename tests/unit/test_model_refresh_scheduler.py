@@ -310,6 +310,7 @@ async def test_fetch_with_failover_refreshes_http_client_after_token_refresh_tra
                     "Transport error during token refresh: dns failed",
                     False,
                     transport_error=True,
+                    retryable_same_contract=True,
                 )
             return account
 
@@ -328,6 +329,40 @@ async def test_fetch_with_failover_refreshes_http_client_after_token_refresh_tra
     refresh_http_client.assert_awaited_once()
     assert ensure_fresh_calls == 2
     fetch_models_for_plan.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_with_failover_does_not_replay_ambiguous_token_refresh_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _account()
+    encryptor = MagicMock()
+    refresh_http_client = AsyncMock()
+    ensure_fresh_calls = 0
+
+    class AmbiguousTransportAuthManager:
+        def __init__(self, _repo: object) -> None:
+            pass
+
+        async def ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
+            nonlocal ensure_fresh_calls
+            ensure_fresh_calls += 1
+            raise scheduler_module.RefreshError(
+                "transport_error",
+                "response body lost after exchange",
+                False,
+                transport_error=True,
+                retryable_same_contract=False,
+            )
+
+    monkeypatch.setattr(scheduler_module, "AuthManager", AmbiguousTransportAuthManager)
+    monkeypatch.setattr(scheduler_module, "refresh_http_client", refresh_http_client)
+
+    result = await scheduler_module._fetch_with_failover([account], encryptor, MagicMock())
+
+    assert result is None
+    assert ensure_fresh_calls == 1
+    refresh_http_client.assert_not_awaited()
 
 
 @pytest.mark.asyncio
