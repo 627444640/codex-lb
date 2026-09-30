@@ -198,6 +198,21 @@ class CollectorTests(Fixture):
         self.request(account=None)
         self.assertEqual(read_source(self.settings, self.now)["requests"]["total"], 1)
 
+    def test_luna_probe_errors_are_excluded_but_normal_errors_remain(self):
+        self.request(model="gpt-6-luna", status="error")
+        self.request(model="gpt-5.6-luna", status="success")
+        self.request(model="gpt-6-astra", status="error")
+        requests = read_source(self.settings, self.now)["requests"]
+        self.assertEqual(requests["total"], 1)
+        self.assertEqual(requests["errors"], 1)
+        self.assertEqual([m["model"] for m in requests["models"]], ["gpt-6-astra"])
+
+        store = Store(self.settings)
+        for i in range(4):
+            store.record(collect(self.settings, self.now + i))
+        self.assertEqual(store.incidents(), [])
+        self.assertEqual(store.events(), [])
+
     def test_no_samples_cannot_assert_business_available(self):
         s = collect(self.settings, self.now)
         c = next(c for c in s["components"] if c["id"] == "requests")
@@ -270,6 +285,7 @@ class StateTests(Fixture):
         self.assertEqual(result["status"], "unknown")
         self.assertNotIn("pool", result)
         self.assertIsNone(result["capacity"]["weekly_remaining_percent"])
+        self.assertIsNone(result["capacity"]["weekly_next_reset_at"])
         self.assertIsNone(result["requests"])
 
     def test_history_has_no_invented_samples(self):
@@ -327,7 +343,9 @@ class ControlTests(Fixture):
         self.store.record(collect(self.settings, self.now))
         response = self.client.get("/api/status")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["capacity"], {"weekly_remaining_percent": 80})
+        capacity = response.json()["capacity"]
+        self.assertEqual(capacity["weekly_remaining_percent"], 80)
+        self.assertAlmostEqual(capacity["weekly_next_reset_at"], self.now + 7200)
         for key in ("pool", "quota_ready", "active", "private-account-id", "smtp", "token_file"):
             self.assertNotIn(key, response.text)
         for path in ("/admin", "/api/admin/overview", "/static/admin.html", "/static/admin.js"):
@@ -446,15 +464,17 @@ class ControlTests(Fixture):
         self.assertEqual(restarted.history(after + 2)["days"], self.store.history(after + 2)["days"])
 
     def test_weighted_weekly_percentage_and_incomplete_data(self):
-        from monitor.store import weekly_capacity
+        from monitor.store import weekly_capacity, weekly_capacity_details
 
         with self.source_connection() as c:
             c.execute("INSERT INTO accounts(id,plan_type,status) VALUES ('plus-id','plus','active')")
         self.usage("primary", 0, minutes=10080, account="plus-id")
         pool = read_source(self.settings, self.now)["pool"]
         self.assertAlmostEqual(weekly_capacity(pool), 82.61)
+        self.assertAlmostEqual(weekly_capacity_details(pool)[1], self.now + 7200)
         pool["plans"][0]["windows"][0]["known"] = 0
         self.assertIsNone(weekly_capacity(pool))
+        self.assertEqual(weekly_capacity_details(pool), (None, None))
 
 
 class EmailTests(Fixture):

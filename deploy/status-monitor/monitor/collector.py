@@ -171,6 +171,10 @@ def read_source(settings: Settings, now: float):
             filters.append("request_kind='normal'")
         if "model_source_id" in log_cols:
             filters.append("model_source_id IS NULL")
+        # Luna traffic is the deployment's probe path, even when older rows
+        # were persisted as request_kind=normal. It must not drive the public
+        # normal-request health signal or its incident debounce.
+        filters.append("lower(model) NOT LIKE '%luna%'")
         scope = " AND ".join(filters)
         params = (sql_time(now - settings.request_window_seconds), sql_time(now))
         rows = conn.execute(
