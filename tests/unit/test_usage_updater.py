@@ -3048,6 +3048,10 @@ class StubAccountsRepository:
             or account.deactivation_reason != expected_deactivation_reason
             or account.reset_at != expected_reset_at
             or account.blocked_at != expected_blocked_at
+            or (
+                expected_refresh_token_encrypted is not None
+                and account.refresh_token_encrypted != expected_refresh_token_encrypted
+            )
         ):
             return False
         return await self.update_status(account_id, status, deactivation_reason, reset_at, blocked_at)
@@ -3267,6 +3271,119 @@ async def test_usage_updater_marks_session_failures_as_reauth_required(
     assert "401" in update["deactivation_reason"]
     assert message_hint in update["deactivation_reason"]
     assert acc.status == AccountStatus.REAUTH_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_usage_token_expired_forces_refresh_before_reauth(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    from app.core.clients.usage import UsageFetchError
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+    calls: list[str] = []
+
+    async def stub_fetch_usage(**_: Any) -> UsagePayload:
+        if not calls:
+            calls.append("expired")
+            raise UsageFetchError(401, "access token expired", code="token_expired")
+        calls.append("success")
+        return UsagePayload.model_validate({"rate_limit": {"primary_window": {"used_percent": 10.0}}})
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage)
+    usage_repo = StubUsageRepository(return_rows=True)
+    accounts_repo = StubAccountsRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+    account = _make_account("acc_usage_token_expired", "workspace_usage_token_expired")
+    accounts_repo.accounts_by_id[account.id] = account
+    refresh_calls = 0
+
+    async def refresh(account_arg: Account, *, force: bool = False) -> Account:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        assert force is True
+        return account_arg
+
+    assert updater._auth_manager is not None
+    monkeypatch.setattr(updater._auth_manager, "ensure_fresh", refresh)
+
+    await updater.refresh_accounts([account], latest_usage={})
+
+    assert calls == ["expired", "success"]
+    assert refresh_calls == 1
+    assert accounts_repo.status_updates == []
+    assert account.status == AccountStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_usage_token_expired_retry_is_bounded_without_reauth(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    from app.core.clients.usage import UsageFetchError
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+    fetch_calls = 0
+
+    async def stub_fetch_usage(**_: Any) -> UsagePayload:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        raise UsageFetchError(401, "access token expired", code="token_expired")
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage)
+    usage_repo = StubUsageRepository(return_rows=True)
+    accounts_repo = StubAccountsRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+    account = _make_account("acc_usage_token_expired_twice", "workspace_usage_token_expired_twice")
+    accounts_repo.accounts_by_id[account.id] = account
+    refresh_calls = 0
+
+    async def refresh(account_arg: Account, *, force: bool = False) -> Account:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return account_arg
+
+    assert updater._auth_manager is not None
+    monkeypatch.setattr(updater._auth_manager, "ensure_fresh", refresh)
+
+    await updater.refresh_accounts([account], latest_usage={})
+
+    assert fetch_calls == 2
+    assert refresh_calls == 1
+    assert accounts_repo.status_updates == []
+    assert account.status == AccountStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_stale_usage_auth_error_cannot_deactivate_rotated_account(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "true")
+    from app.core.clients.usage import UsageFetchError
+    from app.core.config.settings import get_settings
+
+    get_settings.cache_clear()
+    routing_marks: list[str] = []
+    monkeypatch.setattr(
+        "app.modules.usage.updater.mark_account_routing_unavailable",
+        lambda account_id: routing_marks.append(account_id),
+    )
+
+    async def stub_fetch_usage(**_: Any) -> UsagePayload:
+        raise UsageFetchError(401, "session terminated", code="app_session_terminated")
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stub_fetch_usage)
+    usage_repo = StubUsageRepository()
+    accounts_repo = StubAccountsRepository()
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+    stale = _make_account("acc_stale_usage_error", "workspace_stale_usage_error")
+    current = _make_account("acc_stale_usage_error", "workspace_stale_usage_error")
+    current.access_token_encrypted = TokenEncryptor().encrypt("new-access")
+    current.refresh_token_encrypted = TokenEncryptor().encrypt("new-refresh")
+    accounts_repo.accounts_by_id[current.id] = current
+
+    await updater.refresh_accounts([stale], latest_usage={})
+
+    assert accounts_repo.status_updates == []
+    assert routing_marks == []
+    assert stale.status == AccountStatus.ACTIVE
+    assert stale.refresh_token_encrypted == current.refresh_token_encrypted
 
 
 @pytest.mark.asyncio
