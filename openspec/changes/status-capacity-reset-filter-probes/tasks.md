@@ -19,5 +19,5 @@
 - [x] Run monitor tests, lint/format checks and inspect the final diff. The
   repository OpenSpec CLI is unavailable in this environment, so strict CLI
   validation remains an explicit limitation.
-- [ ] Install the matching monitor source/runtime, restart the monitor, and
+- [x] Install the matching monitor source/runtime, restart the monitor, and
   read back the public capacity reset field and incident behavior.
