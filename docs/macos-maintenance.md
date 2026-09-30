@@ -54,7 +54,7 @@ for `/internal/*` before the reverse proxy; those paths are the private
 Settings connector and must not become LAN routes.
 
 The monitor `origin` must be the canonical HTTPS LAN origin, for example
-`https://192.168.3.182:2467`, and `allowed_hosts` may list a second LAN alias
+`https://status.example.lan:2467`, and `allowed_hosts` may list a second LAN alias
 such as `123Mac.local`. The Codex LB Settings connector continues to use
 `http://127.0.0.1:2466` and its private token file. LAN clients need the
 Caddy internal CA root certificate. Do not bind the monitor directly to a

@@ -21,7 +21,7 @@
 - [x] Run monitor tests, Caddy adaptation checks, and inspect the final source
   diff. The repository OpenSpec CLI was unavailable in this environment, so
   strict CLI validation remains an explicit follow-up.
-- [ ] Back up the runtime monitor configuration and Caddyfile, apply the LAN
+- [x] Back up the runtime monitor configuration and Caddyfile, apply the LAN
   origin/listener, and restart only the monitor/Caddy jobs.
-- [ ] Read back loopback health, LAN HTTPS status/FAQ, control-route denial,
-  and non-LAN denial; preserve rollback evidence.
+- [x] Read back loopback health, LAN HTTPS status/FAQ, control-route denial,
+  the non-LAN Caddy matcher, and rollback evidence.
