@@ -16,6 +16,6 @@
 - [x] Run monitor tests, lint/format and JavaScript syntax checks, and inspect
   the diff. The repository OpenSpec CLI is unavailable in this environment, so
   strict CLI validation remains an explicit limitation.
-- [ ] Deploy the monitor and restart the service.
-- [ ] Read back the LAN status API/page with no normal requests and verify the
+- [x] Deploy the monitor and restart the service.
+- [x] Read back the LAN status API/page with no normal requests and verify the
   existing gateway/quota failure path still produces a non-operational banner.
