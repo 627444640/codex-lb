@@ -6,6 +6,6 @@
 
 ## 2. Validation and rollout
 
-- [ ] Run monitor, UI, lint/format and JavaScript syntax checks, deploy the
+- [x] Run monitor, UI, lint/format and JavaScript syntax checks, deploy the
   matching static assets, and restart the monitor.
-- [ ] Read back the LAN page/API and verify the energy meter after deployment.
+- [x] Read back the LAN page/API and verify the energy meter after deployment.
