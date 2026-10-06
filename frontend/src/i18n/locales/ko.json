@@ -902,6 +902,7 @@
   "nav.reports": "리포트",
   "nav.settings": "설정",
   "nav.showEmails": "이메일 표시",
+  "nav.statusPage": "서비스 상태",
   "quotaPlanner.actions.forceProbe": "강제 probe",
   "quotaPlanner.actions.save": "저장",
   "quotaPlanner.actions.warmAccountAria": "warm-up할 account id",

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter } from "react-router-dom";
@@ -121,6 +121,30 @@ describe("AppHeader", () => {
     await user.click(screen.getByRole("button", { name: "Advanced" }));
 
     expect(await screen.findByRole("menuitem", { name: "Automations" })).toBeInTheDocument();
+  });
+
+  it("places the Service status link after Advanced on desktop", async () => {
+    renderHeader();
+
+    const navigation = screen.getByRole("navigation");
+    const statusLink = within(navigation).getByRole("link", { name: "Service status" });
+
+    expect(statusLink).toHaveAttribute("href", "https://localhost:2467/");
+    expect(statusLink).toHaveAttribute("target", "_blank");
+    expect(statusLink).toHaveAttribute("rel", "noreferrer");
+    expect(navigation.lastElementChild).toBe(statusLink);
+  });
+
+  it("keeps the Service status link after Advanced in the mobile menu", async () => {
+    const user = userEvent.setup();
+    renderHeader();
+
+    await user.click(screen.getByRole("button", { name: "Open menu" }));
+
+    const statusLinks = screen.getAllByRole("link", { name: "Service status" });
+    expect(statusLinks).toHaveLength(1);
+    expect(statusLinks[0]).toHaveAttribute("href", "https://localhost:2467/");
+    expect(statusLinks[0]).toHaveAttribute("target", "_blank");
   });
 
   it("marks the Advanced trigger active only while an advanced route is current", () => {
