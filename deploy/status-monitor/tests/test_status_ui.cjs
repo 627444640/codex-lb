@@ -40,6 +40,7 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   assert.equal(meter.children.length, 40);
   assert.equal(meter.querySelectorAll('.filled').length, 38);
   assert.equal(meter.classList.contains('healthy'), true);
+  assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('healthy'), true);
   assert.equal(meter.getAttribute('role'), 'progressbar');
   assert.equal(meter.getAttribute('aria-valuenow'), '95.5');
   assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务运行正常');
@@ -49,8 +50,10 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   dom.window.document.querySelector('#refresh').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(meter.classList.contains('warning'), true);
+  assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('warning'), true);
   current = { ...payload(), capacity: { weekly_remaining_percent: 10, weekly_next_reset_at: 1791046713 } };
   dom.window.document.querySelector('#refresh').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(meter.classList.contains('critical'), true);
+  assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('critical'), true);
 });
