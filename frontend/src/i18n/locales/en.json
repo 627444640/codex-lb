@@ -900,6 +900,7 @@
   "nav.apis": "APIs",
   "nav.settings": "Settings",
   "nav.advanced": "Advanced",
+  "nav.statusPage": "Service status",
   "nav.openMenu": "Open menu",
   "nav.adminSignIn": "Admin Sign In",
   "nav.showEmails": "Show Emails",

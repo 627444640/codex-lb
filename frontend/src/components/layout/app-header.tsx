@@ -31,6 +31,21 @@ const ADVANCED_NAV_ITEMS = [
   { to: "/automations", labelKey: "nav.automations" },
 ] as const;
 
+const STATUS_PAGE_PORT = "2467";
+
+function getStatusPageHref(): string {
+  if (typeof window === "undefined") {
+    return `https://localhost:${STATUS_PAGE_PORT}/`;
+  }
+  const url = new URL(window.location.href);
+  url.protocol = "https:";
+  url.port = STATUS_PAGE_PORT;
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 export type AppHeaderProps = {
   onLogout: () => void;
   onAdminLogin?: () => void;
@@ -80,6 +95,7 @@ export function AppHeader({
       ? String(totalAvailableResetCredits)
       : null;
   const privacyLabel = blurred ? t("nav.showEmails") : t("nav.hideEmails");
+  const statusPageHref = getStatusPageHref();
 
   return (
     <header
@@ -150,6 +166,14 @@ export function AppHeader({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          <a
+            href={statusPageHref}
+            target="_blank"
+            rel="noreferrer"
+            className="relative inline-flex h-7 items-center rounded-md px-3.5 text-xs leading-none font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
+          >
+            {t("nav.statusPage")}
+          </a>
         </nav>
 
         {/* Actions */}
@@ -248,6 +272,15 @@ export function AppHeader({
                     )}
                   </NavLink>
                 ))}
+                <a
+                  href={statusPageHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => setMobileOpen(false)}
+                  className="relative block w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  {t("nav.statusPage")}
+                </a>
                 <div className="my-2 h-px bg-border" />
                 <button
                   type="button"
