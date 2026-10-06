@@ -248,6 +248,7 @@ def collect(settings: Settings, now=None, probe_fn=probe):
     now = time.time() if now is None else now
     components = [probe_fn(check) for check in settings.checks]
     result = {"collected_at": now, "pool": None, "requests": None, "components": components}
+    requests = None
     try:
         result.update(read_source(settings, now))
         components.append({"id": "source", "name": "监控数据", "status": "operational", "detail": "只读采集正常"})
@@ -291,6 +292,7 @@ def collect(settings: Settings, now=None, probe_fn=probe):
                 else "unknown"
             )
         )
+        idle_requests = not requests["total"]
         components.append(
             {
                 "id": "requests",
@@ -300,6 +302,8 @@ def collect(settings: Settings, now=None, probe_fn=probe):
                 if req_status == "operational"
                 else "近期错误率升高"
                 if req_status == "degraded"
+                else "暂无真实模型请求样本，业务质量待调用后确认"
+                if idle_requests
                 else "缺少足够的成功样本",
             }
         )
@@ -311,6 +315,11 @@ def collect(settings: Settings, now=None, probe_fn=probe):
                 {"id": "requests", "name": "真实模型请求", "status": "unknown", "detail": "等待采集恢复"},
             ]
         )
-    statuses = [c["status"] for c in components]
+    idle_request_unknown = bool(requests is not None and not requests["total"])
+    statuses = [
+        c["status"]
+        for c in components
+        if not (idle_request_unknown and c["id"] == "requests" and c["status"] == "unknown")
+    ]
     result["status"] = next((s for s in ("outage", "degraded", "unknown") if s in statuses), "operational")
     return result

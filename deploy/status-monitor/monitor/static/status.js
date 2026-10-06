@@ -10,10 +10,11 @@ function el(tag, cls, text){const n=document.createElement(tag);if(cls)n.classNa
 function empty(container, mark, title, body){container.replaceChildren();const n=el("div","empty-state");n.append(el("span","empty-mark",mark),el("p","",title),el("span","",body));container.append(n);}
 function render(s){
   const state=s.stale||!Object.hasOwn(labels,s.status)?"unknown":s.status;
+  const idle=Boolean(s.requests && !s.requests.total);
   $("status-banner").className=`status-banner ${state}`;
-  $("status-title").textContent=heads[state];
+  $("status-title").textContent=state==="operational"&&idle?"基础服务运行正常":heads[state];
   $("status-symbol").textContent={operational:"✓",degraded:"!",outage:"!",unknown:"—"}[state];
-  $("status-description").textContent=s.stale?"采样已过期，实时状态暂不可确认。":state==="operational"?"当前已配置的观测项正常，详细结果见下方。":"请查看下方各项观测结果，异常连续出现后会进入事件记录。";
+  $("status-description").textContent=s.stale?"采样已过期，实时状态暂不可确认。":state==="operational"&&idle?"当前暂无真实模型请求样本，业务质量待调用后确认。":state==="operational"?"当前已配置的观测项正常，详细结果见下方。":"请查看下方各项观测结果，异常连续出现后会进入事件记录。";
   $("banner-label").textContent=s.stale?"DATA STALE":state==="operational"?"OPERATIONAL":labels[state];
   $("last-updated").textContent=s.collected_at?`最后采样 ${date(s.collected_at,true)}`:"等待首次采样";
   const weekly=s.capacity?.weekly_remaining_percent;
@@ -23,7 +24,7 @@ function render(s){
   const weeklyReset=s.capacity?.weekly_next_reset_at;
   $("weekly-reset").textContent=weeklyReset==null?"下一次重置：—":`下一次重置：${date(weeklyReset)}`;
   $("components").replaceChildren();
-  for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`);main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(labels[c.status]));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
+  for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`),componentLabel=c.id==="requests"&&c.status==="unknown"&&idle?"无样本":labels[c.status];main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(componentLabel));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
   if(!s.components?.length)$("components").append(el("p","empty-copy","等待健康检查"));
   const h=s.history||{days:[],samples:0};
   $("readiness-percent").textContent=percent(h.readiness_percent);
@@ -53,7 +54,7 @@ function render(s){
   $("models").replaceChildren();
   for(const m of r?.models||[]){const row=el("tr");for(const v of [m.model,number(m.total),number(m.successes),number(m.errors),number(m.cancelled),date(m.last_success_at,true)])row.append(el("td","",v));$("models").append(row);}
   if(!r?.models?.length){const row=el("tr"),cell=el("td","empty-copy","暂无请求样本，业务可用性待观察");cell.colSpan=6;row.append(cell);$("models").append(row);}
-  $("request-note").textContent=`错误率 = 失败 / 总请求；取消单列，不计入错误数。${r?`延迟基于最近 ${r.timing_samples} 条成功请求。`:""}健康接口通过不能代替模型请求成功。`;
+  $("request-note").textContent=idle?"当前暂无真实模型请求样本，业务质量待调用后确认。":`错误率 = 失败 / 总请求；取消单列，不计入错误数。${r?`延迟基于最近 ${r.timing_samples} 条成功请求。`:""}健康接口通过不能代替模型请求成功。`;
   if(!s.incidents?.length)empty($("incident-list"),"✓","暂无已确认事件","持续观测中的异常将在这里更新");else{
     $("incident-list").replaceChildren();for(const i of s.incidents){const item=el("article","event-item"),meta=el("div","event-meta");meta.append(el("span",`tag ${i.closed_at?"":"outage"}`,i.closed_at?"已恢复":"处理中"),el("span","",date(i.opened_at)));item.append(meta,el("h3","",i.title));if(i.closed_at)item.append(el("p","",`恢复于 ${date(i.closed_at)}`));$("incident-list").append(item);}
   }

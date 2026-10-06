@@ -216,8 +216,22 @@ class CollectorTests(Fixture):
     def test_no_samples_cannot_assert_business_available(self):
         s = collect(self.settings, self.now)
         c = next(c for c in s["components"] if c["id"] == "requests")
+        self.assertEqual(s["status"], "operational")
         self.assertEqual(c["status"], "unknown")
+        self.assertEqual(c["detail"], "暂无真实模型请求样本，业务质量待调用后确认")
         self.assertIsNone(s["requests"]["error_percent"])
+
+    def test_idle_requests_do_not_hide_unhealthy_gateway(self):
+        settings = replace(
+            self.settings,
+            checks=({"id": "gateway", "name": "网关", "url": "http://127.0.0.1/health"},),
+        )
+
+        def outage_probe(check):
+            return {"id": check["id"], "name": check["name"], "status": "outage", "detail": "探测失败"}
+
+        s = collect(settings, self.now, probe_fn=outage_probe)
+        self.assertEqual(s["status"], "outage")
 
     def test_collect_does_not_modify_source_or_return_private_fields(self):
         self.request()
@@ -343,6 +357,8 @@ class ControlTests(Fixture):
         self.store.record(collect(self.settings, self.now))
         response = self.client.get("/api/status")
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "operational")
+        self.assertEqual(response.json()["requests"]["total"], 0)
         capacity = response.json()["capacity"]
         self.assertEqual(capacity["weekly_remaining_percent"], 80)
         self.assertAlmostEqual(capacity["weekly_next_reset_at"], self.now + 7200)
