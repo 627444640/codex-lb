@@ -109,9 +109,12 @@ nav a.active { color: var(--foreground); background: var(--background); box-shad
 .weekly-value { min-width: 200px; margin-top: 8px; font: 500 30px/1.4 var(--mono); letter-spacing: -1px; color: var(--foreground); }
 .weekly-gauge { flex: 1; }
 .weekly-reset { margin-top: 6px; color: var(--muted-foreground); font-size: 11px; line-height: 1.8; }
-.energy-meter { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 4px; width: 100%; min-height: 13px; align-items: center; }
+.energy-meter { display: grid; grid-template-columns: repeat(40, minmax(0, 1fr)); gap: 3px; width: 100%; min-height: 12px; align-items: center; }
 .energy-block { display: block; height: 13px; border: 1px solid color-mix(in oklch, var(--muted-foreground) 12%, transparent); border-radius: 3px; background: var(--muted); }
 .energy-block.filled { border-color: color-mix(in oklch, var(--primary) 70%, var(--border)); background: var(--primary); box-shadow: 0 1px 2px color-mix(in oklch, var(--primary) 22%, transparent); }
+.energy-meter.healthy .energy-block.filled { border-color: color-mix(in oklch, var(--success) 72%, var(--border)); background: var(--success); box-shadow: 0 1px 2px color-mix(in oklch, var(--success) 22%, transparent); }
+.energy-meter.warning .energy-block.filled { border-color: color-mix(in oklch, var(--warning) 72%, var(--border)); background: var(--warning); box-shadow: 0 1px 2px color-mix(in oklch, var(--warning) 22%, transparent); }
+.energy-meter.critical .energy-block.filled { border-color: color-mix(in oklch, var(--destructive) 72%, var(--border)); background: var(--destructive); box-shadow: 0 1px 2px color-mix(in oklch, var(--destructive) 22%, transparent); }
 .energy-meter.unknown .energy-block { opacity: .72; }
 .footnote { margin-top: 10px; color: var(--muted-foreground); font-size: 11px; line-height: 1.8; }
 .history-panel { padding: 20px; }

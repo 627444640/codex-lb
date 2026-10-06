@@ -6,7 +6,7 @@ const date = (ts, short=false) => ts == null ? "—" : new Intl.DateTimeFormat("
 const number = (n) => n == null ? "—" : n.toLocaleString("zh-CN");
 const percent = (n) => n == null ? "—" : `${Number(n.toFixed(2))}%`;
 const duration = (n) => n == null ? "—" : `${(n/1000).toFixed(2)}s`;
-const ENERGY_BLOCKS = 24;
+const ENERGY_BLOCKS = 40;
 function el(tag, cls, text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
 function empty(container, mark, title, body){container.replaceChildren();const n=el("div","empty-state");n.append(el("span","empty-mark",mark),el("p","",title),el("span","",body));container.append(n);}
 function render(s){
@@ -23,7 +23,8 @@ function render(s){
   const energy=$("weekly-energy");
   const known=Number.isFinite(weekly);
   const filled=known?Math.round(Math.max(0,Math.min(100,weekly))/100*ENERGY_BLOCKS):0;
-  energy.classList.toggle("unknown",!known);
+  const energyClass=!known?"unknown":weekly>=60?"healthy":weekly>=20?"warning":"critical";
+  energy.className=`energy-meter ${energyClass}`;
   energy.replaceChildren(...Array.from({length:ENERGY_BLOCKS},(_,i)=>el("span",`energy-block ${known&&i<filled?"filled":""}`)));
   energy.setAttribute("aria-valuenow",known?String(weekly):"0");
   energy.setAttribute("aria-valuetext",known?percent(weekly):"待核对");

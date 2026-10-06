@@ -1,6 +1,7 @@
 ## 1. Energy meter UI
 
-- [x] Replace the native progress bar with a 24-block accessible energy meter.
+- [x] Replace the native progress bar with a 40-block accessible energy meter
+  and green/yellow/red capacity thresholds.
 - [x] Preserve percentage, reset-time and unknown-capacity behavior.
 - [x] Add the DOM-level energy meter regression test and Makefile target.
 
