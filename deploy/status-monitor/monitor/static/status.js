@@ -6,6 +6,7 @@ const date = (ts, short=false) => ts == null ? "—" : new Intl.DateTimeFormat("
 const number = (n) => n == null ? "—" : n.toLocaleString("zh-CN");
 const percent = (n) => n == null ? "—" : `${Number(n.toFixed(2))}%`;
 const duration = (n) => n == null ? "—" : `${(n/1000).toFixed(2)}s`;
+const ENERGY_BLOCKS = 24;
 function el(tag, cls, text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
 function empty(container, mark, title, body){container.replaceChildren();const n=el("div","empty-state");n.append(el("span","empty-mark",mark),el("p","",title),el("span","",body));container.append(n);}
 function render(s){
@@ -19,8 +20,13 @@ function render(s){
   $("last-updated").textContent=s.collected_at?`最后采样 ${date(s.collected_at,true)}`:"等待首次采样";
   const weekly=s.capacity?.weekly_remaining_percent;
   $("weekly-percent").textContent=percent(weekly);
-  $("weekly-progress").value=weekly??0;
-  $("weekly-progress").setAttribute("aria-label",`7 日剩余容量 ${percent(weekly)}`);
+  const energy=$("weekly-energy");
+  const known=Number.isFinite(weekly);
+  const filled=known?Math.round(Math.max(0,Math.min(100,weekly))/100*ENERGY_BLOCKS):0;
+  energy.classList.toggle("unknown",!known);
+  energy.replaceChildren(...Array.from({length:ENERGY_BLOCKS},(_,i)=>el("span",`energy-block ${known&&i<filled?"filled":""}`)));
+  energy.setAttribute("aria-valuenow",known?String(weekly):"0");
+  energy.setAttribute("aria-valuetext",known?percent(weekly):"待核对");
   const weeklyReset=s.capacity?.weekly_next_reset_at;
   $("weekly-reset").textContent=weeklyReset==null?"下一次重置：—":`下一次重置：${date(weeklyReset)}`;
   $("components").replaceChildren();
