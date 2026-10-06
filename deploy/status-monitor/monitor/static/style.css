@@ -107,6 +107,10 @@ nav a.active { color: var(--foreground); background: var(--background); box-shad
 .card-label { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; font-weight: 400; }
 .weekly-capacity { display: flex; align-items: center; gap: 52px; padding: 20px; }
 .weekly-value { min-width: 200px; margin-top: 8px; font: 500 30px/1.4 var(--mono); letter-spacing: -1px; color: var(--foreground); }
+.weekly-value.healthy { color: var(--success); }
+.weekly-value.warning { color: var(--warning); }
+.weekly-value.critical { color: var(--destructive); }
+.weekly-value.unknown { color: var(--muted-foreground); }
 .weekly-gauge { flex: 1; }
 .weekly-reset { margin-top: 6px; color: var(--muted-foreground); font-size: 11px; line-height: 1.8; }
 .energy-meter { display: grid; grid-template-columns: repeat(40, minmax(0, 1fr)); gap: 3px; width: 100%; min-height: 12px; align-items: center; }

@@ -24,6 +24,7 @@ function render(s){
   const known=Number.isFinite(weekly);
   const filled=known?Math.round(Math.max(0,Math.min(100,weekly))/100*ENERGY_BLOCKS):0;
   const energyClass=!known?"unknown":weekly>=60?"healthy":weekly>=20?"warning":"critical";
+  $("weekly-percent").className=`weekly-value ${energyClass}`;
   energy.className=`energy-meter ${energyClass}`;
   energy.replaceChildren(...Array.from({length:ENERGY_BLOCKS},(_,i)=>el("span",`energy-block ${known&&i<filled?"filled":""}`)));
   energy.setAttribute("aria-valuenow",known?String(weekly):"0");
