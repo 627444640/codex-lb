@@ -30,16 +30,27 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   const dom = new JSDOM(template, { url: 'https://status.example.lan:2467/', runScripts: 'outside-only' });
   t.after(() => dom.window.close());
   dom.window.setInterval = () => 0;
-  dom.window.fetch = async () => ({ ok: true, json: async () => payload() });
+  let current = payload();
+  dom.window.fetch = async () => ({ ok: true, json: async () => current });
   dom.window.AbortSignal = { timeout: () => new dom.window.AbortController().signal };
   dom.window.eval(script);
   await new Promise(resolve => setImmediate(resolve));
 
   const meter = dom.window.document.querySelector('#weekly-energy');
-  assert.equal(meter.children.length, 24);
-  assert.equal(meter.querySelectorAll('.filled').length, 23);
+  assert.equal(meter.children.length, 40);
+  assert.equal(meter.querySelectorAll('.filled').length, 38);
+  assert.equal(meter.classList.contains('healthy'), true);
   assert.equal(meter.getAttribute('role'), 'progressbar');
   assert.equal(meter.getAttribute('aria-valuenow'), '95.5');
   assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务运行正常');
   assert.match(dom.window.document.querySelector('#request-note').textContent, /暂无真实模型请求样本/);
+
+  current = { ...payload(), capacity: { weekly_remaining_percent: 45, weekly_next_reset_at: 1791046713 } };
+  dom.window.document.querySelector('#refresh').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(meter.classList.contains('warning'), true);
+  current = { ...payload(), capacity: { weekly_remaining_percent: 10, weekly_next_reset_at: 1791046713 } };
+  dom.window.document.querySelector('#refresh').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(meter.classList.contains('critical'), true);
 });

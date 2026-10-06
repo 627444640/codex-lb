@@ -9,9 +9,11 @@ the compact status cards.
 
 ## What Changes
 
-- Replace the native continuous progress bar with a 24-block energy meter.
+- Replace the native continuous progress bar with a dense 40-block energy meter.
 - Fill blocks according to the weighted seven-day percentage and show empty
   blocks for the remaining capacity.
+- Color filled blocks green at 60% and above, yellow from 20% up to below 60%,
+  and red below 20%.
 - Keep the existing percentage, reset time, unknown state and keyboard/screen
   reader progress semantics.
 - Add a DOM-level regression test for block count, filled-block rounding and
