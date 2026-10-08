@@ -28,7 +28,7 @@ def render_guides(guides: list[GuideRecord]) -> str:
         note = f'<div class="troubleshooting-note">{e(guide.limitations)}</div>' if guide.limitations else ""
         date = guide.updated_at.astimezone(ZoneInfo("Asia/Taipei")).strftime("%Y-%m-%d")
         parts.append(
-            f'<details class="troubleshooting-item" id="{e(guide.slug, quote=True)}" open>'
+            f'<details class="troubleshooting-item" id="{e(guide.slug, quote=True)}">'
             f'<summary><span class="error-code">{e(guide.code)}</span>'
             '<span class="troubleshooting-summary">'
             f'<span class="troubleshooting-name">{e(guide.title)}</span>'
