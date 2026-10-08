@@ -5,7 +5,7 @@ const {JSDOM}=require('jsdom');
 
 function setup(t,clipboard){
   const template=readFileSync(resolve(__dirname,'../monitor/static/faq.html'),'utf8');
-  const content='<details class="troubleshooting-item" id="error-synthetic" open><summary>示例问题</summary><div class="troubleshooting-body"><code id="endpoint">https://example.invalid/v1</code><button data-copy-target="endpoint">复制地址</button><p class="copy-feedback" role="status"></p></div></details>';
+  const content='<details class="troubleshooting-item" id="error-synthetic"><summary>示例问题</summary><div class="troubleshooting-body"><code id="endpoint">https://example.invalid/v1</code><button data-copy-target="endpoint">复制地址</button><p class="copy-feedback" role="status"></p></div></details>';
   const dom=new JSDOM(template.replace('<!-- PUBLISHED_GUIDES -->',content),{url:'http://127.0.0.1:2466/static/faq.html',runScripts:'outside-only'});
   t.after(()=>dom.window.close());
   Object.defineProperty(dom.window.navigator,'clipboard',{value:{writeText:clipboard}});
@@ -29,5 +29,5 @@ test('denied clipboard access selects the address and keeps the guide readable',
   document.querySelector('[data-copy-target]').click();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(window.getSelection().toString(),'https://example.invalid/v1');
   assert.match(document.querySelector('.copy-feedback').textContent,/复制已选中的地址/);
-  assert.equal(document.querySelector('details').open,true);assert.equal(calls(),0);
+  assert.equal(document.querySelector('details').open,false);assert.equal(calls(),0);
 });
