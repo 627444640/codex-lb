@@ -18,8 +18,23 @@ function payload() {
       { id: 'requests', name: '真实模型请求', status: 'unknown', detail: '暂无真实模型请求样本，业务质量待调用后确认' },
     ],
     requests: { total: 0, errors: 0, successes: 0, cancelled: 0, error_percent: null, models: [] },
+    request_quality: {
+      window_seconds: 86400,
+      total: 12,
+      successes: 8,
+      cancelled: 1,
+      errors: 3,
+      error_percent: 25,
+      last_sample_at: 1790747119,
+      last_error_at: 1790747000,
+      categories: [{
+        key: 'upstream_overload', label: '上游容量过载', count: 2, failure_share_percent: 66.67,
+        last_error_at: 1790747000, models: ['gpt-6-astra'], guidance: '降低并发或稍后重试', guide_slug: 'error-upstream-overload',
+      }],
+    },
     history: { days: [], samples: 0, readiness_percent: null, since: null },
     incidents: [],
+    incident_summary: { window_seconds: 86400, count: 0, open_count: 0, latest_status: 'quiet' },
     notices: [],
   };
 }
@@ -43,8 +58,13 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('healthy'), true);
   assert.equal(meter.getAttribute('role'), 'progressbar');
   assert.equal(meter.getAttribute('aria-valuenow'), '95.5');
-  assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务运行正常');
+  assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务正常，近期请求需关注');
   assert.match(dom.window.document.querySelector('#request-note').textContent, /暂无真实模型请求样本/);
+  assert.equal(dom.window.document.querySelector('#quality-total').textContent, '12');
+  assert.equal(dom.window.document.querySelector('#quality-error-percent').textContent, '25%');
+  assert.match(dom.window.document.querySelector('#request-quality-categories').textContent, /上游容量过载/);
+  assert.equal(dom.window.document.querySelector('.quality-guide').getAttribute('href'), '/static/faq.html#error-upstream-overload');
+  assert.match(dom.window.document.querySelector('#history-since').textContent, /不包含真实模型请求结果/);
 
   current = { ...payload(), capacity: { weekly_remaining_percent: 45, weekly_next_reset_at: 1791046713 } };
   dom.window.document.querySelector('#refresh').click();
