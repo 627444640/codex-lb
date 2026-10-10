@@ -20,11 +20,11 @@ function payload() {
     requests: { total: 0, errors: 0, successes: 0, cancelled: 0, error_percent: null, models: [] },
     request_quality: {
       window_seconds: 86400,
-      total: 12,
-      successes: 8,
+      total: 60,
+      successes: 56,
       cancelled: 1,
       errors: 3,
-      error_percent: 25,
+      error_percent: 5,
       last_sample_at: 1790747119,
       last_error_at: 1790747000,
       categories: [{
@@ -58,10 +58,11 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('healthy'), true);
   assert.equal(meter.getAttribute('role'), 'progressbar');
   assert.equal(meter.getAttribute('aria-valuenow'), '95.5');
-  assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务正常，近期请求需关注');
+  assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务运行正常');
+  assert.match(dom.window.document.querySelector('#status-description').textContent, /最近 24 小时有 60 条终态样本/);
   assert.match(dom.window.document.querySelector('#request-note').textContent, /暂无真实模型请求样本/);
-  assert.equal(dom.window.document.querySelector('#quality-total').textContent, '12');
-  assert.equal(dom.window.document.querySelector('#quality-error-percent').textContent, '25%');
+  assert.equal(dom.window.document.querySelector('#quality-total').textContent, '60');
+  assert.equal(dom.window.document.querySelector('#quality-error-percent').textContent, '5%');
   assert.match(dom.window.document.querySelector('#request-quality-categories').textContent, /上游容量过载/);
   assert.equal(dom.window.document.querySelector('.quality-guide').getAttribute('href'), '/static/faq.html#error-upstream-overload');
   assert.match(dom.window.document.querySelector('#history-since').textContent, /不包含真实模型请求结果/);
