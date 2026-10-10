@@ -14,5 +14,5 @@
 
 - [x] Run monitor Python tests, status/FAQ/report UI tests, JavaScript syntax checks and formatting/lint checks available in this checkout.
 - [x] Run strict OpenSpec validation with the cached CLI.
-- [ ] Back up the monitor runtime, install the validated source/runtime files, restart only the independent monitor, and read back API/page/listener/gateway checks.
-- [ ] Record deployment evidence and keep the branch commit separate from the installed runtime until parity is verified.
+- [x] Back up the monitor runtime, install the validated source/runtime files, restart only the independent monitor, and read back API/page/listener/gateway checks.
+- [x] Record deployment evidence and keep the branch commit separate from the installed runtime until parity is verified.
