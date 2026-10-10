@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .config import Settings
+from .quality import WINDOW_SECONDS, OutcomeGroup, public_request_quality, summarize_request_quality
 
 
 def epoch(value):
@@ -140,6 +141,19 @@ def pool_summary(accounts, usage, now, settings):
     }
 
 
+def request_log_scope(log_cols: set[str], start: float, end: float) -> tuple[str, tuple[str, str]]:
+    filters = ["requested_at >= ?", "requested_at <= ?", "account_id IS NOT NULL", "length(trim(model)) > 0"]
+    if "request_kind" in log_cols:
+        filters.append("request_kind='normal'")
+    if "model_source_id" in log_cols:
+        filters.append("model_source_id IS NULL")
+    if "deleted_at" in log_cols:
+        filters.append("deleted_at IS NULL")
+    # Preserve the operator's established Luna probe exclusion.
+    filters.append("lower(model) NOT LIKE '%luna%'")
+    return " AND ".join(filters), (sql_time(start), sql_time(end))
+
+
 def read_source(settings: Settings, now: float):
     deadline = time.monotonic() + 4
     conn = sqlite3.connect(settings.source_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)
@@ -166,21 +180,12 @@ def read_source(settings: Settings, now: float):
                 )
             usage[a["id"]] = rows
         log_cols = {r[1] for r in conn.execute("PRAGMA table_info(request_logs)")}
-        filters = ["requested_at >= ?", "requested_at <= ?", "account_id IS NOT NULL", "length(trim(model)) > 0"]
-        if "request_kind" in log_cols:
-            filters.append("request_kind='normal'")
-        if "model_source_id" in log_cols:
-            filters.append("model_source_id IS NULL")
-        # Luna traffic is the deployment's probe path, even when older rows
-        # were persisted as request_kind=normal. It must not drive the public
-        # normal-request health signal or its incident debounce.
-        filters.append("lower(model) NOT LIKE '%luna%'")
-        scope = " AND ".join(filters)
-        params = (sql_time(now - settings.request_window_seconds), sql_time(now))
+        scope, params = request_log_scope(log_cols, now - settings.request_window_seconds, now)
         rows = conn.execute(
             "SELECT model, COUNT(*) total, SUM(status='success') successes, SUM(status='cancelled') cancelled, "
             "SUM(status NOT IN ('success','cancelled')) errors, "
-            "MAX(CASE WHEN status='success' THEN requested_at END) last_success_at "
+            "MAX(CASE WHEN status='success' THEN requested_at END) last_success_at, "
+            "MAX(CASE WHEN status NOT IN ('success','cancelled') THEN requested_at END) last_error_at "
             f"FROM request_logs WHERE {scope} GROUP BY model ORDER BY total DESC",
             params,
         ).fetchall()
@@ -188,6 +193,7 @@ def read_source(settings: Settings, now: float):
         for row in rows:
             m = dict(row)
             m["last_success_at"] = epoch(m["last_success_at"])
+            m["last_error_at"] = epoch(m["last_error_at"])
             m["error_percent"] = round(m["errors"] / m["total"] * 100, 2)
             models.append(m)
         first_col = "latency_first_output_ms" if "latency_first_output_ms" in log_cols else "latency_first_token_ms"
@@ -198,11 +204,20 @@ def read_source(settings: Settings, now: float):
         ).fetchall()
         totals = {k: sum(m[k] for m in models) for k in ("total", "successes", "cancelled", "errors")}
         successes = [m["last_success_at"] for m in models if m["last_success_at"] is not None]
+        errors = [m["last_error_at"] for m in models if m["last_error_at"] is not None]
+        error_col = "error_code" if "error_code" in log_cols else "NULL"
+        quality_scope, quality_params = request_log_scope(log_cols, now - WINDOW_SECONDS, now)
+        quality_rows = conn.execute(
+            f"SELECT status, {error_col} AS error_code, model, COUNT(*) count, MAX(requested_at) last_at "
+            f"FROM request_logs WHERE {quality_scope} GROUP BY status, {error_col}, model",
+            quality_params,
+        ).fetchall()
         totals.update(
             {
                 "error_percent": round(totals["errors"] / totals["total"] * 100, 2) if totals["total"] else None,
                 "success_percent": round(totals["successes"] / totals["total"] * 100, 2) if totals["total"] else None,
                 "last_success_at": max(successes) if successes else None,
+                "last_error_at": max(errors) if errors else None,
                 "first_output_p50_ms": percentile([r["first_ms"] for r in timings], 0.5),
                 "duration_p95_ms": percentile([r["latency_ms"] for r in timings], 0.95),
                 "timing_samples": len(timings),
@@ -211,7 +226,23 @@ def read_source(settings: Settings, now: float):
                 "models": models,
             }
         )
-        return {"pool": pool_summary(accounts, usage, now, settings), "requests": totals}
+        return {
+            "pool": pool_summary(accounts, usage, now, settings),
+            "requests": totals,
+            "request_quality": public_request_quality(
+                summarize_request_quality(
+                    [
+                        OutcomeGroup(
+                            row["status"], row["error_code"], row["model"], row["count"], epoch(row["last_at"])
+                        )
+                        for row in quality_rows
+                    ],
+                    now,
+                    settings.min_requests,
+                    settings.high_error_percent,
+                )
+            ),
+        }
     finally:
         conn.close()
 
@@ -247,7 +278,7 @@ def probe(check):
 def collect(settings: Settings, now=None, probe_fn=probe):
     now = time.time() if now is None else now
     components = [probe_fn(check) for check in settings.checks]
-    result = {"collected_at": now, "pool": None, "requests": None, "components": components}
+    result = {"collected_at": now, "pool": None, "requests": None, "request_quality": None, "components": components}
     requests = None
     try:
         result.update(read_source(settings, now))

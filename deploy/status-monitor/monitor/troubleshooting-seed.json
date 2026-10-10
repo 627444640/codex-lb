@@ -37,5 +37,157 @@
     "endpoint_help": "",
     "status": "published",
     "sort_order": 20
+  },
+  {
+    "slug": "error-upstream-processing",
+    "code": "server_error",
+    "title": "上游处理错误",
+    "signature": "server_error",
+    "scope": "适用于请求以 server_error 或通用上游处理错误结束的情况。",
+    "cause": "上游在处理请求时返回了未细分的失败。它不等同于容量过载；需要结合时间、模型和账号路径继续核对。",
+    "solutions": [
+      "先等待片刻后重试一次，避免连续提交相同长请求。",
+      "若持续出现，记录发生时间、模型和错误类别，查看状态页的请求质量分类。",
+      "缩短上下文、减少一次性工具输出后再比较空白会话结果。"
+    ],
+    "limitations": "状态页只展示聚合类别，不代表已经确认了具体上游根因；不要把此码直接解释为 Cloudflare 或某个账号故障。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 50
+  },
+  {
+    "slug": "error-upstream-overload",
+    "code": "server_is_overloaded",
+    "title": "上游容量过载",
+    "signature": "server_is_overloaded",
+    "scope": "适用于错误码明确为 server_is_overloaded 或同义的上游容量过载提示。",
+    "cause": "上游明确表示当前容量或并发压力不足。它与没有细分原因的 server_error 分开统计。",
+    "solutions": [
+      "降低并发，等待短时间后重试。",
+      "观察是否集中在单一模型或时间段，并以状态页聚合结果为线索。",
+      "持续发生时把时间、模型和是否重试成功交给管理员核对。"
+    ],
+    "limitations": "状态页不会据此判断本地号池或整个上游均已耗尽；不要把普通 server_error 自动归为过载。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 60
+  },
+  {
+    "slug": "error-stream-incomplete",
+    "code": "stream_incomplete",
+    "title": "流式响应中断",
+    "signature": "stream_incomplete / client_disconnected",
+    "scope": "适用于流式响应未完成，或客户端连接中断后请求终止的情况。",
+    "cause": "连接在收到完整终态前结束，可能与长请求、客户端断开或代理链路有关。仅凭此码不能确认某个具体代理或固定超时为根因。",
+    "solutions": [
+      "先确认客户端网络稳定，再重试一次。",
+      "长请求先压缩历史、减少图片和大段工具输出，避免原样重复提交。",
+      "若重复发生，记录时间、模型和是否收到部分输出，交给管理员结合链路日志核对。"
+    ],
+    "limitations": "不要把流式中断直接归责给 Cloudflare 或某个具体 timeout；部分输出可能已经产生，重试前应确认是否会造成重复操作。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 70
+  },
+  {
+    "slug": "error-continuation",
+    "code": "continuation_failure",
+    "title": "会话连续性失败",
+    "signature": "previous_response_not_found",
+    "scope": "适用于继续旧会话时找不到 previous response 或其所属路径不可用的情况。",
+    "cause": "继续请求引用的旧 response 在当前可用路径中不存在或无法由当前账号接管，常见于会话跨路径继续。",
+    "solutions": [
+      "新建聊天，先写入目标、已完成步骤、必要文件路径和下一步，再继续工作。",
+      "保留原聊天作为上下文来源，携带一份短摘要，不要反复提交整段历史。",
+      "若新聊天短请求也失败，记录时间、模型和入口类型，交给管理员核对。"
+    ],
+    "limitations": "只删除 previous_response_id 不能保证会话恢复；不要在新聊天中复制敏感正文、凭据或完整日志。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 80
+  },
+  {
+    "slug": "error-upstream-timeout",
+    "code": "upstream_request_timeout",
+    "title": "上游请求超时",
+    "signature": "upstream_request_timeout",
+    "scope": "适用于上游请求在代理预算内未完成的情况。",
+    "cause": "上游或中间链路未在请求预算内完成，可能被长上下文、生成时间或连接稳定性放大。",
+    "solutions": [
+      "缩短上下文并减少一次性工具输出后重试。",
+      "确认客户端和入口没有同时设置过短的超时。",
+      "持续出现时记录时间、模型、是否有部分输出，交给管理员比较上游和代理日志。"
+    ],
+    "limitations": "不能仅凭此码确定是公网代理、局域网还是上游服务造成；不要通过反复重试放大负载。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 90
+  },
+  {
+    "slug": "error-context-limit",
+    "code": "context_length_exceeded",
+    "title": "上下文超限",
+    "signature": "context_length_exceeded",
+    "scope": "适用于明确提示上下文长度超过模型或入口限制的情况。",
+    "cause": "携带的历史消息、工具结果或图片使请求上下文超过可接受范围。实际可用上限取决于模型和入口，状态页不宣称统一数值。",
+    "solutions": [
+      "使用 /compact 或客户端提供的压缩入口。",
+      "压缩失败时新建空白聊天，只交接目标、完成项、必要路径和下一步。",
+      "减少重复截图、大附件和整段历史后再试。"
+    ],
+    "limitations": "压缩建议不是固定系统上限；切换公网/内网或只改 API 路径不能保证解除模型上下文限制。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 100
+  },
+  {
+    "slug": "error-client-request",
+    "code": "invalid_request_error / unsupported_value",
+    "title": "请求参数错误",
+    "signature": "invalid_request_error",
+    "scope": "适用于参数、模型、推理级别或请求形状不被接受的情况。",
+    "cause": "客户端提交的字段或取值不符合当前入口与模型契约。",
+    "solutions": [
+      "核对模型名称、推理级别和请求参数。",
+      "去掉最近新增的可选字段后用最小请求重试。",
+      "仍失败时记录脱敏后的参数类别和时间，交给管理员核对契约。"
+    ],
+    "limitations": "不要公开或发送完整请求体、API Key、会话内容或内部响应；参数错误不等于服务整体中断。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 110
+  },
+  {
+    "slug": "error-network-access",
+    "code": "network access / 403",
+    "title": "网络访问受限",
+    "signature": "upstream_unavailable / network access",
+    "scope": "访问入口或网络边界拒绝了请求，可能表现为 403、网络不可达或上游不可用。",
+    "cause": "网络拒绝可能来自当前客户端所在网络、NAT、访问控制或上游链路；仅凭客户端看到的 403 不能判断具体边界。",
+    "solutions": [
+      "先确认客户端能访问管理员公布的入口并信任相应内部 CA（如适用）。",
+      "向管理员提供发生时间、入口类型和脱敏错误类别，协助核对服务端与网络边界。",
+      "管理员可在受控范围内做安全诊断，并根据证据调整允许的网络边界。"
+    ],
+    "limitations": "不要自动扩大网段、信任任意客户端 headers 或绕过访问控制；不要在公开反馈中提交凭据、完整请求或内部地址。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 120
   }
 ]
