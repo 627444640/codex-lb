@@ -106,6 +106,20 @@ class GuideTests(unittest.TestCase):
         self.assertEqual(notice["body"], "Preserve this content")
         self.assertEqual(len(upgraded.state.guides.list()), 10)
 
+    def test_seed_version_upgrade_adds_new_guides_without_overwriting_edits(self):
+        root = Path(self.temp.name) / "seed-upgrade"
+        settings = Settings(source_db=root / "source.db", state_dir=root / "state", checks=())
+        old_store = Store(settings)
+        with old_store.db() as conn:
+            conn.execute("DELETE FROM monitor_meta WHERE key='troubleshooting-seed-v2'")
+            conn.execute("INSERT INTO monitor_meta VALUES ('troubleshooting-seed-v1','done')")
+        upgraded = create_app(settings, run_collector=False)
+        self.assertEqual(len(upgraded.state.guides.list()), 10)
+        with upgraded.state.store.db() as conn:
+            self.assertIsNotNone(
+                conn.execute("SELECT 1 FROM monitor_meta WHERE key='troubleshooting-seed-v2'").fetchone()
+            )
+
     def test_private_routes_require_local_service_auth(self):
         for method, path in (
             ("GET", "/internal/guides"),
