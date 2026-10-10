@@ -46,7 +46,7 @@ class Fixture(unittest.TestCase):
                     " TEXT,\n                requested_at TEXT,requ"
                     "est_kind TEXT,model_source_id TEXT,latency_ms"
                     " REAL,\n                latency_first_output_m"
-                    "s REAL,client_ip TEXT DEFAULT 'private-ip-mar"
+                    "s REAL,error_code TEXT,deleted_at TEXT,client_ip TEXT DEFAULT 'private-ip-mar"
                     "ker',error_message TEXT DEFAULT 'private-erro"
                     "r-marker');\n            INSERT INTO accounts("
                     "id,plan_type,status) VALUES ('private-account"
@@ -84,17 +84,34 @@ class Fixture(unittest.TestCase):
             )
 
     def request(
-        self, status="success", kind="normal", model="test-model", source=None, at=None, account="private-account-id"
+        self,
+        status="success",
+        kind="normal",
+        model="test-model",
+        source=None,
+        at=None,
+        account="private-account-id",
+        error_code=None,
     ):
         with self.source_connection() as c:
             c.execute(
                 (
                     "INSERT INTO request_logs(account_id,model,sta"
                     "tus,requested_at,request_kind,model_source_id"
-                    ",latency_ms,latency_first_output_ms) VALUES ("
-                    "?,?,?,?,?,?,?,?)"
+                    ",latency_ms,latency_first_output_ms,error_code) VALUES ("
+                    "?,?,?,?,?,?,?,?,?)"
                 ),
-                (account, model, status, sql_time(self.now - 1 if at is None else at), kind, source, 1234, 123),
+                (
+                    account,
+                    model,
+                    status,
+                    sql_time(self.now - 1 if at is None else at),
+                    kind,
+                    source,
+                    1234,
+                    123,
+                    error_code,
+                ),
             )
 
     def snapshot(self, status="operational", ts=None, component="gateway"):
@@ -212,6 +229,36 @@ class CollectorTests(Fixture):
             store.record(collect(self.settings, self.now + i))
         self.assertEqual(store.incidents(), [])
         self.assertEqual(store.events(), [])
+
+    def test_request_quality_groups_recent_errors_and_excludes_luna(self):
+        self.request(status="error", model="gpt-6-astra", error_code="server_error")
+        self.request(status="error", model="gpt-6-astra", error_code="stream_incomplete")
+        self.request(status="error", model="gpt-6-astra", error_code="previous_response_not_found")
+        self.request(status="error", model="gpt-6-luna", error_code="server_error")
+        self.request(status="success", model="gpt-6-astra")
+
+        quality = read_source(self.settings, self.now)["request_quality"]
+
+        self.assertEqual((quality["total"], quality["successes"], quality["errors"]), (4, 1, 3))
+        self.assertEqual(quality["error_percent"], 75)
+        self.assertEqual(
+            [(category["key"], category["count"]) for category in quality["categories"]],
+            [("continuation", 1), ("stream_incomplete", 1), ("upstream_processing", 1)],
+        )
+        self.assertNotIn("gpt-6-luna", json.dumps(quality))
+        self.assertNotIn("private-error-marker", json.dumps(quality))
+
+    def test_request_quality_filters_deleted_rows_and_hides_unknown_codes(self):
+        self.request(status="error", model="gpt-6-astra", error_code="private-error-marker")
+        with self.source_connection() as c:
+            c.execute("UPDATE request_logs SET deleted_at=?", (sql_time(self.now),))
+        quality = read_source(self.settings, self.now)["request_quality"]
+        self.assertEqual(quality["total"], 0)
+
+        self.request(status="error", model="gpt-6-astra", error_code="private-error-marker")
+        quality = read_source(self.settings, self.now)["request_quality"]
+        self.assertEqual(quality["categories"][0]["key"], "other")
+        self.assertNotIn("private-error-marker", json.dumps(quality))
 
     def test_no_samples_cannot_assert_business_available(self):
         s = collect(self.settings, self.now)
@@ -363,6 +410,17 @@ class StateTests(Fixture):
         self.assertEqual(sum(b["samples"] for b in history["days"]), 1)
         self.assertEqual(sum(b["percent"] is None for b in history["days"]), 90)
 
+    def test_incident_summary_keeps_old_open_incident_visible(self):
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO incidents(component,title,severity,opened_at,closed_at) VALUES (?,?,?,?,NULL)",
+                ("requests", "旧请求事件", "warning", self.now - 3 * 86400),
+            )
+        summary = self.store.public(self.now)["incident_summary"]
+        self.assertEqual(summary["count"], 0)
+        self.assertEqual(summary["open_count"], 1)
+        self.assertEqual(summary["latest_status"], "active")
+
     def test_notice_scheduling_draft_expiry_and_withdrawal(self):
         base = {
             "title": "标题",
@@ -420,6 +478,8 @@ class ControlTests(Fixture):
         components = {component["id"]: component for component in response.json()["components"]}
         self.assertEqual(components["quota"]["status"], "operational")
         self.assertEqual(components["quota_warning"]["status"], "operational")
+        self.assertIn("request_quality", response.json())
+        self.assertIn("incident_summary", response.json())
         for key in ("pool", "quota_ready", "active", "private-account-id", "smtp", "token_file"):
             self.assertNotIn(key, response.text)
         for path in ("/admin", "/api/admin/overview", "/static/admin.html", "/static/admin.js"):

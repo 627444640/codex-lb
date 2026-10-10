@@ -311,6 +311,28 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def incident_summary(self, now, window_seconds=86400):
+        cutoff = now - window_seconds
+        with self.db() as conn:
+            request_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id,component,title,severity,opened_at,closed_at FROM incidents "
+                    "WHERE component='requests' AND (opened_at>=? OR closed_at IS NULL) ORDER BY opened_at DESC",
+                    (cutoff,),
+                )
+            ]
+        recent_rows = [incident for incident in request_rows if incident["opened_at"] >= cutoff]
+        latest = request_rows[0] if request_rows else None
+        return {
+            "window_seconds": window_seconds,
+            "count": len(recent_rows),
+            "open_count": sum(incident["closed_at"] is None for incident in request_rows),
+            "latest_opened_at": latest["opened_at"] if latest else None,
+            "latest_closed_at": latest["closed_at"] if latest else None,
+            "latest_status": "active" if latest and latest["closed_at"] is None else "recovered" if latest else "quiet",
+        }
+
     def events(self):
         with self.db() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY created_at DESC,id DESC LIMIT 100")]
@@ -359,7 +381,7 @@ class Store:
             s = {"collected_at": None, "status": "unknown", "components": [], "pool": None, "requests": None}
         if stale:
             s["status"] = "unknown"
-            s["pool"] = s["requests"] = None
+            s["pool"] = s["requests"] = s["request_quality"] = None
             s["components"] = [
                 {
                     "id": c["id"],
@@ -384,8 +406,10 @@ class Store:
                 "weekly_next_reset_at": weekly_next_reset_at,
             },
             "requests": s["requests"],
+            "request_quality": s.get("request_quality"),
             "history": self.history(now),
             "incidents": self.incidents(),
+            "incident_summary": self.incident_summary(now),
             "notices": self.notices(True, now),
             "timezone": "Asia/Taipei",
         }
