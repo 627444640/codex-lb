@@ -13,6 +13,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from .store import Store
 
+SEED_MARKER = "troubleshooting-seed-v2"
+
 
 class GuideContent(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -86,7 +88,7 @@ class GuideRepository:
                 sort_order INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, deleted_at REAL)""")
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM monitor_meta WHERE key='troubleshooting-seed-v1'").fetchone():
+            if conn.execute("SELECT 1 FROM monitor_meta WHERE key=?", (SEED_MARKER,)).fetchone():
                 return
             now = time.time()
             for seed in json.loads(seed_file.read_text()):
@@ -97,7 +99,7 @@ class GuideRepository:
                     "(slug,content,status,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                     (slug, self._json(content), content.status, content.sort_order, now, now),
                 )
-            conn.execute("INSERT INTO monitor_meta VALUES ('troubleshooting-seed-v1','done')")
+            conn.execute("INSERT INTO monitor_meta VALUES (?, 'done')", (SEED_MARKER,))
 
     @staticmethod
     def _json(content: GuideContent) -> str:
