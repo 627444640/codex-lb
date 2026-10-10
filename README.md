@@ -16,6 +16,8 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 
 **Documentation: <https://soju06.github.io/codex-lb/>** — getting started, client setup, configuration, deployment, troubleshooting, and more screenshots.
 
+> **Current project line (verified 2026-10-10, Asia/Taipei):** this checkout's source/package line is `v1.24.3` (a local fork snapshot, not a claim of a matching public release tag) and requires Python 3.13+. The managed local runtime is also `1.24.3`, but its deployment record points to source commit `9c0f1e26`; this checkout contains later local commits that are not installed there yet. Treat source, installed runtime, and acceptance evidence as separate until a deployment readback confirms parity. Health/readiness and model-catalog checks do not by themselves prove an authenticated real-model request.
+
 ## Features
 
 <table>
@@ -30,6 +32,8 @@ Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage 
 <td><b>Auto Model Sync</b><br>Available models fetched from upstream</td>
 </tr>
 </table>
+
+The optional status and FAQ monitor lives under [`deploy/status-monitor`](deploy/status-monitor/README.md) and runs as a separate process. It is FAQ-only, does not perform model inference, and is not started by the base gateway install. See [status-page administration](docs/status-page-management.md) for its operator contract.
 
 | ![dashboard](docs/screenshots/dashboard.jpg) | ![accounts](docs/screenshots/accounts.jpg) |
 |:---:|:---:|
@@ -88,6 +92,8 @@ Environment variables with `CODEX_LB_` prefix or `.env.local` — see [`.env.exa
 [configuration guide](https://soju06.github.io/codex-lb/configuration/). SQLite is the default database backend;
 PostgreSQL is optional via `CODEX_LB_DATABASE_URL`.
 
+Anonymous telemetry has been retired. Local request logs and token-usage accounting remain available; see [telemetry](docs/telemetry.md) and [internal usage](https://soju06.github.io/codex-lb/internal-token-usage/).
+
 ## Data
 
 | Environment | Path |
@@ -107,6 +113,7 @@ Full docs live at **<https://soju06.github.io/codex-lb/>**:
 - [Authentication](https://soju06.github.io/codex-lb/authentication/) — dashboard auth modes
 - [API keys](https://soju06.github.io/codex-lb/api-keys/) — protecting proxy routes
 - [Internal usage](docs/internal-token-usage.md) — token accounting, trusted client IP, and preserved historical data
+- [Status and FAQ monitor](docs/status-page-management.md) — optional separate monitor, guide-only FAQ, and deployment boundaries
 - [Routing](https://soju06.github.io/codex-lb/routing/) — strategy guide
 - [Database](https://soju06.github.io/codex-lb/database/) — SQLite / PostgreSQL, Postgres 16 → 18 upgrade
 - [Deployment](https://soju06.github.io/codex-lb/deployment/docker/) — [Docker](https://soju06.github.io/codex-lb/deployment/docker/), [Kubernetes](https://soju06.github.io/codex-lb/deployment/kubernetes/), [remote access](https://soju06.github.io/codex-lb/deployment/remote/)
@@ -119,7 +126,7 @@ Full docs live at **<https://soju06.github.io/codex-lb/>**:
 docker compose watch
 
 # Local
-uv sync && cd frontend && bun install && cd ..
+uv sync --frozen && cd frontend && bun install --frozen-lockfile && cd ..
 uv run codex-lb                              # backend :2455
 cd frontend && bun run dev                     # frontend :5173
 ```
