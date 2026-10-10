@@ -17,7 +17,7 @@ function render(s){
   $("status-banner").className=`status-banner ${state}`;
   $("status-title").textContent=state==="operational"&&idle&&qualityAttention?"基础服务正常，近期请求需关注":state==="operational"&&idle?"基础服务运行正常":heads[state];
   $("status-symbol").textContent={operational:"✓",degraded:"!",outage:"!",unknown:"—"}[state];
-  $("status-description").textContent=s.stale?"采样已过期，实时状态暂不可确认。":state==="operational"&&idle&&qualityAttention?`当前 15 分钟无请求；最近 24 小时错误率 ${percent(quality.error_percent)}，请查看请求质量。`:state==="operational"&&idle?"当前暂无真实模型请求样本，业务质量待调用后确认。":state==="operational"?"当前已配置的观测项正常，详细结果见下方。":"请查看下方各项观测结果，异常连续出现后会进入事件记录。";
+  $("status-description").textContent=s.stale?"采样已过期，实时状态暂不可确认。":state==="operational"&&idle&&qualityAttention?`当前 15 分钟无请求；最近 24 小时错误率 ${percent(quality.error_percent)}，请查看请求质量。`:state==="operational"&&idle&&quality?.total?`当前 15 分钟无请求；最近 24 小时有 ${number(quality.total)} 条终态样本，业务质量见下方。`:state==="operational"&&idle?"当前暂无真实模型请求样本，业务质量待调用后确认。":state==="operational"?"当前已配置的观测项正常，详细结果见下方。":"请查看下方各项观测结果，异常连续出现后会进入事件记录。";
   $("banner-label").textContent=s.stale?"DATA STALE":state==="operational"?"OPERATIONAL":labels[state];
   $("last-updated").textContent=s.collected_at?`最后采样 ${date(s.collected_at,true)}`:"等待首次采样";
   const weekly=s.capacity?.weekly_remaining_percent;
