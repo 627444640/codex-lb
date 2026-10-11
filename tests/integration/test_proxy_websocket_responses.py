@@ -5856,14 +5856,22 @@ def test_v1_responses_websocket_masks_short_previous_response_not_found_without_
                     }
                 )
             )
-            failed_2 = json.loads(websocket.receive_text())
+            created_2 = json.loads(websocket.receive_text())
+            completed_2 = json.loads(websocket.receive_text())
 
-    assert failed_2["type"] == "response.failed"
-    assert failed_2["response"]["error"]["code"] == "stream_incomplete"
-    assert failed_2["response"]["error"]["message"] == "Upstream websocket closed before response.completed"
-    assert "previous_response_not_found" not in json.dumps(failed_2)
-    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
-    assert connect_count == 1
+    # The first turn completed, so the history cache can resend this short
+    # continuation once on the same account without previous_response_id.
+    assert created_2["type"] == "response.created"
+    assert created_2["response"]["id"] == "resp_ws_prev_retry"
+    assert completed_2["type"] == "response.completed"
+    assert "previous_response_not_found" not in json.dumps(created_2)
+    assert "resp_ws_prev_anchor" not in json.dumps(created_2)
+    assert connect_count == 2
+    replay_payload = json.loads(recovered_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    replay_input = json.dumps(replay_payload["input"])
+    assert "hello" in replay_input
+    assert "continue" in replay_input
 
 
 def test_v1_responses_websocket_marks_fresh_turn_as_retry_safe_at_prep_time(
@@ -6349,14 +6357,21 @@ def test_v1_responses_websocket_masks_invalid_request_previous_response_not_foun
                     }
                 )
             )
-            failed_2 = json.loads(websocket.receive_text())
+            created_2 = json.loads(websocket.receive_text())
+            completed_2 = json.loads(websocket.receive_text())
 
-    assert failed_2["type"] == "response.failed"
-    assert failed_2["response"]["error"]["code"] == "stream_incomplete"
-    assert failed_2["response"]["error"]["message"] == "Upstream websocket closed before response.completed"
-    assert "previous_response_not_found" not in json.dumps(failed_2)
-    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
-    assert connect_count == 1
+    # Same cache recovery as the canonical short miss: one same-account resend.
+    assert created_2["type"] == "response.created"
+    assert created_2["response"]["id"] == "resp_ws_prev_retry"
+    assert completed_2["type"] == "response.completed"
+    assert "previous_response_not_found" not in json.dumps(created_2)
+    assert "resp_ws_prev_anchor" not in json.dumps(created_2)
+    assert connect_count == 2
+    replay_payload = json.loads(recovered_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    replay_input = json.dumps(replay_payload["input"])
+    assert "hello" in replay_input
+    assert "continue" in replay_input
 
 
 def test_backend_responses_websocket_connect_failure_masks_previous_response_not_found(
@@ -6672,13 +6687,22 @@ def test_backend_responses_websocket_masks_short_previous_response_not_found_wit
                     }
                 )
             )
-            failed_2 = json.loads(websocket.receive_text())
+            created_2 = json.loads(websocket.receive_text())
+            completed_2 = json.loads(websocket.receive_text())
 
-    assert failed_2["type"] == "response.failed"
-    _assert_previous_response_not_found_error(failed_2["response"]["error"])
-    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
-    assert connect_count == 1
-    assert captured_preferred_accounts == [None]
+    # Cached first turn: resend once on the same account, do not mask as a failure.
+    assert created_2["type"] == "response.created"
+    assert created_2["response"]["id"] == "resp_ws_prev_retry"
+    assert completed_2["type"] == "response.completed"
+    assert "previous_response_not_found" not in json.dumps(created_2)
+    assert "resp_ws_prev_anchor" not in json.dumps(created_2)
+    assert connect_count == 2
+    assert captured_preferred_accounts[0] is None
+    replay_payload = json.loads(recovered_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    replay_input = json.dumps(replay_payload["input"])
+    assert "hello" in replay_input
+    assert "continue" in replay_input
 
 
 def test_backend_responses_websocket_masks_anonymous_previous_response_not_found_with_inflight_request(
@@ -7236,12 +7260,18 @@ def test_backend_responses_websocket_masks_previous_response_not_found_when_mess
                     }
                 )
             )
-            failed_2 = json.loads(websocket.receive_text())
+            created_2 = json.loads(websocket.receive_text())
+            completed_2 = json.loads(websocket.receive_text())
 
-    assert failed_2["type"] == "response.failed"
-    _assert_previous_response_not_found_error(failed_2["response"]["error"])
-    assert "resp_ws_prev_anchor" not in json.dumps(failed_2)
-    assert connect_count == 1
+    # The omitted-id miss still matches the cached turn, so it is resent once.
+    assert created_2["type"] == "response.created"
+    assert created_2["response"]["id"] == "resp_ws_followup_replayed"
+    assert completed_2["type"] == "response.completed"
+    assert "previous_response_not_found" not in json.dumps(created_2)
+    assert "resp_ws_prev_anchor" not in json.dumps(created_2)
+    assert connect_count == 2
+    replay_payload = json.loads(recovered_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
 
 
 def test_backend_responses_websocket_never_exposes_raw_previous_response_id_to_client(
@@ -10199,7 +10229,7 @@ def test_backend_responses_websocket_previous_response_usage_limit_returns_upstr
         "type": "response.create",
         "model": "gpt-5.1",
         "instructions": "",
-        "previous_response_id": "resp_ws_prev_anchor",
+        "previous_response_id": "resp_ws_usage_limit_uncached",
         "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
         "stream": True,
     }
@@ -11157,6 +11187,33 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
             ],
         ],
     )
+    recovered_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            [
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.created",
+                            "response": {"id": "resp_ws_proxy_injected_replay", "status": "in_progress"},
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+                _FakeUpstreamMessage(
+                    "text",
+                    text=json.dumps(
+                        {
+                            "type": "response.completed",
+                            "response": {"id": "resp_ws_proxy_injected_replay", "status": "completed"},
+                        },
+                        separators=(",", ":"),
+                    ),
+                ),
+            ]
+        ],
+    )
     connect_count = 0
     log_calls: list[dict[str, object]] = []
     historical_input = {"role": "user", "content": [{"type": "input_text", "text": "first"}]}
@@ -11207,7 +11264,8 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
         )
         nonlocal connect_count
         connect_count += 1
-        return SimpleNamespace(id="acct_ws_proxy_injected"), upstream_socket
+        socket = upstream_socket if connect_count == 1 else recovered_upstream
+        return SimpleNamespace(id="acct_ws_proxy_injected"), socket
 
     async def fake_write_request_log(self, **kwargs):
         del self
@@ -11256,32 +11314,30 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
                     }
                 )
             )
-            failed_event = json.loads(websocket.receive_text())
-            while failed_event["type"] == "codex.keepalive":
-                failed_event = json.loads(websocket.receive_text())
+            replayed = json.loads(websocket.receive_text())
+            # A replay that never reaches a terminal must not sit on keepalives.
+            for _ in range(3):
+                if replayed["type"] != "codex.keepalive":
+                    break
+                replayed = json.loads(websocket.receive_text())
+            replayed_completed = json.loads(websocket.receive_text())
 
     assert first_created["type"] == "response.created"
     assert first_completed["type"] == "response.completed"
-    assert failed_event["type"] == "response.failed"
-    _assert_previous_response_not_found_error(failed_event["response"]["error"])
-    assert connect_count == 1
+    assert replayed["type"] == "response.created"
+    assert replayed["response"]["id"] == "resp_ws_proxy_injected_replay"
+    assert replayed_completed["type"] == "response.completed"
+    assert connect_count == 2
     first_payload = json.loads(upstream_socket.sent_text[0])
     second_payload = json.loads(upstream_socket.sent_text[1])
     assert "previous_response_id" not in first_payload
     assert second_payload["previous_response_id"] == "resp_ws_proxy_injected_anchor"
     assert second_payload["input"] == [next_input]
-    error_logs = [call for call in log_calls if call.get("status") == "error"]
-    assert len(error_logs) == 1
-    failure_detail = error_logs[0]["failure_detail"]
-    assert isinstance(failure_detail, str)
-    assert failure_detail.startswith("previous_response_not_found ")
-    assert "previous_response_source=proxy_injected" in failure_detail
-    assert "fresh_replay_available=false" in failure_detail
-    assert "owner_lookup_source=request_cache" in failure_detail
-    assert "owner_lookup_outcome=hit" in failure_detail
-    assert "previous_response_age_seconds=unknown" in failure_detail
-    assert "same_session=unknown" in failure_detail
-    assert "resp_ws_proxy_injected_anchor" not in failure_detail
+    replay_payload = json.loads(recovered_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    assert "first" in json.dumps(replay_payload["input"])
+    assert "continue" in json.dumps(replay_payload["input"])
+    assert all(call.get("status") != "error" for call in log_calls)
     assert "continuity_fail_closed surface=websocket_stream reason=previous_response_not_found" in caplog.text
     assert "previous_response_source=proxy_injected" in caplog.text
     assert "fresh_replay_available=false" in caplog.text
@@ -14335,3 +14391,177 @@ def test_backend_responses_websocket_re_sends_an_anchored_accepted_failure_in_a_
     assert "previous_response_id" not in replayed_payload
     assert replayed_payload["input"] == [failover.HISTORICAL_INPUT, failover.FOLLOW_UP_INPUT]
     assert other_account_upstream.sent_text == []
+
+
+def _pre_token_server_error_event() -> _FakeUpstreamMessage:
+    """Admission failure before response.created. No output has been forwarded."""
+    return _ws_event(
+        {
+            "type": "error",
+            "status": 500,
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "message": "upstream failed before the first token",
+            },
+        }
+    )
+
+
+def test_backend_responses_websocket_pre_first_token_server_error_fails_over(
+    app_instance,
+    monkeypatch,
+):
+    """A server_error before response.created is one admission failover onto
+    another account. The client sees a single completed lifecycle."""
+    first_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    recovered_upstream = _recovered_upstream("resp_ws_pre_token_recovered")
+    failover = _TwoAccountWebSocketFailover(first_upstream, recovered_upstream)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(app_instance)
+
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_pre_token_recovered"
+    failover.assert_retried_on_another_account()
+    assert len(first_upstream.sent_text) == 1
+    assert len(recovered_upstream.sent_text) == 1
+
+
+def test_backend_responses_websocket_second_create_on_same_connection_still_fails_over(
+    app_instance,
+    monkeypatch,
+):
+    """The one-resend budget is per response.create, not per socket.
+
+    The first create fails over from A to B. The second create is sent on the
+    same client socket, reuses B, and must still fail over once. This test
+    does not reset the budget between the two creates; the suite fixture only
+    resets around the whole test.
+    """
+    first_failure = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    second_recovery = _recovered_upstream("resp_ws_budget_second")
+    shared_recovered = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _completed_first_turn_upstream_batch("resp_ws_budget_first"),
+            [_pre_token_server_error_event()],
+        ],
+    )
+    failover = _TwoAccountWebSocketFailover(first_failure, shared_recovered)
+    failover.upstreams_by_account[failover.FIRST_ACCOUNT_ID].append(second_recovery)
+    failover.install(monkeypatch)
+    second_input = {"role": "user", "content": [{"type": "input_text", "text": "unrelated second turn"}]}
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            failover.response_create([failover.HISTORICAL_INPUT]),
+            failover.response_create([second_input]),
+        ],
+    )
+
+    assert disconnect is None
+    assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_budget_second"
+    assert failover.connect_accounts == [
+        failover.FIRST_ACCOUNT_ID,
+        failover.SECOND_ACCOUNT_ID,
+        failover.FIRST_ACCOUNT_ID,
+    ], failover.connect_accounts
+    assert failover.excluded_at_connect[1] == {failover.FIRST_ACCOUNT_ID}
+    assert failover.excluded_at_connect[2] == {failover.SECOND_ACCOUNT_ID}, failover.excluded_at_connect
+    assert not failover.refused_connects
+    replayed = json.loads(second_recovery.sent_text[0])
+    assert replayed["input"] == [second_input]
+
+
+def test_backend_responses_websocket_cached_history_replays_after_pre_token_500(
+    app_instance,
+    monkeypatch,
+):
+    """A 500 on a short previous_response_id continuation resends the cached
+    history once, without the anchor, on another account."""
+    anchor_id = "resp_ws_cached_500_anchor"
+    owner = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _completed_first_turn_upstream_batch(anchor_id),
+            [_pre_token_server_error_event()],
+        ],
+    )
+    recovered = _recovered_upstream("resp_ws_cached_500_replay")
+    failover = _TwoAccountWebSocketFailover(owner, recovered)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            failover.response_create([failover.HISTORICAL_INPUT]),
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": anchor_id,
+                "input": [failover.FOLLOW_UP_INPUT],
+                "stream": True,
+            },
+        ],
+    )
+
+    assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_cached_500_replay"
+    failover.assert_retried_on_another_account()
+    assert len(owner.sent_text) == 2
+    failed_follow_up = json.loads(owner.sent_text[1])
+    assert failed_follow_up["previous_response_id"] == anchor_id
+    replayed = json.loads(recovered.sent_text[0])
+    assert "previous_response_id" not in replayed
+    replayed_input = replayed["input"]
+    assert replayed_input[0] == failover.HISTORICAL_INPUT
+    assert replayed_input[-1] == failover.FOLLOW_UP_INPUT
+    assert any(item.get("role") == "assistant" for item in replayed_input)
+
+
+def test_backend_responses_websocket_uncached_previous_response_500_does_not_switch_accounts(
+    app_instance,
+    monkeypatch,
+):
+    """Without a cached history, a pre-token 500 that names previous_response_id
+    is returned to the client. The other account is not contacted."""
+    owner = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    other = _recovered_upstream("resp_ws_uncached_500_unused")
+    failover = _TwoAccountWebSocketFailover(owner, other)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": "resp_ws_never_cached",
+                "input": [failover.FOLLOW_UP_INPUT],
+                "stream": True,
+            }
+        ],
+    )
+
+    assert disconnect is None
+    assert events
+    assert events[-1]["type"] in {"response.failed", "error"}
+    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID]
+    assert other.sent_text == []
+    assert len(owner.sent_text) == 1
+    forwarded = json.loads(owner.sent_text[0])
+    assert forwarded["previous_response_id"] == "resp_ws_never_cached"

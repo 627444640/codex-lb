@@ -101,12 +101,12 @@ class _PendingTurn:
     response_ids: list[str]
 
 
-def note_history_replay(reason: str, extra_tokens: int) -> None:
+def note_history_replay(reason: str, extra_tokens: int, request_id: str | None = None) -> None:
     """Record the first history replay on this request for the request log."""
 
     from app.modules.proxy._load_balancer.admission_breaker import mark_transparent_retry
 
-    mark_transparent_retry()
+    mark_transparent_retry(request_id)
     if _replay_mark.get() is None:
         _replay_mark.set(HistoryReplayMark(reason=reason, extra_tokens=extra_tokens))
 
@@ -308,10 +308,11 @@ class ConversationHistoryCache:
         already_replayed: bool,
         owner_blocked: bool,
         file_pinned: bool,
+        request_id: str | None = None,
     ) -> HistoryReplay | None:
         from app.modules.proxy._load_balancer.admission_breaker import transparent_retry_used
 
-        if downstream_visible or already_replayed or transparent_retry_used():
+        if downstream_visible or already_replayed or transparent_retry_used(request_id):
             return None
         previous = _optional_str(request_body.get("previous_response_id"))
         current = _as_item_list(request_body.get("input"))
@@ -330,7 +331,7 @@ class ConversationHistoryCache:
             extra = max(0, _estimate_tokens(full) - _estimate_tokens(current))
             body = dict(request_body)
             body["input"] = full
-            body["previous_response_id"] = None
+            body.pop("previous_response_id", None)
             switch = owner_blocked or reason in {"owner_unavailable", "admission_failure"}
             if switch and (file_pinned or extract_input_file_ids(full)):
                 return None
@@ -344,7 +345,7 @@ class ConversationHistoryCache:
             extra,
             str(switch).lower(),
         )
-        note_history_replay(reason, extra)
+        note_history_replay(reason, extra, request_id=request_id)
         return replay
 
     def stats(self) -> HistoryCacheStats:
@@ -833,6 +834,7 @@ def try_plan_history_replay(
     already_replayed: bool,
     owner_blocked: bool,
     file_pinned: bool,
+    request_id: str | None = None,
 ) -> HistoryReplay | None:
     try:
         return get_conversation_history_cache().plan_replay(
@@ -842,6 +844,7 @@ def try_plan_history_replay(
             already_replayed=already_replayed,
             owner_blocked=owner_blocked,
             file_pinned=file_pinned,
+            request_id=request_id,
         )
     except Exception:
         logger.warning("Conversation history replay planning failed", exc_info=True)
@@ -957,6 +960,7 @@ def maybe_apply_model_history_replay(
         already_replayed=request_history_replayed(request_id),
         owner_blocked=owner_blocked,
         file_pinned=file_pinned,
+        request_id=request_id,
     )
     if replay is None:
         return None

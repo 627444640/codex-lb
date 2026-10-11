@@ -1046,7 +1046,7 @@ async def _replay_http_history(
     previous = getattr(payload, "previous_response_id", None)
     if not previous or settlement.downstream_visible:
         return
-    if transparent_retry_used() or request_history_replayed(request_id):
+    if transparent_retry_used(request_id) or request_history_replayed(request_id):
         return
     reason: HistoryReplayReason | None = None
     owner_blocked = False
@@ -1085,7 +1085,7 @@ async def _replay_http_history(
         return
     # The worker thread copies this task's context and cannot publish the
     # shared retry budget back. Record it here so a later attempt sees it.
-    note_history_replay(replay.reason, replay.extra_tokens)
+    note_history_replay(replay.reason, replay.extra_tokens, request_id=request_id)
     mark_request_history_replayed(request_id)
     if reason == "stream_incomplete":
         await record_upstream_admission_failure(

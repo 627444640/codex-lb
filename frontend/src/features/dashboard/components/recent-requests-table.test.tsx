@@ -20,6 +20,10 @@ const NULL_FAILURE_METADATA = {
   upstreamStatusCode: null,
   upstreamErrorCode: null,
   bridgeStage: null,
+  admissionFailoverRetried: false,
+  admissionFailoverFromAccountId: null,
+  historyReplayReason: null,
+  historyReplayExtraTokens: null,
 };
 const NULL_USERAGENT_METADATA = {
   useragent: null,
@@ -89,6 +93,10 @@ const LAYOUT_REQUEST = {
   costUsd: 0.01,
   costBreakdown: null,
   latencyMs: 1000,
+  admissionFailoverRetried: false,
+  admissionFailoverFromAccountId: null,
+  historyReplayReason: null,
+  historyReplayExtraTokens: null,
 } satisfies RequestLog;
 
 function openRequestDetails() {

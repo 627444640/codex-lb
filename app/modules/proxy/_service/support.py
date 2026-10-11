@@ -1938,7 +1938,7 @@ def _stage_websocket_history_replay(
     if (
         request_state.history_replay_used
         or request_history_replayed(request_state.request_id)
-        or transparent_retry_used()
+        or transparent_retry_used(request_state.request_id)
         or request_state.downstream_visible
         or request_state.upstream_model_output_seen
         or request_state.replay_count >= 1
@@ -1954,6 +1954,7 @@ def _stage_websocket_history_replay(
         already_replayed=False,
         owner_blocked=owner_blocked,
         file_pinned=request_state.file_required_preferred_account,
+        request_id=request_state.request_id,
     )
     if replay is None:
         return False

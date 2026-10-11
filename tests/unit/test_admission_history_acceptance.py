@@ -162,7 +162,7 @@ def test_admission_failure_uses_cached_history_and_consumes_the_shared_retry(tmp
         )
         assert replay is not None
         assert replay.switch_account is True
-        assert replay.request_body["previous_response_id"] is None
+        assert "previous_response_id" not in replay.request_body
         assert transparent_retry_used() is True
         assert (
             cache.plan_replay(
@@ -407,7 +407,7 @@ async def test_http_bridge_500_replays_cached_history_onto_another_account(tmp_p
     assert request_state.previous_response_id is None
     assert "acct-bridge" in request_state.excluded_account_ids
     assert sent
-    assert '"previous_response_id": null' in sent[0] or '"previous_response_id":null' in sent[0]
+    assert "previous_response_id" not in json.loads(sent[0])
 
 
 async def test_http_bridge_without_cache_does_not_switch_with_the_original_id(tmp_path, monkeypatch) -> None:

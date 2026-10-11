@@ -65,6 +65,12 @@ When a qualifying failure happens before any output event is forwarded to the cl
 - **THEN** the proxy does not send the request to another account
 - **AND** the failure is logged as output interrupted mid-stream
 
+#### Scenario: Each request on a long-lived connection has its own resend
+- **GIVEN** a websocket or HTTP bridge connection has already resent one request
+- **WHEN** a later response.create on that same connection fails before any output
+- **THEN** that later request is resent once
+- **AND** the earlier resend does not consume the later request's retry
+
 ### Requirement: Continuity is not switched
 
 The proxy SHALL NOT move a request to another account when a file pin requires that account, or when routing strategy is `single_account`. A request that depends on a `previous_response_id` SHALL stay on the owning account unless a cached full-history replay resends that turn without the anchor. A pre-output `server_error`, `server_is_overloaded`, `overloaded_error`, or HTTP status of 500 or higher on that request SHALL use the cached full history when it is present, SHALL omit `previous_response_id`, and MAY use a different healthy account. When the owning account cannot be resolved, the proxy SHALL NOT send the original `previous_response_id` to another account. Without a cached replay, the request SHALL fail on the owning account. The HTTP responses bridge SHALL follow the same rule.

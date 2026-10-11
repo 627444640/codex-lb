@@ -225,6 +225,7 @@ from app.modules.proxy.continuity import (
     resolve_required_account_id,
     without_http_bridge_session_affinity_headers,
 )
+from app.modules.proxy.conversation_history import reset_history_replay_context
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
 from app.modules.proxy.durable_bridge_repository import durable_bridge_hash
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
@@ -951,6 +952,9 @@ class _HTTPBridgeStreamingMixin:
         dashboard_settings = await _service_get_settings_cache().get()
         runtime_config = _http_bridge_runtime_config(dashboard_settings, _service_get_settings())
         request_id = ensure_request_id()
+        # Each bridge request gets its own resend. Internal retries stay inside
+        # this call and must not reset again.
+        reset_history_replay_context()
         self._raise_for_unsupported_input_image_references(payload)
         payload_size_estimate_bytes = len(
             json.dumps(payload.to_payload(), ensure_ascii=True, separators=(",", ":")).encode("utf-8")

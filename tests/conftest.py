@@ -141,11 +141,29 @@ def _isolated_request_retry_budget():
     request that consumed its single resend would otherwise block the next test.
     """
 
-    from app.modules.proxy.conversation_history import reset_history_replay_context
+    from app.modules.proxy.conversation_history import (
+        reset_history_replay_context,
+        set_conversation_history_cache,
+    )
 
-    reset_history_replay_context()
+    def _discard_conversation_history_cache() -> None:
+        # The cache is a process-wide sqlite file. A turn recorded by one test
+        # must not make a later test replay that response id.
+        from app.modules.proxy import conversation_history as history_module
+
+        current = history_module._CACHE
+        reset_history_replay_context()
+        if current is None:
+            return
+        path = current.path
+        set_conversation_history_cache(None)
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            candidate = path if suffix == "" else path.with_name(path.name + suffix)
+            candidate.unlink(missing_ok=True)
+
+    _discard_conversation_history_cache()
     yield
-    reset_history_replay_context()
+    _discard_conversation_history_cache()
 
 
 @pytest.fixture(autouse=True)

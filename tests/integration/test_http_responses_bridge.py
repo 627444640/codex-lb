@@ -17197,3 +17197,292 @@ async def test_backend_responses_http_bridge_accepted_replay_moved_by_a_soft_row
     # handshake carries none of it.
     assert "x-codex-turn-state" not in connects[0][1]
     assert "x-codex-turn-state" not in connects[1][1], connects[1][1]["x-codex-turn-state"]
+
+
+class _ScriptedBridgeUpstream:
+    """One upstream socket that answers each response.create with the next batch."""
+
+    def __init__(self, batches: list[list[dict[str, Any]]]) -> None:
+        self.sent_text: list[str] = []
+        self.closed = False
+        self._batches: deque[list[dict[str, Any]]] = deque(batches)
+        self._messages: asyncio.Queue[_FakeUpstreamMessage] = asyncio.Queue()
+
+    async def send_text(self, text: str) -> None:
+        self.sent_text.append(text)
+        if not self._batches:
+            return
+        for event in self._batches.popleft():
+            await self._messages.put(
+                _FakeUpstreamMessage("text", text=json.dumps(event, separators=(",", ":")))
+            )
+
+    async def send_bytes(self, data: bytes) -> None:
+        raise AssertionError(f"Unexpected binary frame: {data!r}")
+
+    async def receive(self) -> _FakeUpstreamMessage:
+        return await self._messages.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+    def response_header(self, name: str) -> str | None:
+        del name
+        return None
+
+
+def _bridge_completed_event(response_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "response.created",
+            "response": {"id": response_id, "object": "response", "status": "in_progress"},
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": response_id,
+                "object": "response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "OK"}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 1,
+                    "total_tokens": 9,
+                },
+            },
+        },
+    ]
+
+
+def _bridge_server_error_event() -> dict[str, Any]:
+    return {
+        "type": "error",
+        "status": 500,
+        "error": {
+            "type": "server_error",
+            "code": "server_error",
+            "message": "upstream failed before the first token",
+        },
+    }
+
+
+def _install_two_account_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+    accounts: list[Account],
+    sockets: dict[str, deque[_ScriptedBridgeUpstream | _FakeBridgeUpstreamWebSocket]],
+) -> list[str]:
+    """Selector honors exclude_account_ids and preferred_account_id."""
+    selected: list[str] = []
+    by_id = {account.id: account for account in accounts}
+
+    async def fake_select_account_with_budget(
+        self,
+        deadline,
+        *,
+        request_id,
+        kind,
+        request_stage="first_turn",
+        sticky_key,
+        sticky_kind,
+        reallocate_sticky,
+        sticky_max_age_seconds,
+        prefer_earlier_reset_accounts,
+        routing_strategy,
+        model,
+        exclude_account_ids=None,
+        additional_limit_name=None,
+        api_key=None,
+        preferred_account_id=None,
+        **kwargs,
+    ):
+        del (
+            self,
+            deadline,
+            request_id,
+            kind,
+            request_stage,
+            sticky_key,
+            sticky_kind,
+            reallocate_sticky,
+            sticky_max_age_seconds,
+            prefer_earlier_reset_accounts,
+            routing_strategy,
+            model,
+            additional_limit_name,
+            api_key,
+            kwargs,
+        )
+        excluded = set(exclude_account_ids or [])
+        ordered: list[Account] = []
+        if preferred_account_id is not None and preferred_account_id not in excluded:
+            preferred = by_id.get(preferred_account_id)
+            if preferred is not None:
+                ordered.append(preferred)
+        for account in accounts:
+            if account.id not in excluded and account not in ordered:
+                ordered.append(account)
+        for account in ordered:
+            queue = sockets.get(account.chatgpt_account_id)
+            if queue:
+                selected.append(account.id)
+                return AccountSelection(account=account, error_message=None, error_code=None)
+        return AccountSelection(
+            account=None,
+            error_message="No account available",
+            error_code="no_available_account",
+        )
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        del headers, access_token, base_url, session
+        return sockets[account_id_header].popleft()
+
+    async def fail_legacy_stream(*args, **kwargs):
+        raise AssertionError("legacy core_stream_responses path must not be used when HTTP bridge is enabled")
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fail_legacy_stream)
+    return selected
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_pre_first_token_server_error_fails_over(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_a = await _import_account(async_client, "acc_bridge_pre_token_a", "bridge-pre-token-a@example.com")
+    account_b = await _import_account(async_client, "acc_bridge_pre_token_b", "bridge-pre-token-b@example.com")
+    owner = await _get_account(account_a)
+    other = await _get_account(account_b)
+    failing = _ScriptedBridgeUpstream([[_bridge_server_error_event()]])
+    recovered = _FakeBridgeUpstreamWebSocket(response_id_prefix="resp_bridge_pre_token")
+    selected = _install_two_account_bridge(
+        monkeypatch,
+        [owner, other],
+        {
+            owner.chatgpt_account_id: deque([failing]),
+            other.chatgpt_account_id: deque([recovered]),
+        },
+    )
+
+    events = await _collect_sse_events(
+        async_client,
+        "/v1/responses",
+        json_body={
+            "model": "gpt-5.1",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+            "stream": True,
+        },
+    )
+
+    assert events[-1]["type"] == "response.completed"
+    assert selected == [owner.id, other.id]
+    assert len(failing.sent_text) == 1
+    assert len(recovered.sent_text) == 1
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_cached_history_replays_after_pre_token_500(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_a = await _import_account(async_client, "acc_bridge_hist_a", "bridge-hist-a@example.com")
+    account_b = await _import_account(async_client, "acc_bridge_hist_b", "bridge-hist-b@example.com")
+    owner = await _get_account(account_a)
+    other = await _get_account(account_b)
+    anchor_id = "resp_bridge_hist_anchor"
+    failing = _ScriptedBridgeUpstream(
+        [
+            _bridge_completed_event(anchor_id),
+            [_bridge_server_error_event()],
+        ]
+    )
+    recovered = _ScriptedBridgeUpstream([_bridge_completed_event("resp_bridge_hist_replay")])
+    selected = _install_two_account_bridge(
+        monkeypatch,
+        [owner, other],
+        {
+            owner.chatgpt_account_id: deque([failing]),
+            other.chatgpt_account_id: deque([recovered]),
+        },
+    )
+    first_input = [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
+    follow_input = [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}]
+    thread = {"prompt_cache_key": "bridge-history-replay"}
+
+    first = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "input": first_input, **thread},
+    )
+    assert first.status_code == 200
+    assert first.json()["id"] == anchor_id
+
+    second = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-5.1",
+            "previous_response_id": anchor_id,
+            "input": follow_input,
+            **thread,
+        },
+    )
+    assert second.status_code == 200
+    assert second.json()["id"] == "resp_bridge_hist_replay"
+    assert selected == [owner.id, other.id]
+    assert len(failing.sent_text) == 2
+    assert json.loads(failing.sent_text[1])["previous_response_id"] == anchor_id
+    replayed = json.loads(recovered.sent_text[0])
+    assert "previous_response_id" not in replayed
+    replay_texts = json.dumps(replayed["input"])
+    assert "hello" in replay_texts
+    assert "continue" in replay_texts
+
+
+@pytest.mark.asyncio
+async def test_v1_responses_http_bridge_uncached_previous_response_500_does_not_switch(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    account_a = await _import_account(async_client, "acc_bridge_miss_a", "bridge-miss-a@example.com")
+    account_b = await _import_account(async_client, "acc_bridge_miss_b", "bridge-miss-b@example.com")
+    owner = await _get_account(account_a)
+    other = await _get_account(account_b)
+    failing = _ScriptedBridgeUpstream([[_bridge_server_error_event()]])
+    recovered = _FakeBridgeUpstreamWebSocket(response_id_prefix="resp_bridge_miss_unused")
+    selected = _install_two_account_bridge(
+        monkeypatch,
+        [owner, other],
+        {
+            owner.chatgpt_account_id: deque([failing]),
+            other.chatgpt_account_id: deque([recovered]),
+        },
+    )
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={
+            "model": "gpt-5.1",
+            "previous_response_id": "resp_bridge_never_cached",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],
+        },
+    )
+
+    # The owner cannot be resolved and the cache has no history, so the
+    # original id is not sent to any account.
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "previous_response_owner_unavailable"
+    assert selected == []
+    assert failing.sent_text == []
+    assert recovered.sent_text == []
