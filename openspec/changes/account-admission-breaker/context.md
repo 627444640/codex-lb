@@ -10,7 +10,7 @@ Production traffic kept landing on an account that upstream was already rejectin
 - Overload backoff stays a preference reorder. It does not count `server_error` or an authored close before output, and it falls back onto the sick account.
 - Defaults are on, with threshold 3, window 60 seconds, and open interval 300 seconds. A two-account pool needs those knobs because burst length is not the same everywhere. They are internal tuning and are not added to `.env.example`.
 - A success while the breaker is open does not close it. Only the half-open probe success recovers the account.
-- One cross-account retry, then stop. Same-account retries of these codes are skipped so an outage is not amplified.
+- One cross-account retry, then stop. HTTP 500 still spends the existing three same-account transient attempts before that move, so one blip stays on the account that already accepted the request. Other qualifying failures do not gain an extra same-account loop.
 - `previous_response_id` owned by the tripped account, a file pin, and `single_account` routing are not switched. History replay is a later change. A verified fresh body that the existing websocket path already treats as safe to move may still move.
 
 ## Failure modes

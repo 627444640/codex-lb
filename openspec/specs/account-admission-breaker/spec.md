@@ -46,7 +46,7 @@ The proxy SHALL open an account's admission breaker when that account produces N
 
 ### Requirement: One pre-output failover
 
-When a qualifying failure happens before any output event is forwarded to the client, the proxy SHALL retry the request at most once, after a random delay between 50 and 250 milliseconds, on a different account that is not admission-open. That one retry SHALL be shared with a conversation-history replay on the same request, including the HTTP responses bridge. The proxy SHALL NOT retry the same account for that qualifying failure. A second qualifying failure on the same request SHALL be returned to the client. Once any output has been forwarded, the proxy SHALL NOT retry and SHALL log the failure as output interrupted mid-stream.
+When a qualifying failure happens before any output event is forwarded to the client, the proxy SHALL retry the request at most once, after a random delay between 50 and 250 milliseconds, on a different account that is not admission-open. That one retry SHALL be shared with a conversation-history replay on the same request, including the HTTP responses bridge. An HTTP status of 500 SHALL first consume the existing same-account transient retry budget of three attempts before that cross-account retry. The proxy SHALL NOT make a second cross-account retry for that request. A second qualifying failure after the cross-account retry SHALL be returned to the client. Once any output has been forwarded, the proxy SHALL NOT retry and SHALL log the failure as output interrupted mid-stream.
 
 #### Scenario: Pre-output server error is retried once
 - **GIVEN** account A returns `server_error` before any output
@@ -54,6 +54,13 @@ When a qualifying failure happens before any output event is forwarded to the cl
 - **WHEN** the request is not pinned to account A
 - **THEN** the proxy waits for a short jitter and sends the request once to account B
 - **AND** a further qualifying failure is returned to the client
+
+#### Scenario: HTTP 500 retries the same account before failover
+- **GIVEN** account A returns HTTP 500 before any output
+- **AND** account B is eligible and not admission-open
+- **WHEN** the request is not pinned to account A
+- **THEN** the proxy calls account A three times
+- **AND** then waits for a short jitter and sends the request once to account B
 
 #### Scenario: History replay spends the same retry
 - **GIVEN** a request has already been resent from cached history
