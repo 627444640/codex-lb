@@ -1708,8 +1708,60 @@ async def test_close_db_bounds_the_wedged_teardown_drain(monkeypatch, caplog) ->
         assert stuck in session_module._wedged_teardown_cleanup_tasks
     finally:
         session_module._wedged_teardown_cleanup_tasks.discard(stuck)
+        session_module._wedged_teardown_abandoned_tasks.discard(stuck)
         never.set()
         await stuck
+
+
+@pytest.mark.asyncio
+async def test_close_db_does_not_rewait_an_already_abandoned_wedge(monkeypatch, caplog) -> None:
+    """One stuck wedge is abandoned once. The next close_db must not pay the
+    drain deadline again, and a bookkeeping close scheduled when the wedge
+    later finishes is still drained."""
+    monkeypatch.setattr(session_module, "_SQLITE_TEARDOWN_TIMEOUT_SECONDS", 0.05)
+    release = asyncio.Event()
+    bookkeeping_started = asyncio.Event()
+
+    async def _stuck() -> None:
+        await release.wait()
+
+    async def _bookkeeping() -> None:
+        bookkeeping_started.set()
+
+    stuck: asyncio.Task[None] = asyncio.ensure_future(_stuck())
+
+    def _schedule_bookkeeping(task: asyncio.Task[None]) -> None:
+        del task
+        session_module._wedged_teardown_cleanup_tasks.add(asyncio.ensure_future(_bookkeeping()))
+
+    stuck.add_done_callback(_schedule_bookkeeping)
+    session_module._wedged_teardown_cleanup_tasks.add(stuck)
+    try:
+        with caplog.at_level(logging.WARNING, logger=session_module.__name__):
+            await asyncio.wait_for(session_module.close_db(), timeout=2.0)
+            assert any("still-pending wedged-teardown" in record.getMessage() for record in caplog.records)
+            assert stuck in session_module._wedged_teardown_abandoned_tasks
+            caplog.clear()
+            started = asyncio.get_running_loop().time()
+            await asyncio.wait_for(session_module.close_db(), timeout=2.0)
+            elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 0.05, f"second close_db rewaited {elapsed:.3f}s"
+        assert not any("still-pending wedged-teardown" in record.getMessage() for record in caplog.records)
+        assert stuck in session_module._wedged_teardown_cleanup_tasks
+
+        release.set()
+        await stuck
+        await asyncio.sleep(0)
+        await asyncio.wait_for(session_module.close_db(), timeout=2.0)
+        assert bookkeeping_started.is_set()
+        assert stuck not in session_module._wedged_teardown_cleanup_tasks
+        assert not session_module._wedged_teardown_abandoned_tasks
+    finally:
+        release.set()
+        session_module._wedged_teardown_cleanup_tasks.discard(stuck)
+        session_module._wedged_teardown_abandoned_tasks.discard(stuck)
+        if not stuck.done():
+            await stuck
 
 
 @pytest.mark.asyncio

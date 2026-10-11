@@ -5,3 +5,4 @@
 - [x] Show breaker cards, the cache card, and the request outcome column
 - [x] Record HTTP admission failover on the request id so it cannot stack with history replay
 - [x] Fail requeued bridge waits at shutdown and close the history cache
+- [x] Do not wait out the SQLite teardown deadline again for a wedge close_db already abandoned
