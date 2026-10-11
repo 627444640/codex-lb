@@ -8,13 +8,26 @@ Hold an account out of new assignment after a short burst of upstream admission 
 
 ### Requirement: Admission failures open a per-account breaker
 
-The proxy SHALL open an account's admission breaker when that account produces N consecutive qualifying failures or N qualifying failures inside the configured window. Qualifying failures SHALL be upstream `server_error`, `server_is_overloaded`, `overloaded_error`, an HTTP status of 500 or higher that is not otherwise excluded, and `stream_incomplete` only when upstream sends close code 1000 before any output. The default threshold SHALL be 3 and the default window SHALL be 60 seconds. While the breaker is open, the proxy SHALL NOT assign new unbound or soft-sticky requests to that account for the configured open interval. The default open interval SHALL be 300 seconds. After the interval, the account SHALL be half-open and SHALL accept at most one probe. A probe failure SHALL open the breaker again. A probe success SHALL close it. A success while the breaker is open SHALL NOT close it.
+The proxy SHALL open an account's admission breaker when that account produces N consecutive qualifying failures or N qualifying failures inside the configured window. Qualifying failures SHALL be upstream `server_error`, `server_is_overloaded`, `overloaded_error`, an HTTP status of 500 or higher that is not otherwise excluded, and `stream_incomplete` before any output. On the HTTP SSE path, `stream_incomplete` before any output SHALL count without a websocket close code. On a websocket, `stream_incomplete` SHALL count only for close code 1000. One upstream failure SHALL increment the breaker at most once. A qualifying failure that arrives while the breaker is already open SHALL NOT extend `open_until`. The default threshold SHALL be 3 and the default window SHALL be 60 seconds. While the breaker is open, the proxy SHALL NOT assign new unbound or soft-sticky requests to that account for the configured open interval. The default open interval SHALL be 300 seconds. After the interval, the account SHALL be half-open and SHALL accept at most one probe. The proxy SHALL log the half-open transition once. A probe failure SHALL open the breaker again. A probe success SHALL close it. A success while the breaker is open SHALL NOT close it. Breaker phase SHALL be local to the replica that recorded the failures.
 
 #### Scenario: Three failures in the window open the breaker
 - **GIVEN** an account with a closed admission breaker
 - **WHEN** the account returns three qualifying failures inside 60 seconds
 - **THEN** the breaker is open
 - **AND** new unbound requests are not assigned to that account until the open interval elapses
+
+#### Scenario: An HTTP stream cut before the first token counts
+- **WHEN** an HTTP SSE stream ends with `stream_incomplete` before any output and the error text has no close code
+- **THEN** the failure counts toward that account's admission breaker
+
+#### Scenario: One close increments the breaker once
+- **WHEN** a single pre-output `stream_incomplete` is recorded by both the error handler and settlement
+- **THEN** the account's consecutive failure count increases by one
+
+#### Scenario: An in-flight failure does not extend an open breaker
+- **GIVEN** an account whose admission breaker is already open
+- **WHEN** a request that was already in flight returns a qualifying failure
+- **THEN** `open_until` stays at the time recorded when the breaker opened
 
 #### Scenario: Client-caused errors do not open the breaker
 - **WHEN** an account returns `client_disconnected`, `context_length_exceeded`, `invalid_request`, `invalid_request_error`, a rate-limit code, or a quota code
@@ -33,7 +46,7 @@ The proxy SHALL open an account's admission breaker when that account produces N
 
 ### Requirement: One pre-output failover
 
-When a qualifying failure happens before any output event is forwarded to the client, the proxy SHALL retry the request at most once, after a random delay between 50 and 250 milliseconds, on a different account that is not admission-open. The proxy SHALL NOT retry the same account for that qualifying failure. A second qualifying failure on the same request SHALL be returned to the client. Once any output has been forwarded, the proxy SHALL NOT retry and SHALL log the failure as output interrupted mid-stream.
+When a qualifying failure happens before any output event is forwarded to the client, the proxy SHALL retry the request at most once, after a random delay between 50 and 250 milliseconds, on a different account that is not admission-open. That one retry SHALL be shared with a conversation-history replay on the same request, including the HTTP responses bridge. The proxy SHALL NOT retry the same account for that qualifying failure. A second qualifying failure on the same request SHALL be returned to the client. Once any output has been forwarded, the proxy SHALL NOT retry and SHALL log the failure as output interrupted mid-stream.
 
 #### Scenario: Pre-output server error is retried once
 - **GIVEN** account A returns `server_error` before any output
@@ -42,6 +55,11 @@ When a qualifying failure happens before any output event is forwarded to the cl
 - **THEN** the proxy waits for a short jitter and sends the request once to account B
 - **AND** a further qualifying failure is returned to the client
 
+#### Scenario: History replay spends the same retry
+- **GIVEN** a request has already been resent from cached history
+- **WHEN** the resend returns a qualifying admission failure before any output
+- **THEN** the proxy does not send the request to another account
+
 #### Scenario: Output already forwarded is not retried
 - **WHEN** a qualifying failure arrives after an output event was forwarded
 - **THEN** the proxy does not send the request to another account
@@ -49,13 +67,26 @@ When a qualifying failure happens before any output event is forwarded to the cl
 
 ### Requirement: Continuity is not switched
 
-The proxy SHALL NOT move a request to another account when a file pin requires that account, or when routing strategy is `single_account`. A request that depends on a `previous_response_id` SHALL stay on the owning account unless a cached full-history replay resends that turn without the anchor. Without that replay, the request SHALL fail on the owning account.
+The proxy SHALL NOT move a request to another account when a file pin requires that account, or when routing strategy is `single_account`. A request that depends on a `previous_response_id` SHALL stay on the owning account unless a cached full-history replay resends that turn without the anchor. A pre-output `server_error`, `server_is_overloaded`, `overloaded_error`, or HTTP status of 500 or higher on that request SHALL use the cached full history when it is present, SHALL omit `previous_response_id`, and MAY use a different healthy account. When the owning account cannot be resolved, the proxy SHALL NOT send the original `previous_response_id` to another account. Without a cached replay, the request SHALL fail on the owning account. The HTTP responses bridge SHALL follow the same rule.
 
 #### Scenario: previous_response_id stays on the owner without cached history
 - **GIVEN** a request carries a `previous_response_id` owned by an account whose admission breaker is open
 - **AND** the proxy has no cached full history for that response
 - **WHEN** the proxy selects an account
 - **THEN** the request is not sent to a different account
+
+#### Scenario: A 500 with cached history leaves the owner
+- **GIVEN** a pre-output `server_error` on a request that carries `previous_response_id`
+- **AND** the cache holds the full history and the history has no file id
+- **WHEN** the proxy handles the failure
+- **THEN** the resend omits `previous_response_id`
+- **AND** the resend may use a different healthy account
+
+#### Scenario: An unknown owner is not switched with the original id
+- **GIVEN** a request carries a `previous_response_id` whose owner cannot be resolved
+- **AND** the cache has no full history for that response
+- **WHEN** the proxy selects an account
+- **THEN** the request is not sent to another account with that `previous_response_id`
 
 #### Scenario: cached history may leave an open owner
 - **GIVEN** a pre-output failure on a previous_response owned by an admission-open account

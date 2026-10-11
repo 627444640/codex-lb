@@ -107,11 +107,43 @@ class AdmissionFailoverAction:
 
 
 _failover_mark: ContextVar[AdmissionFailoverMark | None] = ContextVar("admission_failover_mark", default=None)
+# One transparent resend per request, shared by admission failover and history replay.
+_transparent_retry_used: ContextVar[bool] = ContextVar("transparent_retry_used", default=False)
+# Qualifying failures already counted for this attempt, so one close is not applied twice.
+_admission_counted: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
+    "admission_counted",
+    default=frozenset(),
+)
+
+
+def transparent_retry_used() -> bool:
+    """True after this request already used its one hidden resend."""
+
+    return _transparent_retry_used.get()
+
+
+def mark_transparent_retry() -> None:
+    """Consume the single pre-output resend shared by failover and history replay."""
+
+    _transparent_retry_used.set(True)
+
+
+def reset_transparent_retry() -> None:
+    """Clear the shared resend budget. Tests and a new request context use this."""
+
+    _transparent_retry_used.set(False)
+
+
+def reset_admission_failure_dedupe() -> None:
+    """Allow the next attempt on this request to count a new qualifying failure."""
+
+    _admission_counted.set(frozenset())
 
 
 def note_admission_failover(from_account_id: str) -> None:
     """Remember that this request already failed over once, for the request log."""
 
+    mark_transparent_retry()
     if _failover_mark.get() is None:
         _failover_mark.set(AdmissionFailoverMark(from_account_id=from_account_id))
 
@@ -205,6 +237,9 @@ def admission_phase(runtime: RuntimeState | None, now: float, policy: AdmissionB
         return "closed"
     if now < open_until:
         return "open"
+    if not runtime.admission_half_open_logged:
+        runtime.admission_half_open_logged = True
+        logger.info("Admission breaker half-open open_until=%s", open_until)
     return "half_open"
 
 
@@ -265,9 +300,8 @@ def record_admission_failure_locked(
     runtime.admission_probe_in_flight = False
     runtime.admission_probe_started_at = None
     if phase == "open":
-        extended = now + policy.open_seconds
-        if runtime.admission_open_until is None or extended > runtime.admission_open_until:
-            runtime.admission_open_until = extended
+        # Requests already in flight when the breaker opened must not keep
+        # pushing the recovery time out.
         return False
     if phase == "half_open":
         _open_breaker(runtime, now, policy, account_id=account_id, reason="probe_failed")
@@ -367,6 +401,7 @@ def _open_breaker(
     runtime.admission_failure_times = []
     runtime.admission_probe_in_flight = False
     runtime.admission_probe_started_at = None
+    runtime.admission_half_open_logged = False
     logger.warning(
         "Account admission breaker opened account_id=%s reason=%s open_seconds=%.0f threshold=%d window_seconds=%.0f",
         account_id,
@@ -438,6 +473,9 @@ async def record_upstream_admission_failure(
         pre_first_output_close=pre_first_output_close,
     ):
         return
+    account_id = getattr(account, "id", None)
+    if not isinstance(account_id, str) or not account_id:
+        return
     runtime_map = getattr(balancer, "_runtime", None)
     lock_factory = getattr(balancer, "_get_account_lock", None)
     if not isinstance(runtime_map, dict) or lock_factory is None:
@@ -445,7 +483,11 @@ async def record_upstream_admission_failure(
     policy = AdmissionBreakerPolicy.from_settings()
     if not policy.enabled:
         return
-    account_id = account.id
+    counted_key = (account_id, error_code)
+    counted = _admission_counted.get()
+    if counted_key in counted:
+        return
+    _admission_counted.set(frozenset((*counted, counted_key)))
     lock = await lock_factory(account_id)
     async with lock:
         runtime = runtime_map.setdefault(account_id, RuntimeState())

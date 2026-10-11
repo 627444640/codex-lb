@@ -227,6 +227,10 @@ export const RequestLogSchema = z.object({
   generationTps: z.number().nullable().optional(),
   generationTpsStatus: z.enum(["estimated", "legacy_estimate", "insufficient_sample", "missing_usage", "missing_timing", "invalid_sample", "incomplete"]).optional(),
   latencyQueueMs: z.number().nullable().optional().default(null),
+  admissionFailoverRetried: z.boolean().nullable().optional().default(null),
+  admissionFailoverFromAccountId: z.string().nullable().optional().default(null),
+  historyReplayReason: z.string().nullable().optional().default(null),
+  historyReplayExtraTokens: z.number().int().nullable().optional().default(null),
 });
 
 export const RequestLogsResponseSchema = z.object({

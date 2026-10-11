@@ -1,0 +1,5 @@
+- [x] Share one retry budget between admission failover and history replay
+- [x] Resend cached history on pre-output 500/overload and fail closed when the owner is unknown
+- [x] Count HTTP SSE pre-token cuts once, and wire the HTTP bridge
+- [x] Stop extending an already-open breaker; log the half-open transition once
+- [x] Show breaker cards, the cache card, and the request outcome column

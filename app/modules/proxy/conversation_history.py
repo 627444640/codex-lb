@@ -35,6 +35,7 @@ HistoryReplayReason = Literal[
     "previous_response_not_found",
     "stream_incomplete",
     "owner_unavailable",
+    "admission_failure",
 ]
 
 _BATCH_LIMIT = 32
@@ -103,6 +104,9 @@ class _PendingTurn:
 def note_history_replay(reason: str, extra_tokens: int) -> None:
     """Record the first history replay on this request for the request log."""
 
+    from app.modules.proxy._load_balancer.admission_breaker import mark_transparent_retry
+
+    mark_transparent_retry()
     if _replay_mark.get() is None:
         _replay_mark.set(HistoryReplayMark(reason=reason, extra_tokens=extra_tokens))
 
@@ -127,8 +131,11 @@ def mark_request_history_replayed(request_id: str | None) -> None:
 
 
 def reset_history_replay_context() -> None:
+    from app.modules.proxy._load_balancer.admission_breaker import reset_transparent_retry
+
     _replay_mark.set(None)
     _replayed_request_ids.set(frozenset())
+    reset_transparent_retry()
 
 
 def _estimate_tokens(items: list[JsonValue]) -> int:
@@ -302,7 +309,9 @@ class ConversationHistoryCache:
         owner_blocked: bool,
         file_pinned: bool,
     ) -> HistoryReplay | None:
-        if downstream_visible or already_replayed:
+        from app.modules.proxy._load_balancer.admission_breaker import transparent_retry_used
+
+        if downstream_visible or already_replayed or transparent_retry_used():
             return None
         previous = _optional_str(request_body.get("previous_response_id"))
         current = _as_item_list(request_body.get("input"))
@@ -322,7 +331,7 @@ class ConversationHistoryCache:
             body = dict(request_body)
             body["input"] = full
             body["previous_response_id"] = None
-            switch = owner_blocked or reason == "owner_unavailable"
+            switch = owner_blocked or reason in {"owner_unavailable", "admission_failure"}
             if switch and (file_pinned or extract_input_file_ids(full)):
                 return None
             if switch and _optional_str(body.get("conversation")):
@@ -423,7 +432,8 @@ class ConversationHistoryCache:
         conn = sqlite3.connect(self.path, check_same_thread=False)
         conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
         conn.execute(f"PRAGMA page_size={_PAGE_BYTES}")
-        conn.execute("PRAGMA journal_mode=MEMORY")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA secure_delete=ON")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS turns (
@@ -619,6 +629,7 @@ class ConversationHistoryCache:
             ],
         )
         conn.commit()
+        self._checkpoint_locked()
         self._write_transactions += 1
         self._write_rows += len(accepted)
         for item in accepted:
@@ -672,6 +683,7 @@ class ConversationHistoryCache:
             return
         conn.execute("DELETE FROM turns WHERE conversation_key = ?", (key,))
         conn.commit()
+        self._checkpoint_locked()
         self._write_transactions += 1
 
     def _vacuum_locked(self) -> None:
@@ -681,6 +693,7 @@ class ConversationHistoryCache:
         try:
             conn.execute("PRAGMA incremental_vacuum")
             conn.commit()
+            self._checkpoint_locked()
         except sqlite3.DatabaseError:
             logger.warning("Conversation history incremental vacuum failed", exc_info=True)
 
@@ -710,13 +723,29 @@ class ConversationHistoryCache:
                 total += candidate.stat().st_size
         return total
 
-    def _chmod(self) -> None:
-        if not self.path.exists():
+    def _checkpoint_locked(self) -> None:
+        conn = self._conn
+        if conn is None:
             return
         try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            logger.warning("Conversation history cache chmod failed", exc_info=True)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            logger.warning("Conversation history checkpoint failed", exc_info=True)
+        self._chmod()
+
+    def _chmod(self) -> None:
+        for candidate in (
+            self.path,
+            Path(str(self.path) + "-journal"),
+            Path(str(self.path) + "-wal"),
+            Path(str(self.path) + "-shm"),
+        ):
+            if not candidate.exists():
+                continue
+            try:
+                os.chmod(candidate, 0o600)
+            except OSError:
+                logger.warning("Conversation history cache chmod failed", exc_info=True)
 
     def _maintenance_loop(self) -> None:
         while not self._stop.wait(_MAINTENANCE_INTERVAL_SECONDS):

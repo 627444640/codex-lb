@@ -1,0 +1,7 @@
+# Acceptance round
+
+The admission breaker and the conversation cache shipped as separate retries. A Codex turn that still carries `previous_response_id` cannot move on a bare 500, and an SSE body that ends before `response.completed` has no websocket close code, so the HTTP path never counted it.
+
+Breaker phase stays in each replica's memory. Turning `account_admission_breaker_enabled` or `conversation_history_cache_enabled` off restores the previous fail-closed path. The cache file can be deleted. Request-log columns are nullable.
+
+Example: account A returns `server_error` before any output on a turn whose `previous_response_id` is in the cache and whose history has no file id. The proxy drops the id, waits 50–250ms, and sends the cached history once to account B. A second failure is returned to the client. The accounts page shows A as 熔断中 with a countdown once three such failures land inside the window.

@@ -1081,6 +1081,21 @@ class _HTTPBridgeUpstreamEventsMixin:
             if observed_close_code is not None
             else None
         )
+        if observed_response_events == 0 and session.account is not None:
+            from app.modules.proxy._load_balancer.admission_breaker import (
+                authored_pre_output_close,
+                record_upstream_admission_failure,
+            )
+
+            await record_upstream_admission_failure(
+                self._load_balancer,
+                session.account,
+                error_code=error_code,
+                pre_first_output_close=authored_pre_output_close(
+                    close_code=observed_close_code,
+                    message=error_message,
+                ),
+            )
         _log_http_bridge_event(
             "reader_failure",
             session.key,

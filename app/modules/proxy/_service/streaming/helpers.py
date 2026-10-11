@@ -1028,18 +1028,25 @@ async def _replay_http_history(
 
     from app.core.errors import is_previous_response_not_found_error
     from app.modules.proxy._load_balancer.admission_breaker import (
+        ADMISSION_FAILURE_CODES,
         admission_retry_jitter_seconds,
         record_upstream_admission_failure,
+        transparent_retry_used,
     )
     from app.modules.proxy._service.support import _RetryableStreamError
     from app.modules.proxy.conversation_history import (
         HistoryReplayReason,
         account_admission_blocks,
+        mark_request_history_replayed,
         maybe_apply_model_history_replay,
+        note_history_replay,
+        request_history_replayed,
     )
 
     previous = getattr(payload, "previous_response_id", None)
     if not previous or settlement.downstream_visible:
+        return
+    if transparent_retry_used() or request_history_replayed(request_id):
         return
     reason: HistoryReplayReason | None = None
     owner_blocked = False
@@ -1048,6 +1055,11 @@ async def _replay_http_history(
         owner_blocked = account_admission_blocks(getattr(proxy, "_load_balancer", None), getattr(account, "id", None))
     elif rewritten_code == "previous_response_owner_unavailable":
         reason = "owner_unavailable"
+        owner_blocked = True
+    elif rewritten_code in ADMISSION_FAILURE_CODES:
+        # A 500 or overload on an anchored turn can move only by dropping the
+        # anchor and resending the cached history. The original id stays put.
+        reason = "admission_failure"
         owner_blocked = True
     elif error_fields is not None and is_previous_response_not_found_error(
         code=error_fields[0],
@@ -1060,7 +1072,8 @@ async def _replay_http_history(
         return
     if not allow_retry:
         return
-    replay = maybe_apply_model_history_replay(
+    replay = await asyncio.to_thread(
+        maybe_apply_model_history_replay,
         payload,
         request_id=request_id,
         reason=reason,
@@ -1070,6 +1083,10 @@ async def _replay_http_history(
     )
     if replay is None:
         return
+    # The worker thread copies this task's context and cannot publish the
+    # shared retry budget back. Record it here so a later attempt sees it.
+    note_history_replay(replay.reason, replay.extra_tokens)
+    mark_request_history_replayed(request_id)
     if reason == "stream_incomplete":
         await record_upstream_admission_failure(
             proxy._load_balancer,

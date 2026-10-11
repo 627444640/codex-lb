@@ -8,13 +8,20 @@ Resend one pre-output turn from a local copy of the conversation when upstream h
 
 ### Requirement: One pre-output full-history replay
 
-The proxy SHALL cache completed turns of an in-flight conversation and, before any output event is forwarded to the client, SHALL resend the current turn at most once when upstream returns `previous_response_not_found` or ends the stream as `stream_incomplete` before the first output. The resend SHALL include the cached history, SHALL omit `previous_response_id`, and SHALL wait for a random delay between 50 and 250 milliseconds. When the owning account is not admission-blocked, the resend SHALL use that same account. When the owning account is admission-open or the failure is `previous_response_owner_unavailable`, the resend SHALL use a different healthy account. A history that contains a file id, or a request pinned by a file, SHALL NOT move to another account. After any output has been forwarded, the proxy SHALL NOT replay. A pre-output close that qualifies for the admission breaker SHALL still be recorded against that breaker. A second failure on the same request SHALL be returned to the client.
+The proxy SHALL cache completed turns of an in-flight conversation and, before any output event is forwarded to the client, SHALL resend the current turn at most once when upstream returns `previous_response_not_found`, ends the stream as `stream_incomplete` before the first output, or returns a pre-output admission failure (`server_error`, `server_is_overloaded`, `overloaded_error`, or HTTP 500 or higher) while the request still carries `previous_response_id`. The resend SHALL include the cached history, SHALL omit `previous_response_id`, and SHALL wait for a random delay between 50 and 250 milliseconds. The resend SHALL consume the same one-retry budget as admission failover. When the owning account is not admission-blocked and the failure is not an admission failure, the resend SHALL use that same account. When the owning account is admission-open, the failure is `previous_response_owner_unavailable`, or the failure is a pre-output admission failure, the resend SHALL use a different healthy account. A history that contains a file id, or a request pinned by a file, SHALL NOT move to another account. When the owning account cannot be resolved, the proxy SHALL NOT send the original `previous_response_id` to another account. After any output has been forwarded, the proxy SHALL NOT replay. A pre-output close that qualifies for the admission breaker SHALL still be recorded against that breaker, once. A second failure on the same request SHALL be returned to the client. The HTTP responses bridge SHALL apply this replay before it would otherwise fail an anchored pre-output turn.
 
 #### Scenario: Lost previous response is resent on the same account
 - **GIVEN** the cache holds the completed turns behind a `previous_response_id`
 - **WHEN** upstream returns `previous_response_not_found` before any output
 - **AND** the owning account is not admission-blocked
 - **THEN** the proxy resends the turn once on that account
+- **AND** the resend contains the cached history and no `previous_response_id`
+
+#### Scenario: A 500 is resent without the anchor
+- **GIVEN** the cache holds the completed turns behind a `previous_response_id`
+- **AND** the history has no file id
+- **WHEN** upstream returns `server_error` before any output
+- **THEN** the proxy resends the turn once on a different healthy account
 - **AND** the resend contains the cached history and no `previous_response_id`
 
 #### Scenario: Open owner moves to a healthy account
@@ -38,7 +45,7 @@ The proxy SHALL cache completed turns of an in-flight conversation and, before a
 
 ### Requirement: The cache is a bounded separate file
 
-The cache SHALL use a SQLite file other than `store.db`. Memory SHALL hold an index and a batch of compressed deltas, not the conversation text. The proxy SHALL compress each completed turn before writing, SHALL append only the new input suffix, and SHALL NOT write once per token. The default total cap SHALL be 1 GiB and the default per-conversation cap SHALL be 32 MiB. A conversation over its cap SHALL NOT be cached, and later requests for it SHALL follow the behavior used when the cache is absent. Idle entries SHALL expire after 30 minutes by default. Eviction SHALL be least-recently-used. Evicted conversations SHALL be deleted, and the proxy SHALL reclaim their pages with incremental vacuum. The on-disk size, including sidecars, SHALL NOT exceed the total cap. The file mode SHALL be `0600`. When free disk is below the configured floor, the default of which is 512 MiB, the proxy SHALL disable the cache, log a warning, and continue serving requests.
+The cache SHALL use a SQLite file other than `store.db`. Memory SHALL hold an index and a batch of compressed deltas, not the conversation text. The proxy SHALL compress each completed turn before writing, SHALL append only the new input suffix, and SHALL NOT write once per token. The default total cap SHALL be 1 GiB and the default per-conversation cap SHALL be 32 MiB. A conversation over its cap SHALL NOT be cached, and later requests for it SHALL follow the behavior used when the cache is absent. Idle entries SHALL expire after 30 minutes by default. Eviction SHALL be least-recently-used. Evicted conversations SHALL be deleted, and the proxy SHALL reclaim their pages with incremental vacuum. The on-disk size, including sidecars, SHALL NOT exceed the total cap. The file mode SHALL be `0600`. The database SHALL use WAL and `secure_delete`, and sidecar files SHALL use mode `0600`. When free disk is below the configured floor, the default of which is 512 MiB, the proxy SHALL disable the cache, log a warning, and continue serving requests.
 
 #### Scenario: File size stays within the cap
 - **GIVEN** a cache whose total cap is smaller than the turns being recorded

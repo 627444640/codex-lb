@@ -40,6 +40,8 @@ from app.modules.proxy._load_balancer.admission_breaker import (
     counts_as_admission_failure,
     note_admission_failover,
     plan_admission_failover,
+    reset_admission_failure_dedupe,
+    transparent_retry_used,
 )
 from app.modules.proxy._load_balancer.overload_backoff import UPSTREAM_OVERLOAD_CODES
 from app.modules.proxy._service.observability import (
@@ -294,9 +296,11 @@ def _http_stream_admission_plan(
     continuity_pinned: bool,
     attempts_remaining: bool,
 ) -> str:
-    pre_close = (not downstream_visible) and authored_pre_output_close(
-        close_code=None,
-        message=error_message,
+    # HTTP SSE ends the body without a websocket close code. That pre-output
+    # cut is the same admission failure as close code 1000. Websocket 1006
+    # and 1011 stay on the close-code path and do not count.
+    pre_close = (not downstream_visible) and (
+        error_code == "stream_incomplete" or authored_pre_output_close(close_code=None, message=error_message)
     )
     return plan_admission_failover(
         error_code=error_code,
@@ -1058,40 +1062,59 @@ class _StreamingRetryMixin:
                         account_ids=None,
                     )
                     if len(selection_inputs.accounts) != 1:
-                        message = "Previous response owner account is unavailable; retry later."
-                        _record_continuity_fail_closed(
-                            surface="http_stream",
-                            reason="owner_account_unavailable",
-                            previous_response_id=payload.previous_response_id,
-                            session_id=previous_response_lookup_session_id,
-                            upstream_error_code="owner_lookup_miss",
-                        )
-                        event = response_failed_event(
-                            "previous_response_owner_unavailable",
-                            message,
-                            response_id=request_id,
-                        )
-                        yield format_sse_event(event)
-                        await proxy._write_request_log(
-                            account_id=None,
-                            api_key=api_key,
+                        from app.modules.proxy.conversation_history import maybe_apply_model_history_replay
+
+                        cached_owner = await asyncio.to_thread(
+                            maybe_apply_model_history_replay,
+                            payload,
                             request_id=request_id,
-                            model=payload.model,
-                            latency_ms=int((time.monotonic() - start) * 1000),
-                            status="error",
-                            error_code="previous_response_owner_unavailable",
-                            error_message=message,
-                            reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
-                            transport=request_transport,
-                            upstream_transport=upstream_stream_transport,
-                            service_tier=payload.service_tier,
-                            requested_service_tier=payload.service_tier,
-                            useragent=useragent,
-                            useragent_group=useragent_group,
-                            conversation_id=conversation_id,
-                            client_ip=client_ip,
+                            reason="owner_unavailable",
+                            downstream_visible=False,
+                            owner_blocked=True,
+                            file_pinned=False,
                         )
-                        return
+                        if cached_owner is not None:
+                            # The anchor cannot be resolved. Resend the cached
+                            # history with no previous_response_id, or fail
+                            # closed. Do not select another account while the
+                            # original id is still on the body.
+                            require_preferred_account = False
+                            preferred_account_id = None
+                        else:
+                            message = "Previous response owner account is unavailable; retry later."
+                            _record_continuity_fail_closed(
+                                surface="http_stream",
+                                reason="owner_account_unavailable",
+                                previous_response_id=payload.previous_response_id,
+                                session_id=previous_response_lookup_session_id,
+                                upstream_error_code="owner_lookup_miss",
+                            )
+                            event = response_failed_event(
+                                "previous_response_owner_unavailable",
+                                message,
+                                response_id=request_id,
+                            )
+                            yield format_sse_event(event)
+                            await proxy._write_request_log(
+                                account_id=None,
+                                api_key=api_key,
+                                request_id=request_id,
+                                model=payload.model,
+                                latency_ms=int((time.monotonic() - start) * 1000),
+                                status="error",
+                                error_code="previous_response_owner_unavailable",
+                                error_message=message,
+                                reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                                transport=request_transport,
+                                upstream_transport=upstream_stream_transport,
+                                service_tier=payload.service_tier,
+                                requested_service_tier=payload.service_tier,
+                                useragent=useragent,
+                                useragent_group=useragent_group,
+                                conversation_id=conversation_id,
+                                client_ip=client_ip,
+                            )
+                            return
             # File and previous-response ownership are peers, not fallback
             # preferences. Resolve both before selection so a conflict cannot
             # be hidden by whichever source happened to run first. A hard turn
@@ -1104,6 +1127,7 @@ class _StreamingRetryMixin:
             require_preferred_account = require_preferred_account or turn_state_owner_account_id is not None
             file_required_preferred_account = rewritten_file_account_id is not None
             for attempt in range(max_attempts):
+                reset_admission_failure_dedupe()
                 remaining_budget = _facade()._remaining_budget_seconds(deadline)
                 if remaining_budget <= 0:
                     await _drain_pending_post_refresh_penalty_on_terminal(settlement)
@@ -2309,7 +2333,7 @@ class _StreamingRetryMixin:
                                         http_status=tex.status_code,
                                         error_message=error_message,
                                         downstream_visible=settlement.downstream_visible,
-                                        already_retried=admission_failover_used,
+                                        already_retried=admission_failover_used or transparent_retry_used(),
                                         continuity_pinned=_stream_continuity_pinned(
                                             require_preferred_account=require_preferred_account,
                                             file_preferred_account_id=file_preferred_account_id,
@@ -2319,6 +2343,19 @@ class _StreamingRetryMixin:
                                         attempts_remaining=attempt < max_attempts - 1,
                                     )
                                     if admission_plan == AdmissionFailoverAction.SURFACE:
+                                        from app.modules.proxy._service.streaming.helpers import _replay_http_history
+
+                                        await _replay_http_history(
+                                            proxy,
+                                            payload,
+                                            account,
+                                            settlement,
+                                            request_id,
+                                            attempt < max_attempts - 1,
+                                            code,
+                                            (code, None, error_message),
+                                            stream_incomplete=code == "stream_incomplete",
+                                        )
                                         failed_response_id = settlement.response_id or request_id
                                         event = response_failed_event(
                                             code or "upstream_error",
@@ -2363,16 +2400,16 @@ class _StreamingRetryMixin:
                                 await _settle_process_network_budget_exhaustion(account, settlement)
                                 yield format_sse_event(_facade()._proxy_request_timeout_event(request_id))
                                 return
-                            pre_close = (not settlement.downstream_visible) and authored_pre_output_close(
-                                close_code=None,
-                                message=error_message,
+                            pre_close = (not settlement.downstream_visible) and (
+                                error_code == "stream_incomplete"
+                                or authored_pre_output_close(close_code=None, message=error_message)
                             )
                             admission_plan = _http_stream_admission_plan(
                                 error_code=error_code,
                                 http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
                                 error_message=error_message,
                                 downstream_visible=settlement.downstream_visible,
-                                already_retried=admission_failover_used,
+                                already_retried=admission_failover_used or transparent_retry_used(),
                                 continuity_pinned=_stream_continuity_pinned(
                                     require_preferred_account=require_preferred_account,
                                     file_preferred_account_id=file_preferred_account_id,
@@ -2382,6 +2419,19 @@ class _StreamingRetryMixin:
                                 attempts_remaining=attempt < max_attempts - 1,
                             )
                             if admission_plan == AdmissionFailoverAction.SURFACE:
+                                from app.modules.proxy._service.streaming.helpers import _replay_http_history
+
+                                await _replay_http_history(
+                                    proxy,
+                                    payload,
+                                    account,
+                                    settlement,
+                                    request_id,
+                                    attempt < max_attempts - 1,
+                                    error_code,
+                                    (error_code, None, error_message),
+                                    stream_incomplete=error_code == "stream_incomplete",
+                                )
                                 if settlement.downstream_visible:
                                     _facade().logger.warning(
                                         "output interrupted mid-stream request_id=%s account_id=%s code=%s",
@@ -2476,8 +2526,7 @@ class _StreamingRetryMixin:
                                 _stream_settlement_error_payload(settlement),
                                 settlement.error_code or "upstream_error",
                                 pre_first_output_close=(
-                                    not settlement.downstream_visible
-                                    and settlement.error_code == "stream_incomplete"
+                                    not settlement.downstream_visible and settlement.error_code == "stream_incomplete"
                                 ),
                             )
                         elif settled and settlement.record_success:
@@ -2489,6 +2538,8 @@ class _StreamingRetryMixin:
                     continue  # outer loop: account failover after transient exhaustion
                 except _RetryableStreamError as exc:
                     if exc.history_replay:
+                        # History replay and admission failover share one resend.
+                        admission_failover_used = True
                         # The failed attempt still holds this account's stream
                         # slot. Release it before the one history resend, or a
                         # same-account replay cannot be selected again.

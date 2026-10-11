@@ -42,6 +42,7 @@ import {
   type RequestLogColumnId,
   type RequestLogColumnWidths,
 } from "@/features/dashboard/request-log-columns";
+import { RequestOutcomeBadge, requestOutcome } from "@/features/dashboard/components/request-outcome";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
@@ -260,6 +261,7 @@ export function RecentRequestsTable({
 }: RecentRequestsTableProps) {
   const { t } = useTranslation();
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
+  const [outcomeFilter, setOutcomeFilter] = useState<"all" | "recovered" | "error">("all");
   const blurred = usePrivacyStore((s) => s.blurred);
   const isAdmin = useAuthStore((state) => state.role === "admin");
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
@@ -303,6 +305,17 @@ export function RecentRequestsTable({
     return ids;
   }, [accounts]);
 
+  const shownRequests = requests.filter((request) => {
+    const outcome = requestOutcome(request);
+    if (outcomeFilter === "recovered") {
+      return outcome === "failover" || outcome === "replay";
+    }
+    if (outcomeFilter === "error") {
+      return outcome === "error";
+    }
+    return true;
+  });
+
   if (requests.length === 0) {
     const emptyFromExistingLogs = filtersApplied || total > 0;
     return (
@@ -324,6 +337,27 @@ export function RecentRequestsTable({
 
   return (
     <div className="space-y-3">
+    <div className="flex flex-wrap gap-2">
+      {(["all", "recovered", "error"] as const).map((value) => (
+        <button
+          key={value}
+          type="button"
+          className={cn(
+            "rounded-full border px-3 py-1 text-xs",
+            outcomeFilter === value ? "bg-primary text-primary-foreground" : "bg-card text-muted-foreground",
+          )}
+          onClick={() => setOutcomeFilter(value)}
+        >
+          {t(
+            value === "all"
+              ? "dashboard.requests.outcome.filterAll"
+              : value === "recovered"
+                ? "dashboard.requests.outcome.filterRecovered"
+                : "dashboard.requests.outcome.filterErrors",
+          )}
+        </button>
+      ))}
+    </div>
     <div className="rounded-xl border bg-card">
       <div className="relative overflow-x-auto">
         <Table
@@ -339,6 +373,7 @@ export function RecentRequestsTable({
               {isColumnVisible("model") ? <RequestLogTableHead column="model" label={t("dashboard.requests.columns.model")} resizeLabel={resizeLabel(t("dashboard.requests.columns.model"))} width={columnWidths?.model} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("transport") ? <RequestLogTableHead column="transport" label={t("dashboard.requests.columns.transport")} resizeLabel={resizeLabel(t("dashboard.requests.columns.transport"))} className="pr-3" width={columnWidths?.transport} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("status") ? <RequestLogTableHead column="status" label={t("dashboard.requests.columns.status")} resizeLabel={resizeLabel(t("dashboard.requests.columns.status"))} className="pl-3" width={columnWidths?.status} onWidthChange={onColumnWidthChange} /> : null}
+              {isColumnVisible("outcome") ? <RequestLogTableHead column="outcome" label={t("dashboard.requests.columns.outcome")} resizeLabel={resizeLabel(t("dashboard.requests.columns.outcome"))} width={columnWidths?.outcome} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("ttft") ? <RequestLogTableHead column="ttft" label={t("dashboard.requests.columns.ttft")} description={t("dashboard.requestDetails.ttftExplanation")} resizeLabel={resizeLabel(t("dashboard.requests.columns.ttft"))} className="text-right" width={columnWidths?.ttft} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("tps") ? <RequestLogTableHead column="tps" label={t("dashboard.requests.columns.tps")} description={t("dashboard.requestDetails.tpsExplanation")} resizeLabel={resizeLabel(t("dashboard.requests.columns.tps"))} className="text-right" width={columnWidths?.tps} onWidthChange={onColumnWidthChange} /> : null}
               {isColumnVisible("tokens") ? <RequestLogTableHead column="tokens" label={t("dashboard.requests.columns.tokens")} resizeLabel={resizeLabel(t("dashboard.requests.columns.tokens"))} className="text-right" width={columnWidths?.tokens} onWidthChange={onColumnWidthChange} /> : null}
@@ -347,7 +382,7 @@ export function RecentRequestsTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {requests.map((request) => {
+            {shownRequests.map((request) => {
               const time = formatDateTimeLines(request.requestedAt, dateDisplayFormat);
               const accountLabel = request.accountId ? (accountLabelMap.get(request.accountId) ?? request.accountId) : t("dashboard.requests.unassigned");
               const isEmailLabel = !!(request.accountId && emailLabelIds.has(request.accountId));
@@ -436,6 +471,7 @@ export function RecentRequestsTable({
                       {t(`dashboard.requestStatus.${request.status}`, { defaultValue: REQUEST_STATUS_LABELS[request.status] ?? request.status })}
                     </Badge>
                   </TableCell> : null}
+                  {isColumnVisible("outcome") ? <TableCell className="align-top"><RequestOutcomeBadge request={request} /></TableCell> : null}
                   {isColumnVisible("ttft") ? <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     {formatCompactElapsed(request.latencyFirstTokenMs) ?? "--"}
                   </TableCell> : null}
