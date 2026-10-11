@@ -721,7 +721,7 @@
   "dashboard.requests.columns.account": "账户",
   "dashboard.requests.columns.apiKey": "API Key",
   "dashboard.requests.columns.details": "详情",
-  "dashboard.requests.columns.model": "Model",
+  "dashboard.requests.columns.model": "模型",
   "dashboard.requests.columns.outcome": "处理结果",
   "dashboard.requests.columns.plan": "套餐",
   "dashboard.requests.columns.status": "状态",
