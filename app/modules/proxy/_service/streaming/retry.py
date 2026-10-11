@@ -309,6 +309,25 @@ def _http_stream_admission_plan(
     )
 
 
+def _http_status_500_same_account_retry_pending(
+    exc: BaseException,
+    *,
+    transient_retries: int,
+    max_retries: int,
+    budget_remaining: bool,
+    downstream_visible: bool,
+) -> bool:
+    """HTTP 500 still uses the same-account budget before a cross-account move.
+
+    ``transient_retries`` is how many replays have already started. One more
+    replay fits while that count plus one is still below ``max_retries``.
+    """
+
+    if not isinstance(exc, ProxyResponseError) or exc.status_code != 500:
+        return False
+    return transient_retries + 1 < max_retries and budget_remaining and not downstream_visible
+
+
 def _transient_retry_error_code(tex: BaseException) -> str:
     """Error code the same-account transient retry loop aggregates under.
 
@@ -2403,7 +2422,15 @@ class _StreamingRetryMixin:
                                 )
                                 yield format_sse_event(event)
                                 return
-                            if admission_plan == AdmissionFailoverAction.FAILOVER_ONCE:
+                            if admission_plan == AdmissionFailoverAction.FAILOVER_ONCE and not (
+                                _http_status_500_same_account_retry_pending(
+                                    tex,
+                                    transient_retries=transient_retries,
+                                    max_retries=_facade()._MAX_TRANSIENT_SAME_ACCOUNT_RETRIES,
+                                    budget_remaining=_facade()._remaining_budget_seconds(deadline) > 0,
+                                    downstream_visible=settlement.downstream_visible,
+                                )
+                            ):
                                 await asyncio.sleep(admission_retry_jitter_seconds())
                                 note_admission_failover(account.id)
                                 admission_failover_used = True
@@ -2414,6 +2441,11 @@ class _StreamingRetryMixin:
                                     http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
                                     pre_first_output_close=pre_close,
                                 )
+                                # Earlier HTTP 500s on this account were not
+                                # written yet. This call recorded the current
+                                # attempt; record the earlier ones so the
+                                # backoff threshold still sees three.
+                                await proxy._load_balancer.record_errors(account, transient_retries)
                                 if isinstance(tex, ProxyResponseError):
                                     last_transient_exc = tex
                                 await _release_tracked_stream_lease(current_account_lease)

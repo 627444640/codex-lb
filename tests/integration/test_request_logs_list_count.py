@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 
 import pytest
@@ -209,7 +210,11 @@ async def test_list_recent_uses_separate_count_instead_of_window_count(db_setup)
         request_log_selects = [statement for statement in statements if "FROM request_logs" in statement]
         assert len(request_log_selects) >= 2
         assert any("count(" in statement.lower() for statement in request_log_selects)
-        assert all("OVER" not in statement.upper() for statement in request_log_selects)
+        # Window clauses are ``OVER (``. A substring check also matches the
+        # ``admission_failover_*`` columns selected on the same table.
+        assert all(
+            re.search(r"\bOVER\s*\(", statement, flags=re.IGNORECASE) is None for statement in request_log_selects
+        )
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", _capture)
 
