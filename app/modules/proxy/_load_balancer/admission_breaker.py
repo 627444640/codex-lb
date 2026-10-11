@@ -134,6 +134,14 @@ def reset_transparent_retry() -> None:
     _transparent_retry_used.set(False)
 
 
+def reset_admission_request_context() -> None:
+    """Drop admission marks so the next request starts with a full resend budget."""
+
+    reset_transparent_retry()
+    reset_admission_failure_dedupe()
+    _failover_mark.set(None)
+
+
 def reset_admission_failure_dedupe() -> None:
     """Allow the next attempt on this request to count a new qualifying failure."""
 

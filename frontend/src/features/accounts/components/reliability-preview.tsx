@@ -7,6 +7,8 @@ import type {
   AccountAdmissionBreakersResponse,
   ConversationHistoryCacheStats,
 } from "@/features/accounts/schemas";
+import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
+import { RequestLogSchema, type RequestLog } from "@/features/dashboard/schemas";
 
 const OPEN_UNTIL = new Date(Date.now() + 4 * 60 * 1000 + 12 * 1000).toISOString();
 
@@ -23,7 +25,73 @@ const healthyCache: ConversationHistoryCacheStats = {
   minFreeDiskBytes: 512 * 1024 * 1024,
 };
 
+function previewRequest(partial: Record<string, unknown>): RequestLog {
+  return RequestLogSchema.parse({
+    requestedAt: "2026-10-11T08:00:00+00:00",
+    accountId: "acct_ok",
+    requestId: "req-preview",
+    model: "gpt-5.4",
+    status: "ok",
+    errorCode: null,
+    errorMessage: null,
+    tokens: 1200,
+    cachedInputTokens: 0,
+    reasoningEffort: null,
+    costUsd: null,
+    latencyMs: 840,
+    ...partial,
+  });
+}
+
+const previewRequests: RequestLog[] = [
+  previewRequest({
+    requestId: "req-failover",
+    requestedAt: "2026-10-11T08:01:00+00:00",
+    status: "ok",
+    admissionFailoverRetried: true,
+    admissionFailoverFromAccountId: "acct_from_9f3a",
+  }),
+  previewRequest({
+    requestId: "req-replay",
+    requestedAt: "2026-10-11T08:02:00+00:00",
+    status: "ok",
+    historyReplayReason: "stream_incomplete",
+    historyReplayExtraTokens: 128,
+  }),
+  previewRequest({
+    requestId: "req-error",
+    requestedAt: "2026-10-11T08:03:00+00:00",
+    status: "error",
+    errorCode: "server_error",
+    errorMessage: "upstream overloaded",
+  }),
+];
+
 function breakers(state: string): AccountAdmissionBreakersResponse {
+  if (state === "breaker-off") {
+    return {
+      enabled: false,
+      failureThreshold: 3,
+      windowSeconds: 60,
+      openSeconds: 300,
+      accounts: [
+        {
+          accountId: "acct_ok",
+          state: "closed",
+          consecutiveFailures: 0,
+          windowFailures: 1,
+          openUntil: null,
+          probeInFlight: false,
+          errorRate1h: 0.02,
+          errorRate24h: 0.01,
+          requests1h: 50,
+          errors1h: 1,
+          requests24h: 400,
+          errors24h: 4,
+        },
+      ],
+    };
+  }
   if (state === "null-rates") {
     return {
       enabled: true,
@@ -124,6 +192,24 @@ export function ReliabilityPreview() {
   useEffect(() => {
     void i18n.changeLanguage("zh-CN");
   }, [i18n]);
+  if (state === "requests") {
+    return (
+      <div className="mx-auto max-w-5xl p-6 pr-72">
+        <RecentRequestsTable
+          requests={previewRequests}
+          accounts={[]}
+          total={previewRequests.length}
+          limit={25}
+          offset={0}
+          hasMore={false}
+          visibleColumns={["time", "model", "status", "outcome"]}
+          outcomeDetailsOpen
+          onLimitChange={() => undefined}
+          onOffsetChange={() => undefined}
+        />
+      </div>
+    );
+  }
   return (
     <div className="mx-auto max-w-5xl p-6">
       <ReliabilityCards breakers={breakers(state)} cache={cacheFor(state)} now={Date.now()} />

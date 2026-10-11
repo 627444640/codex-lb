@@ -134,6 +134,21 @@ async def app_instance(_reset_db_state, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_request_retry_budget():
+    """Each test starts with a fresh admission and history-replay budget.
+
+    Those marks live in ContextVars. Pytest runs the suite on one task, so a
+    request that consumed its single resend would otherwise block the next test.
+    """
+
+    from app.modules.proxy.conversation_history import reset_history_replay_context
+
+    reset_history_replay_context()
+    yield
+    reset_history_replay_context()
+
+
+@pytest.fixture(autouse=True)
 def _disable_request_log_count_cache(monkeypatch):
     """Zero the request-log COUNT cache TTL so listing totals stay exact
     within a test. The TTL is a fixed constant in production (issue #1340

@@ -569,6 +569,12 @@ class _StreamingMixin(_StreamingRetryMixin):
                 response_create_lease.release()
                 await proxy._load_balancer.release_account_lease(account_response_create_lease)
                 account_response_create_lease = None
+                (
+                    status,
+                    error_code,
+                    error_message,
+                    failure_metadata,
+                ) = _mark_upstream_stream_incomplete(settlement)
                 await replay_history(stream_incomplete=True)
                 raise _TransientStreamError(
                     "stream_incomplete",

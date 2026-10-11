@@ -131,11 +131,11 @@ def mark_request_history_replayed(request_id: str | None) -> None:
 
 
 def reset_history_replay_context() -> None:
-    from app.modules.proxy._load_balancer.admission_breaker import reset_transparent_retry
+    from app.modules.proxy._load_balancer.admission_breaker import reset_admission_request_context
 
     _replay_mark.set(None)
     _replayed_request_ids.set(frozenset())
-    reset_transparent_retry()
+    reset_admission_request_context()
 
 
 def _estimate_tokens(items: list[JsonValue]) -> int:

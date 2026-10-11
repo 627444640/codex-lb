@@ -80,6 +80,7 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.continuity import resolve_required_account_id
+from app.modules.proxy.conversation_history import reset_history_replay_context
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -354,6 +355,7 @@ class _StreamingRetryMixin:
         proxy = cast(_StreamingServiceProtocol, self)
         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
         request_id = ensure_request_id()
+        reset_history_replay_context()
         start = time.monotonic()
         base_settings = _facade().get_settings()
         settings = await _facade().get_settings_cache().get()
@@ -2466,6 +2468,15 @@ class _StreamingRetryMixin:
                                 )
                                 if isinstance(tex, ProxyResponseError):
                                     last_transient_exc = tex
+                                elif error_code == "stream_incomplete":
+                                    # Reselection can still fail. Keep the original
+                                    # cut so the client sees stream_incomplete
+                                    # rather than a generic no_accounts event.
+                                    last_retryable_stream_error = _RetryableStreamError(
+                                        error_code,
+                                        error_payload,
+                                        exclude_account=True,
+                                    )
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
                                 excluded_account_ids.add(account.id)

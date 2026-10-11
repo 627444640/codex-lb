@@ -107,6 +107,7 @@ export type RecentRequestsTableProps = {
   onLimitChange: (limit: number) => void;
   onOffsetChange: (offset: number) => void;
   onConversationClick?: (conversationId: string) => void;
+  outcomeDetailsOpen?: boolean;
 };
 
 type RequestLogTableHeadProps = {
@@ -258,6 +259,7 @@ export function RecentRequestsTable({
   onLimitChange,
   onOffsetChange,
   onConversationClick,
+  outcomeDetailsOpen = false,
 }: RecentRequestsTableProps) {
   const { t } = useTranslation();
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
@@ -471,7 +473,7 @@ export function RecentRequestsTable({
                       {t(`dashboard.requestStatus.${request.status}`, { defaultValue: REQUEST_STATUS_LABELS[request.status] ?? request.status })}
                     </Badge>
                   </TableCell> : null}
-                  {isColumnVisible("outcome") ? <TableCell className="align-top"><RequestOutcomeBadge request={request} /></TableCell> : null}
+                  {isColumnVisible("outcome") ? <TableCell className={outcomeDetailsOpen ? "py-6 align-middle" : "align-top"}><RequestOutcomeBadge request={request} detailsOpen={outcomeDetailsOpen} /></TableCell> : null}
                   {isColumnVisible("ttft") ? <TableCell className="text-right align-top font-mono text-xs tabular-nums">
                     {formatCompactElapsed(request.latencyFirstTokenMs) ?? "--"}
                   </TableCell> : null}

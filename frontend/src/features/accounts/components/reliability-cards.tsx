@@ -88,10 +88,12 @@ function RateBlock({
 function BreakerCard({
   account,
   threshold,
+  windowSeconds,
   now,
 }: {
   account: AccountAdmissionBreakerStatus;
   threshold: number;
+  windowSeconds: number;
   now: number;
 }) {
   const { t } = useTranslation();
@@ -143,6 +145,7 @@ function BreakerCard({
         {t("accounts.reliability.footer", {
           consecutive: account.consecutiveFailures,
           window: account.windowFailures,
+          windowSeconds,
           threshold,
         })}
       </p>
@@ -174,41 +177,52 @@ export function ReliabilityCards({
   return (
     <section className="space-y-3" data-poll-ms={POLL_HINT_MS}>
       {breakers.enabled ? null : (
-        <p className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">{t("accounts.reliability.disabledBanner")}</p>
-      )}
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {breakers.accounts.map((account) => (
-          <BreakerCard key={account.accountId} account={account} threshold={breakers.failureThreshold} now={now} />
-        ))}
-        <article
-          data-testid="history-cache-card"
-          aria-disabled={disabled}
-          className={cn("rounded-xl border bg-card p-4", disabled && "opacity-60")}
+        <p
+          data-testid="breaker-disabled-banner"
+          className="rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground"
         >
-          <p className="text-sm font-medium">{t("accounts.reliability.cache.title")}</p>
-          {disabledText ? <p className="mt-2 text-sm text-muted-foreground">{disabledText}</p> : null}
-          <p className="mt-2 text-sm tabular-nums">
-            {formatBytes(cache.bytesUsed)} / {formatBytes(cache.bytesCap)}
-          </p>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-            <div className={cn("h-full", barClass)} style={{ width: `${Math.min(100, ratio * 100)}%` }} />
-          </div>
-          <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
-            <div>
-              <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.entries")}</dt>
-              <dd className="text-lg font-semibold tabular-nums">{cache.entries}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.hits")}</dt>
-              <dd className="text-lg font-semibold tabular-nums">{cache.hits}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.replays")}</dt>
-              <dd className="text-lg font-semibold tabular-nums">{cache.replays}</dd>
-            </div>
-          </dl>
-        </article>
+          {t("accounts.reliability.disabledBanner")}
+        </p>
+      )}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" data-testid="breaker-cards">
+        {breakers.accounts.map((account) => (
+          <BreakerCard
+            key={account.accountId}
+            account={account}
+            threshold={breakers.failureThreshold}
+            windowSeconds={breakers.windowSeconds}
+            now={now}
+          />
+        ))}
       </div>
+      <article
+        data-testid="history-cache-card"
+        aria-disabled={disabled}
+        className={cn("max-w-md rounded-xl border bg-card p-4", disabled && "opacity-60")}
+      >
+        <p className="text-sm font-medium">{t("accounts.reliability.cache.title")}</p>
+        {disabledText ? <p className="mt-2 text-sm text-muted-foreground">{disabledText}</p> : null}
+        <p className="mt-2 text-sm tabular-nums">
+          {formatBytes(cache.bytesUsed)} / {formatBytes(cache.bytesCap)}
+        </p>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+          <div className={cn("h-full", barClass)} style={{ width: `${Math.min(100, ratio * 100)}%` }} />
+        </div>
+        <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+          <div>
+            <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.entries")}</dt>
+            <dd className="text-lg font-semibold tabular-nums">{cache.entries}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.hits")}</dt>
+            <dd className="text-lg font-semibold tabular-nums">{cache.hits}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">{t("accounts.reliability.cache.replays")}</dt>
+            <dd className="text-lg font-semibold tabular-nums">{cache.replays}</dd>
+          </div>
+        </dl>
+      </article>
     </section>
   );
 }

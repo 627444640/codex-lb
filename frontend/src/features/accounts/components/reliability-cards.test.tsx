@@ -56,7 +56,20 @@ describe("ReliabilityCards", () => {
     expect(screen.getByText("熔断中")).toBeInTheDocument();
     expect(screen.getByTestId("breaker-countdown")).toHaveTextContent("剩余 2:05 恢复");
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText(/60 秒内 3\/3/)).toBeInTheDocument();
+    expect(screen.getByText("对话数")).toBeInTheDocument();
+    expect(screen.getByTestId("breaker-cards")).not.toContainElement(screen.getByTestId("history-cache-card"));
     expect(formatRemaining(breakers.accounts[0].openUntil ?? "", 1_000_000 - 125_000)).toBe("2:05");
+  });
+
+  it("shows a grey banner when the breaker is disabled", async () => {
+    await i18n.changeLanguage("zh-CN");
+    render(
+      <I18nextProvider i18n={i18n}>
+        <ReliabilityCards breakers={{ ...breakers, enabled: false }} cache={cache} now={0} />
+      </I18nextProvider>,
+    );
+    expect(screen.getByTestId("breaker-disabled-banner")).toHaveTextContent("熔断未启用");
   });
 
   it("greys out the cache card when disk is low", async () => {
