@@ -2608,10 +2608,12 @@ class _HTTPBridgeUpstreamEventsMixin:
                         payload,
                         event_type,
                     ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
-                else:
+                elif not is_upstream_model_capacity_error(retry_error_message):
                     # No verified fresh body. A cached full history can still
                     # be resent once without the anchor. A cache miss keeps
                     # the owner-unavailable terminal and does not switch.
+                    # Model-capacity errors are not admission failures; the
+                    # client anchor must fail closed without a resend.
                     status_request_state.error_code_override = owner_pinned_quota_error
                     restored_to_pending = False
                     async with session.pending_lock:
@@ -2709,6 +2711,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             and status_request_state.response_id is None
             and not status_request_state.downstream_visible
             and not status_request_state.upstream_model_output_seen
+            and not is_upstream_model_capacity_error(retry_error_message)
         ):
             # A pre-created 500 that still names previous_response_id is not a
             # plain account switch. Retry once so a cached full history can
