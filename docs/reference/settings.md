@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 136 settings. Every setting is an environment
+codex-lb currently exposes 141 settings. Every setting is an environment
 variable with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process). All defaults work with zero configuration —
 start from [Configuration](../configuration.md) for the handful that matter,
@@ -257,6 +257,11 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_ACCOUNT_ADMISSION_BREAKER_FAILURE_THRESHOLD` | `int` | `3` |
 | `CODEX_LB_ACCOUNT_ADMISSION_BREAKER_OPEN_SECONDS` | `int` | `300` |
 | `CODEX_LB_ACCOUNT_ADMISSION_BREAKER_WINDOW_SECONDS` | `float` | `60.0` |
+| `CODEX_LB_CONVERSATION_HISTORY_CACHE_CONVERSATION_MAX_BYTES` | `int` | `33554432` |
+| `CODEX_LB_CONVERSATION_HISTORY_CACHE_ENABLED` | `bool` | `True` |
+| `CODEX_LB_CONVERSATION_HISTORY_CACHE_IDLE_TTL_SECONDS` | `int` | `1800` |
+| `CODEX_LB_CONVERSATION_HISTORY_CACHE_MAX_BYTES` | `int` | `1073741824` |
+| `CODEX_LB_CONVERSATION_HISTORY_CACHE_MIN_FREE_DISK_BYTES` | `int` | `536870912` |
 | `CODEX_LB_DEPLOYMENT_AUTH_POLICY` | `'standard' \| 'managed'` | `'standard'` |
 | `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
 | `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | `bool` | `False` |

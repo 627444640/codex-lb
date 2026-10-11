@@ -401,6 +401,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _bind_websocket_request_dispatch_owner,
     _find_websocket_request_state_by_response_id,
     _forget_websocket_stale_previous_response,
+    _history_replay_owner_after_exclusion,
     _install_verified_fresh_replay,
     _is_websocket_response_create,
     _is_websocket_stale_previous_response,
@@ -408,6 +409,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _matching_websocket_request_states_for_missing_tool_output_error,
     _matching_websocket_request_states_for_previous_response_error,
     _maybe_rewrite_websocket_previous_response_not_found_event,
+    _observe_websocket_history_turn,
     _parse_websocket_payload,
     _pop_matching_websocket_request_states,
     _pop_replayable_precreated_websocket_request_state,
@@ -427,6 +429,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _sanitize_websocket_previous_response_error,
     _sanitize_websocket_terminal_error_fields,
     _serialize_websocket_error_event,
+    _stage_websocket_history_replay,
     _trim_websocket_previous_response_input_items,
     _upstream_websocket_disconnect_message,
     _websocket_accepted_replay_can_switch_account,
@@ -480,6 +483,7 @@ from app.modules.proxy.capability_routing import (
     strip_capability_metadata,
 )
 from app.modules.proxy.continuity import resolve_required_account_id
+from app.modules.proxy.conversation_history import account_admission_blocks
 from app.modules.proxy.durable_bridge_coordinator import (
     DurableBridgeLookup as DurableBridgeLookup,
 )
@@ -1270,8 +1274,23 @@ async def _process_upstream_websocket_transport_end(
                 error_code=message_error_code or "stream_incomplete",
                 pre_first_output_close=True,
             )
+    history_replay_staged = False
+    if replay_request_state is not None and pre_output_close and not account_neutral:
+        output_started = any(
+            state.downstream_visible or state.upstream_model_output_seen for state in observed_requests
+        )
+        if not output_started:
+            history_replay_staged = _stage_websocket_history_replay(
+                replay_request_state,
+                account_id=account.id,
+                reason="stream_incomplete",
+                owner_blocked=account_admission_blocks(proxy._load_balancer, account.id),
+            )
+            if history_replay_staged:
+                await asyncio.sleep(admission_retry_jitter_seconds())
     if (
-        replay_request_state is not None
+        not history_replay_staged
+        and replay_request_state is not None
         and pre_output_close
         and AdmissionBreakerPolicy.from_settings().enabled
         and account.id not in replay_request_state.excluded_account_ids
@@ -2029,10 +2048,13 @@ class _WebSocketMixin:
                             surface="websocket",
                             request_state=request_state,
                         )
-                        request_state.preferred_account_id = resolve_required_account_id(
-                            ("existing bridge or file", request_state.preferred_account_id),
-                            ("turn state", turn_state_owner_account_id),
-                            ("previous response", previous_response_owner_account_id),
+                        request_state.preferred_account_id = _history_replay_owner_after_exclusion(
+                            request_state,
+                            resolve_required_account_id(
+                                ("existing bridge or file", request_state.preferred_account_id),
+                                ("turn state", turn_state_owner_account_id),
+                                ("previous response", previous_response_owner_account_id),
+                            ),
                         )
                     except ProxyResponseError as exc:
                         error = _parse_openai_error(exc.payload)
@@ -5475,6 +5497,8 @@ class _WebSocketMixin:
             request_state = grouped_previous_response_request_states[0]
 
         _record_response_event(request_state, event_type)
+        if request_state is not None and event_type == "response.completed":
+            _observe_websocket_history_turn(request_state, payload)
 
         if request_state is None:
             if is_previous_response_not_found_event:
@@ -5608,6 +5632,21 @@ class _WebSocketMixin:
                 {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
                 retry_error_code,
             )
+            if _stage_websocket_history_replay(
+                request_state,
+                account_id=account.id,
+                reason="owner_unavailable",
+                owner_blocked=True,
+            ):
+                await asyncio.sleep(admission_retry_jitter_seconds())
+                request_state.replay_count += 1
+                request_state.awaiting_response_created = True
+                request_state.response_id = None
+                _clear_websocket_request_error_overrides(request_state)
+                upstream_control.reconnect_requested = True
+                upstream_control.suppress_downstream_event = True
+                upstream_control.replay_request_state = request_state
+                return downstream_text
             event, payload, event_type, downstream_text = _rewrite_websocket_previous_response_owner_unavailable_event(
                 request_state=request_state,
             )
@@ -5695,10 +5734,24 @@ class _WebSocketMixin:
                 ):
                     # A short continuation depends entirely on the upstream
                     # anchor. Replaying the same lost previous_response_id on a
-                    # new websocket just re-surfaces the raw upstream 400; only
-                    # full-resend payloads with a prepared fresh body can be
-                    # transparently retried.
-                    retry_error_code = None
+                    # new websocket just re-surfaces the raw upstream 400. A
+                    # cached full history can be resent once without that anchor.
+                    if _stage_websocket_history_replay(
+                        request_state,
+                        account_id=account.id,
+                        reason="previous_response_not_found",
+                        owner_blocked=account_admission_blocks(proxy._load_balancer, account.id),
+                    ):
+                        await asyncio.sleep(admission_retry_jitter_seconds())
+                        request_state.replay_count += 1
+                        request_state.awaiting_response_created = True
+                        request_state.response_id = None
+                        _clear_websocket_request_error_overrides(request_state)
+                        upstream_control.reconnect_requested = True
+                        upstream_control.suppress_downstream_event = True
+                        upstream_control.replay_request_state = request_state
+                    else:
+                        retry_error_code = None
                 else:
                     replay_text = _install_verified_fresh_replay(
                         request_state,

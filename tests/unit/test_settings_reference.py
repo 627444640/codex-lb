@@ -82,7 +82,12 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # settable because a two-account pool and the length of an upstream burst are
 # not the same on every install; hardcoding them would force a deploy to
 # widen or shorten the hold. They are omitted from .env.example.
-MAX_SETTINGS_FIELDS = 136
+# 136 -> 141: conversation history cache enable, total cap, per-conversation cap,
+# idle TTL, and free-disk floor. The cache is on with working defaults
+# (1 GiB, 32 MiB, 30 min, 512 MiB free) so a lost anchor can be replayed
+# without setup. The knobs stay settable because conversation size and disk
+# headroom differ by host. They are omitted from .env.example.
+MAX_SETTINGS_FIELDS = 141
 
 
 def test_generated_settings_reference_matches_code() -> None:

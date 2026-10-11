@@ -981,6 +981,111 @@ def _should_retry_stream_error(code: str) -> bool:
     return code in _facade()._ACCOUNT_RECOVERY_RETRY_CODES
 
 
+def _note_terminal_response(
+    event: object,
+    response_id: str,
+    status: str,
+    payload: object,
+    conversation_id: str | None,
+    settlement: _StreamSettlement | None = None,
+    event_type: str | None = None,
+) -> tuple[str, str]:
+    """Record a completed turn and apply the terminal status already handled inline."""
+
+    kind = event_type if event_type is not None else getattr(event, "type", None)
+    if kind not in ("response.completed", "response.incomplete"):
+        return response_id, status
+    response = getattr(event, "response", None) if event is not None else None
+    found = getattr(response, "id", None) if response is not None else None
+    if isinstance(found, str) and found:
+        response_id = found
+        if settlement is not None:
+            settlement.response_id = found
+    if kind == "response.completed" and event is not None:
+        from app.modules.proxy.conversation_history import observe_responses_completion
+
+        observe_responses_completion(payload, event, conversation_id=conversation_id)
+    if kind == "response.incomplete":
+        status = "error"
+    return response_id, status
+
+
+async def _replay_http_history(
+    proxy: Any,
+    payload: Any,
+    account: Any,
+    settlement: _StreamSettlement,
+    request_id: str | None,
+    allow_retry: bool,
+    rewritten_code: str | None = None,
+    error_fields: tuple[str | None, str | None, str | None] | None = None,
+    *,
+    stream_incomplete: bool = False,
+) -> None:
+    """Resend one pre-output turn from cached history, or leave the payload alone."""
+
+    import asyncio
+
+    from app.core.errors import is_previous_response_not_found_error
+    from app.modules.proxy._load_balancer.admission_breaker import (
+        admission_retry_jitter_seconds,
+        record_upstream_admission_failure,
+    )
+    from app.modules.proxy._service.support import _RetryableStreamError
+    from app.modules.proxy.conversation_history import (
+        HistoryReplayReason,
+        account_admission_blocks,
+        maybe_apply_model_history_replay,
+    )
+
+    previous = getattr(payload, "previous_response_id", None)
+    if not previous or settlement.downstream_visible:
+        return
+    reason: HistoryReplayReason | None = None
+    owner_blocked = False
+    if stream_incomplete:
+        reason = "stream_incomplete"
+        owner_blocked = account_admission_blocks(getattr(proxy, "_load_balancer", None), getattr(account, "id", None))
+    elif rewritten_code == "previous_response_owner_unavailable":
+        reason = "owner_unavailable"
+        owner_blocked = True
+    elif error_fields is not None and is_previous_response_not_found_error(
+        code=error_fields[0],
+        param=error_fields[1],
+        message=error_fields[2],
+    ):
+        reason = "previous_response_not_found"
+        owner_blocked = account_admission_blocks(getattr(proxy, "_load_balancer", None), getattr(account, "id", None))
+    if reason is None:
+        return
+    if not allow_retry:
+        return
+    replay = maybe_apply_model_history_replay(
+        payload,
+        request_id=request_id,
+        reason=reason,
+        downstream_visible=settlement.downstream_visible,
+        owner_blocked=owner_blocked,
+        file_pinned=False,
+    )
+    if replay is None:
+        return
+    if reason == "stream_incomplete":
+        await record_upstream_admission_failure(
+            proxy._load_balancer,
+            account,
+            error_code="stream_incomplete",
+            pre_first_output_close=True,
+        )
+    await asyncio.sleep(admission_retry_jitter_seconds())
+    raise _RetryableStreamError(
+        "history_replay",
+        cast(UpstreamError, {"message": "history replay"}),
+        exclude_account=replay.switch_account,
+        history_replay=True,
+    )
+
+
 def _upstream_turn_state_from_socket(upstream: UpstreamWebSocket | None) -> str | None:
     if upstream is None:
         return None

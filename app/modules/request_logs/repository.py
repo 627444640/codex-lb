@@ -1102,6 +1102,8 @@ class RequestLogsRepository:
         upstream_proxy_fail_closed_reason: str | None = None,
         admission_failover_retried: bool | None = None,
         admission_failover_from_account_id: str | None = None,
+        history_replay_reason: str | None = None,
+        history_replay_extra_tokens: int | None = None,
         archive_request_id: str | None = None,
         cache_write_tokens: int | None = None,
         actual_model: str | None = None,
@@ -1180,6 +1182,8 @@ class RequestLogsRepository:
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 admission_failover_retried=admission_failover_retried,
                 admission_failover_from_account_id=admission_failover_from_account_id,
+                history_replay_reason=history_replay_reason,
+                history_replay_extra_tokens=history_replay_extra_tokens,
                 requested_at=requested_at or utcnow(),
             )
             # Legacy callers may still pass a monetary override. New internal

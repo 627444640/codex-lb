@@ -51,10 +51,16 @@ Limit warm-up sends **one small real request** (using the configured warm-up mod
 
 When an account returns repeated upstream `server_error`, `server_is_overloaded`, or an authored websocket close before any output, new requests stop landing on it for a few minutes. One half-open probe then checks recovery. A failure that happens before any output is forwarded is retried once, after a short jitter, on a different healthy account. After any output has been forwarded, the client sees the failure and the log records it as output interrupted mid-stream.
 
-Requests bound to a `previous_response_id`, an uploaded file, or single-account routing stay on that owner. They are not moved to another account. Client disconnects, context-length errors, invalid requests, and frame-less closes (missing close code or 1006) do not open the breaker.
+Requests bound to a `previous_response_id`, an uploaded file, or single-account routing stay on that owner. They are not moved to another account, unless a cached full history can be resent without that anchor (see below). Client disconnects, context-length errors, invalid requests, and frame-less closes (missing close code or 1006) do not open the breaker.
+
+### Conversation history replay
+
+While a conversation is in flight, completed turns are appended to a separate SQLite file (`conversation_history.db`, not `store.db`). Memory keeps an index only. On `previous_response_not_found` or a pre-output `stream_incomplete`, the proxy resends the turn once, after a short jitter, on the same account, with the cached history and no `previous_response_id`. If that owner is admission-breaker open or otherwise unavailable, the same full history goes to a different healthy account, unless the history references an uploaded file. A close that trips the breaker still counts. After any output has been forwarded, the client sees the failure. Conversations over the per-conversation cap are not cached. The file stays within the total cap (1 GiB by default), idle conversations expire after 30 minutes, and low free disk turns the cache off without failing the request.
+
+`GET /api/accounts/conversation-history-cache` reports size, cap, entry count, hits, replays, and why the cache is off. It does not return conversation text.
 
 `GET /api/accounts/admission-breakers` reports each account as `closed`, `open`, or `half_open`, with `openUntil` and the error rate over the last hour and the last 24 hours. Breaker phase is local to the replica that handled the failures. The error rates are read from shared request logs.
 
 ---
 
-*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [account-admission-breaker](../openspec/specs/account-admission-breaker/spec.md) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
+*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [account-admission-breaker](../openspec/specs/account-admission-breaker/spec.md) · [conversation-history-replay](../openspec/specs/conversation-history-replay/spec.md) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*

@@ -636,11 +636,19 @@ def _request_log_client_fields(
 
 
 class _RetryableStreamError(Exception):
-    def __init__(self, code: str, error: UpstreamError, *, exclude_account: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        error: UpstreamError,
+        *,
+        exclude_account: bool = False,
+        history_replay: bool = False,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.error = error
         self.exclude_account = exclude_account
+        self.history_replay = history_replay
 
 
 class _WebSocketConnectFailureEmitted(Exception):
@@ -1038,6 +1046,7 @@ class _WebSocketRequestState:
     request_usage_budget: ApiKeyRequestUsageBudget | None = None
     request_text: str | None = None
     replay_count: int = 0
+    history_replay_used: bool = False
     # Counts only the one extra replay permitted after the initial recovery
     # replay when the replacement upstream socket also closes cleanly before
     # producing any response event.

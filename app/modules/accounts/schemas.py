@@ -158,6 +158,21 @@ class AccountAdmissionBreakersResponse(DashboardModel):
     accounts: list[AccountAdmissionBreakerStatus] = Field(default_factory=list)
 
 
+class ConversationHistoryCacheStatsResponse(DashboardModel):
+    """Cache occupancy and replay counters. Conversation text is not included."""
+
+    enabled: bool
+    disabled_reason: str | None = None
+    bytes_used: int
+    bytes_cap: int
+    conversation_bytes_cap: int
+    entries: int
+    hits: int
+    replays: int
+    idle_ttl_seconds: int
+    min_free_disk_bytes: int
+
+
 class AccountImportResponse(DashboardModel):
     account_id: str
     email: str

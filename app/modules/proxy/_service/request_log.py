@@ -11,6 +11,7 @@ from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, proxy_phase_latenc
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy._load_balancer.admission_breaker import current_admission_failover
 from app.modules.proxy.affinity import _extract_model_class
+from app.modules.proxy.conversation_history import current_history_replay
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
 from app.modules.request_logs.repository import RequestLogUsageUpdate
 
@@ -231,6 +232,7 @@ class _RequestLogMixin:
         archive_request_id: str | None = None,
     ) -> None:
         failover = current_admission_failover()
+        history_replay = current_history_replay()
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,
@@ -285,6 +287,8 @@ class _RequestLogMixin:
                 client_ip=client_ip,
                 admission_failover_retried=failover is not None,
                 admission_failover_from_account_id=None if failover is None else failover.from_account_id,
+                history_replay_reason=None if history_replay is None else history_replay.reason,
+                history_replay_extra_tokens=None if history_replay is None else history_replay.extra_tokens,
             ),
             name=f"proxy-request-log-{request_id}",
         )
@@ -470,6 +474,8 @@ class _RequestLogMixin:
         client_ip: str | None = None,
         admission_failover_retried: bool | None = None,
         admission_failover_from_account_id: str | None = None,
+        history_replay_reason: str | None = None,
+        history_replay_extra_tokens: int | None = None,
     ) -> None:
         proxy = cast(_RequestLogServiceProtocol, self)
         try:
@@ -527,6 +533,8 @@ class _RequestLogMixin:
                     client_ip=client_ip,
                     admission_failover_retried=admission_failover_retried,
                     admission_failover_from_account_id=admission_failover_from_account_id,
+                    history_replay_reason=history_replay_reason,
+                    history_replay_extra_tokens=history_replay_extra_tokens,
                 )
         except Exception:
             logger.warning(

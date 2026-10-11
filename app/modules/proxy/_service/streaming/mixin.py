@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+from functools import partial
 from typing import Any, AsyncIterator, Mapping, cast
 
 import aiohttp
@@ -277,7 +278,9 @@ from app.modules.proxy._service.streaming.helpers import (
 from app.modules.proxy._service.streaming.helpers import (
     _mark_downstream_stream_cancelled,
     _mark_upstream_stream_incomplete,
+    _note_terminal_response,
     _raw_stream_error_code_or_upstream,
+    _replay_http_history,
     _rewrite_malformed_stream_error_event,
 )
 from app.modules.proxy._service.streaming.helpers import (
@@ -471,6 +474,7 @@ class _StreamingMixin(_StreamingRetryMixin):
         enforce_openai_sdk_contract: bool = True,
     ) -> AsyncIterator[str]:
         proxy = cast(_StreamingServiceProtocol, self)
+        replay_history = partial(_replay_http_history, proxy, payload, account, settlement, request_id, allow_retry)
         account_id_value = account.id
         access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
         account_id = _header_account_id(account.chatgpt_account_id)
@@ -674,6 +678,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                             upstream_error,
                             upstream_error_code,
                         )
+                    await replay_history(rewritten_code, (code, raw_error_param, raw_error_message))
                     first, event, first_payload, event_type = _facade()._build_rewritten_stream_response_failed_event(
                         response_id=response_id,
                         error_code=rewritten_code,
@@ -723,11 +728,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 settlement.record_success = False
                 settlement.account_health_error = False
 
-            if event and event.type in ("response.completed", "response.incomplete"):
-                if event.response and event.response.id:
-                    response_id = event.response.id
-                if event.type == "response.incomplete":
-                    status = "error"
+            response_id, status = _note_terminal_response(event, response_id, status, payload, conversation_id)
 
             if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                 saw_text_delta = True
@@ -854,6 +855,10 @@ class _StreamingMixin(_StreamingRetryMixin):
                                     _upstream_error_from_openai(error),
                                     upstream_error_code,
                                 )
+                            await replay_history(
+                                rewritten_code,
+                                (raw_error_code, error.param if error else None, error.message if error else None),
+                            )
                             (
                                 line,
                                 event,
@@ -896,13 +901,9 @@ class _StreamingMixin(_StreamingRetryMixin):
                     settlement.error = {"message": raw_error_message or "Upstream error"}
                     settlement.record_success = False
                     settlement.account_health_error = not saw_text_delta
-                if event_type in ("response.completed", "response.incomplete"):
-                    response = event.response if event is not None else None
-                    if response and response.id:
-                        response_id = response.id
-                        settlement.response_id = response_id
-                    if event_type == "response.incomplete":
-                        status = "error"
+                response_id, status = _note_terminal_response(
+                    event, response_id, status, payload, conversation_id, settlement, event_type
+                )
                 if event_type == "response.completed" and suppressed_duplicate_tool_call:
                     (
                         line,
@@ -945,19 +946,18 @@ class _StreamingMixin(_StreamingRetryMixin):
                     terminal_event_seen = True
                 yield line
             if not terminal_event_seen:
+                await replay_history(stream_incomplete=True)
                 status, error_code, error_message, failure_metadata = _mark_upstream_stream_incomplete(settlement)
         except ProxyResponseError as exc:
             finish_response_timing(timings, ended_at=time.monotonic())
             response_create_lease.release()
             failure_metadata = _facade()._request_log_failure_metadata(exc)
             error = _parse_openai_error(exc.payload)
+            code = _normalize_error_code(error.code if error else None, error.type if error else None)
             rewritten_error = _facade()._rewrite_previous_response_stream_error(
                 previous_response_id=payload.previous_response_id,
                 preferred_account_id=preferred_account_id,
-                error_code=_normalize_error_code(
-                    error.code if error else None,
-                    error.type if error else None,
-                ),
+                error_code=code,
                 error_type=error.type if error else None,
                 error_message=error.message if error else None,
                 error_param=error.param if error else None,
@@ -970,6 +970,9 @@ class _StreamingMixin(_StreamingRetryMixin):
                         _upstream_error_from_openai(error),
                         upstream_error_code,
                     )
+                await replay_history(
+                    rewritten_code, (code, error.param if error else None, error.message if error else None)
+                )
                 status = "error"
                 error_code = rewritten_code
                 error_message = rewritten_message

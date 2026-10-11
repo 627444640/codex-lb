@@ -14,7 +14,7 @@ A success while the breaker is open does not close it. Warm sessions were cleari
 
 One cross-account retry is the cap. The same account is not retried for these failures, so an upstream outage is not multiplied by the old three same-account attempts.
 
-A `previous_response_id` owned by the failed account, a file pin, and `single_account` routing stay on that owner. Replaying history onto another account is a later change.
+A file pin and `single_account` routing stay on that owner. A `previous_response_id` stays on that owner unless a cached full-history replay resends the turn without the anchor.
 
 ## Constraints
 
@@ -28,4 +28,4 @@ A second replica can still assign new work until it observes the same burst. If 
 
 Account A returns `server_error` three times inside a minute. The breaker stays open for five minutes and new requests use account B. When the five minutes elapse, one probe may use A. Probe success closes the breaker. Probe failure opens it for another five minutes.
 
-A turn that still names a `previous_response_id` stored for A is sent to A even while the breaker is open. If A then fails before output, the proxy does not switch accounts.
+A turn that still names a `previous_response_id` stored for A is sent to A even while the breaker is open. If A then fails before output and the proxy has no cached history, the proxy does not switch accounts. If the cache holds the history and it has no file id, the proxy resends that turn once without the anchor, on a healthy account.

@@ -77,6 +77,8 @@ class RequestLogEntry(DashboardModel):
     latency_queue_ms: int | None = None
     admission_failover_retried: bool | None = None
     admission_failover_from_account_id: str | None = None
+    history_replay_reason: str | None = None
+    history_replay_extra_tokens: int | None = None
 
 
 class RequestLogConversation(DashboardModel):
