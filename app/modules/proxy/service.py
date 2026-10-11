@@ -858,6 +858,7 @@ _WEBSOCKET_TRANSPARENT_REPLAY_ERROR_CODES = frozenset(
         "quota_exceeded",
         "overloaded_error",
         "server_is_overloaded",
+        "server_error",
     }
 )
 _WEBSOCKET_AUTH_FAILURE_CODES = frozenset({"invalid_api_key", "invalid_authentication", "token_invalidated"})

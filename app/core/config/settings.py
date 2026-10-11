@@ -441,6 +441,16 @@ class Settings(BaseSettings):
     # constants in ``app/core/resilience/circuit_breaker.py``)
     circuit_breaker_enabled: bool = False
 
+    # Per-account admission breaker. On by default so a sick account leaves
+    # new assignment after a short upstream 5xx burst with no extra setup.
+    # Threshold, window, and open interval stay configurable because a
+    # two-account pool and the length of an upstream burst vary by deployment.
+    # Defaults: 3 failures in 60s opens the account for 300s.
+    account_admission_breaker_enabled: bool = True
+    account_admission_breaker_failure_threshold: int = Field(default=3, ge=1)
+    account_admission_breaker_window_seconds: float = Field(default=60.0, gt=0)
+    account_admission_breaker_open_seconds: int = Field(default=300, ge=1)
+
     # Soft drain & deterministic failover (drain/probe thresholds are fixed
     # constants in ``app/core/balancer/logic.py``)
     soft_drain_enabled: bool = True

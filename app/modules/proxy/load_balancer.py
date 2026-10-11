@@ -61,6 +61,13 @@ from app.core.resilience.degradation import set_degraded, set_normal
 from app.core.usage.quota import apply_usage_quota
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
+from app.modules.proxy._load_balancer.admission_breaker import (
+    AdmissionBreakerPolicy,
+    AdmissionBreakerSnapshot,
+    record_admission_success_locked,
+    reserve_half_open_probe_locked,
+    snapshot_admission_breaker,
+)
 from app.modules.proxy._load_balancer.error_rate import error_rate_weight_multiplier, record_outcome_locked
 from app.modules.proxy._load_balancer.sticky_selection import (
     _STICKY_EXISTING_UNSET,
@@ -980,6 +987,18 @@ class LoadBalancer:
                 error_code=selection_error_code,
                 resets_at=selection_resets_at,
             )
+        hard_pin = required_account_id is not None and selected_snapshot.id == required_account_id
+        if not hard_pin and not await self.admission_allows_selection(selected_snapshot.id):
+            await self.release_account_lease(selected_lease)
+            logger.warning(
+                "Admission breaker blocked new assignment account_id=%s",
+                "<redacted>" if redact_sensitive_details else selected_snapshot.id,
+            )
+            return AccountSelection(
+                account=None,
+                error_message="No available accounts",
+                error_code="account_admission_breaker_open",
+            )
         if not circuit_breaker_open:
             set_normal()
         logger.info(
@@ -1778,6 +1797,29 @@ class LoadBalancer:
             self._selection_inputs_cache.invalidate()
             return downgraded
 
+    async def admission_allows_selection(self, account_id: str) -> bool:
+        """True when this account may take a new assignment, reserving a half-open probe."""
+
+        policy = AdmissionBreakerPolicy.from_settings()
+        if not policy.enabled:
+            return True
+        lock = await self._get_account_lock(account_id)
+        async with lock:
+            runtime = self._runtime.get(account_id)
+            if runtime is None:
+                return True
+            return reserve_half_open_probe_locked(runtime, time.time(), policy)
+
+    def admission_breaker_snapshots(self) -> dict[str, AdmissionBreakerSnapshot]:
+        """Replica-local breaker phase for each account that has runtime state."""
+
+        policy = AdmissionBreakerPolicy.from_settings()
+        now = time.time()
+        return {
+            account_id: snapshot_admission_breaker(runtime, now, policy)
+            for account_id, runtime in self._runtime.items()
+        }
+
     async def record_error(self, account: Account) -> None:
         await self.record_errors(account, 1)
 
@@ -1814,7 +1856,14 @@ class LoadBalancer:
         lock = await self._get_account_lock(account.id)
         async with lock:
             runtime = self._runtime.setdefault(account.id, RuntimeState())
-            record_outcome_locked(runtime, time.time(), success=True)
+            now = time.time()
+            record_outcome_locked(runtime, now, success=True)
+            record_admission_success_locked(
+                runtime,
+                now,
+                AdmissionBreakerPolicy.from_settings(),
+                account_id=account.id,
+            )
             if runtime and runtime.error_count > 0:
                 runtime.error_count = 0
                 runtime.last_error_at = None

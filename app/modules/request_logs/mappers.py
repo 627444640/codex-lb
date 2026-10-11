@@ -103,4 +103,8 @@ def to_request_log_entry(
         generation_tps=generation_speed.tps,
         generation_tps_status=generation_speed.status,
         latency_queue_ms=log.latency_queue_ms,
+        admission_failover_retried=log.admission_failover_retried,
+        admission_failover_from_account_id=(
+            log.admission_failover_from_account_id if include_sensitive_metadata else None
+        ),
     )

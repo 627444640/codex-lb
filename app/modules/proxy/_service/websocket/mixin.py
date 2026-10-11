@@ -104,6 +104,14 @@ from app.modules.model_sources.selection import (
     effective_model_for_api_key,
     responses_model_is_source_owned,
 )
+from app.modules.proxy._load_balancer.admission_breaker import (
+    ADMISSION_FAILURE_CODES,
+    AdmissionBreakerPolicy,
+    admission_retry_jitter_seconds,
+    authored_pre_output_close,
+    note_admission_failover,
+    record_upstream_admission_failure,
+)
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -423,6 +431,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _upstream_websocket_disconnect_message,
     _websocket_accepted_replay_can_switch_account,
     _websocket_accepted_replay_may_exclude_account,
+    _websocket_admission_may_switch_account,
     _websocket_auth_failure_requires_reauth,
     _websocket_capability_metadata_values,
     _websocket_client_previous_response_full_resend_is_retry_safe,
@@ -1231,6 +1240,47 @@ async def _process_upstream_websocket_transport_end(
             # owner reconnects here instead of excluding itself.
             replay_request_state.excluded_account_ids.add(account.id)
             replay_request_state.affinity_policy = replace(replay_request_state.affinity_policy, reallocate_sticky=True)
+    close_message = _upstream_websocket_disconnect_message(message)
+    pre_output_close = authored_pre_output_close(
+        close_code=getattr(message, "close_code", None),
+        message=close_message,
+    )
+    observed_requests = list(reader_owned)
+    if replay_request_state is not None:
+        observed_requests.append(replay_request_state)
+    if (
+        not account_neutral
+        and observed_requests
+        and pre_output_close
+        and AdmissionBreakerPolicy.from_settings().enabled
+    ):
+        output_started = any(
+            state.downstream_visible or state.upstream_model_output_seen for state in observed_requests
+        )
+        if output_started:
+            _facade().logger.warning(
+                "output interrupted mid-stream account_id=%s close_code=%s",
+                account_id_value,
+                getattr(message, "close_code", None),
+            )
+        else:
+            await record_upstream_admission_failure(
+                proxy._load_balancer,
+                account,
+                error_code=message_error_code or "stream_incomplete",
+                pre_first_output_close=True,
+            )
+    if (
+        replay_request_state is not None
+        and pre_output_close
+        and AdmissionBreakerPolicy.from_settings().enabled
+        and account.id not in replay_request_state.excluded_account_ids
+        and _websocket_admission_may_switch_account(replay_request_state)
+    ):
+        replay_request_state.excluded_account_ids.add(account.id)
+        replay_request_state.affinity_policy = replace(replay_request_state.affinity_policy, reallocate_sticky=True)
+        note_admission_failover(account.id)
+        await asyncio.sleep(admission_retry_jitter_seconds())
     if replay_request_state is not None:
         upstream_control.replay_request_state = replay_request_state
         _facade().logger.info(
@@ -5697,6 +5747,17 @@ class _WebSocketMixin:
                     request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
                 upstream_control.suppress_downstream_event = True
                 upstream_control.replay_request_state = request_state
+                if (
+                    retry_error_code in ADMISSION_FAILURE_CODES
+                    and AdmissionBreakerPolicy.from_settings().enabled
+                    and not accepted_lifecycle_replay
+                    and account.id not in request_state.excluded_account_ids
+                    and _websocket_admission_may_switch_account(request_state)
+                ):
+                    request_state.excluded_account_ids.add(account.id)
+                    request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
+                    note_admission_failover(account.id)
+                    await asyncio.sleep(admission_retry_jitter_seconds())
                 if accepted_lifecycle_replay:
                     # The accepted request still holds its API-key reservation:
                     # the health write waits for its settlement (bridge parity).

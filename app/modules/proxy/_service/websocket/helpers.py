@@ -623,6 +623,29 @@ def _websocket_affinity_may_resolve_hard_owner(affinity_policy: _AffinityPolicy)
     return _affinity_may_resolve_hard_owner(affinity_policy)
 
 
+def _websocket_admission_may_switch_account(request_state: "_WebSocketRequestState") -> bool:
+    """True when one pre-output admission failure may leave this account.
+
+    Accepted replays use the existing exclude predicate. Pre-created requests
+    stay put when a file, ``previous_response_id``, replay owner, or hard
+    sticky affinity requires the account that just failed.
+    """
+
+    if request_state.replay_downstream_response_id is not None or (
+        request_state.response_id is not None and not request_state.awaiting_response_created
+    ):
+        return _websocket_accepted_replay_may_exclude_account(request_state)
+    if request_state.file_required_preferred_account or request_state.replay_required_account_id is not None:
+        return False
+    if request_state.previous_response_id is not None and not (
+        request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
+    ):
+        return False
+    if _websocket_affinity_may_resolve_hard_owner(request_state.affinity_policy):
+        return False
+    return True
+
+
 def _websocket_accepted_replay_may_exclude_account(request_state: "_WebSocketRequestState") -> bool:
     """Return whether an accepted replay may exclude the account that accepted it.
 
