@@ -703,6 +703,92 @@ async def test_stream_http_500_exhausts_then_failover(async_client, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_stream_http_500_failover_does_not_stack_history_replay(async_client, monkeypatch, tmp_path):
+    """A's three HTTP 500s, then B fails before any token: return the error, no extra replay."""
+    from app.modules.proxy import conversation_history as history_module
+    from app.modules.proxy._service.streaming import retry as retry_module
+    from app.modules.proxy.conversation_history import (
+        ConversationHistoryCache,
+        set_conversation_history_cache,
+    )
+
+    await _import_account(async_client, "acc_h5stack_a", "h5stack_a@example.com")
+    await _import_account(async_client, "acc_h5stack_b", "h5stack_b@example.com")
+
+    cache = ConversationHistoryCache(
+        tmp_path / "conversation_history.db",
+        enabled=True,
+        max_bytes=1024**3,
+        conversation_max_bytes=32 * 1024 * 1024,
+        idle_ttl_seconds=1800,
+        min_free_disk_bytes=1,
+        start_maintenance=False,
+        disk_free=10 * 1024**3,
+    )
+    set_conversation_history_cache(cache)
+    assert cache.record_completed_turn(
+        request_body={
+            "model": "gpt-5.1",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "kept"}]}],
+        },
+        response_id="resp_stack_prev",
+        output_items=[
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+        ],
+    )
+
+    # An unknown previous_response_id is replayed before the first upstream
+    # call. Leave the anchor in place so the post-failover check is the one
+    # under test. A non-neutral anchor would also pin the first account and
+    # hide that check; this request is still safe to move once.
+    real_apply = history_module.maybe_apply_model_history_replay
+
+    def _keep_anchor_until_failover(payload, *args, **kwargs):
+        if kwargs.get("reason") == "owner_unavailable":
+            return object()
+        return real_apply(payload, *args, **kwargs)
+
+    monkeypatch.setattr(history_module, "maybe_apply_model_history_replay", _keep_anchor_until_failover)
+    monkeypatch.setattr(retry_module, "responses_payload_is_account_neutral_fresh_replay", lambda _payload: True)
+
+    seen_account_ids: list[str | None] = []
+    seen_previous: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        del headers, access_token, base_url, raise_for_status
+        seen_account_ids.append(account_id)
+        dumped = payload.model_dump(mode="json")
+        seen_previous.append(dumped.get("previous_response_id"))
+        raise ProxyResponseError(
+            500,
+            openai_error("server_error", "Internal server error"),
+            failure_phase="status",
+        )
+        yield _success_sse_event()  # pragma: no cover - keeps the function an async generator
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [],
+        "stream": True,
+        "previous_response_id": "resp_stack_prev",
+    }
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=payload) as resp:
+        status_code = resp.status_code
+        lines = [line async for line in resp.aiter_lines() if line]
+
+    assert status_code == 200
+    events = _extract_events(lines)
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_error"
+    assert seen_account_ids == ["acc_h5stack_a", "acc_h5stack_a", "acc_h5stack_a", "acc_h5stack_b"]
+    assert seen_previous == ["resp_stack_prev", "resp_stack_prev", "resp_stack_prev", "resp_stack_prev"]
+
+
+@pytest.mark.asyncio
 async def test_stream_connect_phase_429_usage_limit_transparent_failover(async_client, monkeypatch):
     """Connect-phase 429/usage_limit_reached on A should fail over to B before any downstream event."""
     await _import_account(async_client, "acc_stream_429_a", "stream429a@example.com")

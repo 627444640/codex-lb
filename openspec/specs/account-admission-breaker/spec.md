@@ -62,6 +62,13 @@ When a qualifying failure happens before any output event is forwarded to the cl
 - **THEN** the proxy calls account A three times
 - **AND** then waits for a short jitter and sends the request once to account B
 
+#### Scenario: HTTP 500 failover does not stack a history replay
+- **GIVEN** account A returns HTTP 500 three times before any output
+- **AND** the request carries `previous_response_id` whose history is cached
+- **AND** account B then fails before any output
+- **THEN** the proxy returns that failure to the client
+- **AND** the proxy does not send another replay
+
 #### Scenario: History replay spends the same retry
 - **GIVEN** a request has already been resent from cached history
 - **WHEN** the resend returns a qualifying admission failure before any output

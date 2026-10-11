@@ -618,6 +618,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         shutdown_state.commit_shutdown(timeout_seconds=settings.shutdown_drain_timeout_seconds)
+        proxy_service = getattr(app.state, "proxy_service", None)
+        # Requeued bridge requests wait on a silent upstream forever. Fail
+        # them before the in-flight drain, or that drain burns the timeout.
+        if proxy_service is not None and hasattr(proxy_service, "fail_requeued_http_bridge_requests"):
+            try:
+                await proxy_service.fail_requeued_http_bridge_requests()
+            except Exception:
+                logger.warning("Failed to fail requeued HTTP bridge requests during shutdown", exc_info=True)
         remaining_drain_seconds = shutdown_state.remaining_drain_timeout_seconds() or 0.0
         drained = await shutdown_state.wait_for_in_flight_drain(timeout_seconds=remaining_drain_seconds)
         # No await separates the timeout result from this cutoff. A slow
@@ -627,7 +635,6 @@ async def lifespan(app: FastAPI):
         if not drained:
             logger.warning("Drain timeout reached, proceeding with shutdown")
 
-        proxy_service = getattr(app.state, "proxy_service", None)
         recovery_settlements_drained = True
         # Settle detached recovery journals while their origin leases are
         # still held; bridge teardown below may release those owner fences.
@@ -764,6 +771,14 @@ async def lifespan(app: FastAPI):
                 logger.exception("Metrics server stopped with an error")
             finally:
                 mark_process_dead()
+                try:
+                    from app.modules.proxy.conversation_history import set_conversation_history_cache
+
+                    # Flush pending turns, close the sqlite connection, and
+                    # stop the maintenance thread. Later requests are done.
+                    set_conversation_history_cache(None)
+                except Exception:
+                    logger.warning("Failed to close conversation history cache during shutdown", exc_info=True)
                 try:
                     await close_db()
                 finally:

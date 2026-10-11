@@ -1709,6 +1709,11 @@ class _HTTPBridgeUpstreamEventsMixin:
         *,
         observed_at: float | None = None,
     ) -> None:
+        # An upstream event means a requeued wait is no longer silent.
+        # Shutdown only fails requests that are still waiting after this.
+        async with session.pending_lock:
+            for request_state in session.pending_requests:
+                request_state.requeued_pending_upstream = False
         observed_at = _service_time().monotonic() if observed_at is None else observed_at
         event_block = f"data: {text}\n\n"
         payload = parse_sse_data_json(event_block)

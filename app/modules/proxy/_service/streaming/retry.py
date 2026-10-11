@@ -2387,7 +2387,7 @@ class _StreamingRetryMixin:
                                         return
                                     if admission_plan == AdmissionFailoverAction.FAILOVER_ONCE:
                                         await asyncio.sleep(admission_retry_jitter_seconds())
-                                        note_admission_failover(account.id)
+                                        note_admission_failover(account.id, request_id=request_id)
                                         admission_failover_used = True
                                     last_transient_exc = tex
                                     transient_failed_account_id = account.id
@@ -2484,7 +2484,7 @@ class _StreamingRetryMixin:
                                 )
                             ):
                                 await asyncio.sleep(admission_retry_jitter_seconds())
-                                note_admission_failover(account.id)
+                                note_admission_failover(account.id, request_id=request_id)
                                 admission_failover_used = True
                                 await proxy._handle_stream_error(
                                     account,

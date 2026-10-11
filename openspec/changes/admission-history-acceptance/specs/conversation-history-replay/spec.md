@@ -36,3 +36,22 @@ The proxy SHALL cache completed turns of an in-flight conversation and, before a
 #### Scenario: The close still counts
 - **WHEN** upstream closes with code 1000 before any output and a history replay is staged
 - **THEN** that close still counts toward the owning account's admission breaker
+
+## ADDED Requirements
+
+### Requirement: Shutdown releases the cache and requeued bridge waits
+
+On graceful shutdown the proxy SHALL close the conversation history cache so unflushed turns are persisted and its SQLite connection and maintenance thread exit. A bridge request that was placed back on the pending queue to wait for another upstream event SHALL be completed or cancelled when shutdown begins, so the in-flight drain does not wait out its timeout for that request.
+
+#### Scenario: Shutdown persists and closes the history cache
+- **GIVEN** the cache holds an unflushed completed turn and its maintenance thread is running
+- **WHEN** the application lifespan shuts down
+- **THEN** that turn is present in the cache file
+- **AND** the cache connection is closed and the maintenance thread has exited
+
+#### Scenario: A silent requeued bridge request ends at shutdown
+- **GIVEN** a bridge request was requeued onto the pending deque and is waiting for another upstream event
+- **AND** the upstream sends no further event
+- **WHEN** the application lifespan shuts down
+- **THEN** that request receives a terminal failure
+- **AND** shutdown finishes without waiting out the in-flight drain timeout

@@ -3085,6 +3085,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 await _send_http_bridge_request_text_with_archive_id(session, request_state, retry_text_data)
             _clear_websocket_request_error_overrides(request_state)
             session.last_used_at = _service_time().monotonic()
+            request_state.requeued_pending_upstream = True
             return True
         except UpstreamWebSocketTransportError:
             # The new socket may have accepted response.create. Let the reader
@@ -3520,6 +3521,7 @@ class _HTTPBridgeRequestSubmitMixin:
             await _send_http_bridge_request_text_with_archive_id(session, request_state, request_text)
             session.last_used_at = _service_time().monotonic()
             request_state.clean_close_retry_result = True
+            request_state.requeued_pending_upstream = True
             return True
         except asyncio.CancelledError:
             request_state.clean_close_retry_result = False

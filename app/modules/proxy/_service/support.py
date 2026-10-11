@@ -1047,6 +1047,10 @@ class _WebSocketRequestState:
     request_text: str | None = None
     replay_count: int = 0
     history_replay_used: bool = False
+    # Set when a bridge retry puts this request back on the pending deque
+    # and returns to wait for another upstream event. Shutdown fails these
+    # waits so a silent upstream cannot hold the in-flight drain open.
+    requeued_pending_upstream: bool = False
     # Counts only the one extra replay permitted after the initial recovery
     # replay when the replacement upstream socket also closes cleanly before
     # producing any response event.

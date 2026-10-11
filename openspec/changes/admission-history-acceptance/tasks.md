@@ -3,3 +3,5 @@
 - [x] Count HTTP SSE pre-token cuts once, and wire the HTTP bridge
 - [x] Stop extending an already-open breaker; log the half-open transition once
 - [x] Show breaker cards, the cache card, and the request outcome column
+- [x] Record HTTP admission failover on the request id so it cannot stack with history replay
+- [x] Fail requeued bridge waits at shutdown and close the history cache
