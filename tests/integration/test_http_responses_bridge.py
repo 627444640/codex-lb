@@ -13882,7 +13882,13 @@ async def test_v1_responses_http_bridge_send_failure_returns_upstream_unavailabl
         "bridge_continuity_persistence_failed",
     )
     assert "previous_response_not_found" not in second.json()["error"].get("code", "")
-    assert connect_count == 1
+    # The completed first turn is in the history cache, so the pre-output
+    # send failure is resent once without previous_response_id. The
+    # replacement socket fails too, and there is no third connect.
+    assert connect_count == 2
+    replay_payload = json.loads(failing_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    assert "hello" in json.dumps(replay_payload["input"])
 
 
 @pytest.mark.asyncio
@@ -13996,7 +14002,13 @@ async def test_v1_responses_http_bridge_precreated_disconnect_returns_upstream_u
     assert second.status_code == 502
     assert second.json()["error"]["code"] in ("upstream_unavailable", "stream_incomplete", "upstream_request_timeout")
     assert "previous_response_not_found" not in second.json()["error"].get("code", "")
-    assert connect_count == 1
+    # The completed first turn is in the history cache, so the pre-output
+    # close is resent once without previous_response_id. The replacement
+    # socket closes too, and that second close is not resent.
+    assert connect_count == 2
+    replay_payload = json.loads(precreated_close_upstream.sent_text[-1])
+    assert "previous_response_id" not in replay_payload
+    assert "hello" in json.dumps(replay_payload["input"])
 
 
 @pytest.mark.asyncio

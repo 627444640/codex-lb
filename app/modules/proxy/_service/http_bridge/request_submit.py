@@ -3328,6 +3328,12 @@ class _HTTPBridgeRequestSubmitMixin:
                 request_text = request_state.request_text or ""
                 account_bound_replay = False
                 require_preferred_reconnect = False
+                # Count this resend before the replacement socket is sent to.
+                # A close inside send_text is observed by the reader before
+                # this function returns, and a still-zero replay_count would
+                # start another reconnect and never finish.
+                if request_state.replay_count < 1:
+                    request_state.replay_count += 1
             else:
                 # Account-scoped uploaded files cannot be replayed on a
                 # different owner. Keep the preferred account mandatory for
