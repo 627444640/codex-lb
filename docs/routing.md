@@ -47,6 +47,14 @@ When enabled and several accounts are otherwise eligible, selection is restricte
 
 Limit warm-up sends **one small real request** (using the configured warm-up model and prompt) to an opted-in account when one of its quota windows is confirmed to have newly reset, verifying that the account responds. It consumes a small amount of quota. The optional staggered idle mode additionally pre-starts the 5h window of idle opted-in accounts before traffic arrives; the configured cooldown applies to these staggered idle probes, while ordinary reset-confirmed probes fire once per confirmed reset. Accounts opt in individually (`Enable warm-up` in account actions); the last attempt's result, model, and time are shown on the account list entry.
 
+### Admission breaker
+
+When an account returns repeated upstream `server_error`, `server_is_overloaded`, or an authored websocket close before any output, new requests stop landing on it for a few minutes. One half-open probe then checks recovery. A failure that happens before any output is forwarded is retried once, after a short jitter, on a different healthy account. After any output has been forwarded, the client sees the failure and the log records it as output interrupted mid-stream.
+
+Requests bound to a `previous_response_id`, an uploaded file, or single-account routing stay on that owner. They are not moved to another account. Client disconnects, context-length errors, invalid requests, and frame-less closes (missing close code or 1006) do not open the breaker.
+
+`GET /api/accounts/admission-breakers` reports each account as `closed`, `open`, or `half_open`, with `openUntil` and the error rate over the last hour and the last 24 hours. Breaker phase is local to the replica that handled the failures. The error rates are read from shared request logs.
+
 ---
 
-*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
+*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [account-admission-breaker](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-admission-breaker) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*

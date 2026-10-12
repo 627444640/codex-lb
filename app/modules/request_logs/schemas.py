@@ -75,6 +75,8 @@ class RequestLogEntry(DashboardModel):
     generation_tps: float | None = None
     generation_tps_status: GenerationTpsStatus = "missing_timing"
     latency_queue_ms: int | None = None
+    admission_failover_retried: bool | None = None
+    admission_failover_from_account_id: str | None = None
 
 
 class RequestLogConversation(DashboardModel):

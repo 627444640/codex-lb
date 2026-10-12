@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
 
@@ -22,9 +24,12 @@ from app.core.middleware.multipart_content_encoding import raise_for_unsupported
 from app.core.multipart import ACCOUNT_IMPORT_MULTIPART_POLICY, bounded_multipart_form, read_bounded_upload
 from app.core.multipart_fields import required_upload
 from app.core.upstream_proxy import UpstreamProxyRouteError
+from app.core.utils.time import utcnow
 from app.dependencies import AccountsContext, get_accounts_context, get_proxy_service_for_app
 from app.modules.accounts.repository import AccountIdentityConflictError
 from app.modules.accounts.schemas import (
+    AccountAdmissionBreakersResponse,
+    AccountAdmissionBreakerStatus,
     AccountAliasRequest,
     AccountAliasResponse,
     AccountAuthExportResponse,
@@ -55,6 +60,11 @@ from app.modules.accounts.service import (
     AccountUsageResetCreditsUnavailableError,
     InvalidAuthJsonError,
 )
+from app.modules.proxy._load_balancer.admission_breaker import (
+    AdmissionBreakerPolicy,
+    snapshot_admission_breaker,
+)
+from app.modules.request_logs.repository import RequestLogsRepository
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +113,65 @@ async def list_accounts(
 ) -> AccountsResponse:
     accounts = await context.service.list_accounts()
     return AccountsResponse(accounts=accounts)
+
+
+@router.get("/admission-breakers", response_model=AccountAdmissionBreakersResponse)
+async def list_admission_breakers(
+    request: Request,
+    context: AccountsContext = Depends(get_accounts_context),
+) -> AccountAdmissionBreakersResponse:
+    """Replica-local admission breaker phase plus request-log error rates.
+
+    ``open_until`` is the instant the breaker returns to half-open. It is in
+    the future while the breaker is open, in the past while half-open, and
+    null while closed. Error rates are null when the window has no requests.
+    Each replica reports its own breaker; the rates come from shared logs.
+    """
+
+    policy = AdmissionBreakerPolicy.from_settings()
+    now = time.time()
+    windows = await RequestLogsRepository(context.session).account_error_window_counts(now=utcnow())
+    service = getattr(request.app.state, "proxy_service", None)
+    balancer = getattr(service, "_load_balancer", None)
+    snapshot_fn = getattr(balancer, "admission_breaker_snapshots", None)
+    snapshots = snapshot_fn() if snapshot_fn is not None else {}
+    rows: list[AccountAdmissionBreakerStatus] = []
+    for account in await context.repository.list_accounts():
+        snapshot = snapshots.get(account.id)
+        if snapshot is None:
+            snapshot = snapshot_admission_breaker(None, now, policy)
+        window = windows.get(account.id)
+        requests_1h = 0 if window is None else window.requests_1h
+        errors_1h = 0 if window is None else window.errors_1h
+        requests_24h = 0 if window is None else window.requests_24h
+        errors_24h = 0 if window is None else window.errors_24h
+        open_until = None
+        if snapshot.open_until is not None:
+            open_until = datetime.fromtimestamp(snapshot.open_until, tz=timezone.utc)
+        rows.append(
+            AccountAdmissionBreakerStatus(
+                account_id=account.id,
+                state=snapshot.state,
+                consecutive_failures=snapshot.consecutive_failures,
+                window_failures=snapshot.window_failures,
+                open_until=open_until,
+                probe_in_flight=snapshot.probe_in_flight,
+                error_rate_1h=None if requests_1h == 0 else errors_1h / requests_1h,
+                error_rate_24h=None if requests_24h == 0 else errors_24h / requests_24h,
+                requests_1h=requests_1h,
+                errors_1h=errors_1h,
+                requests_24h=requests_24h,
+                errors_24h=errors_24h,
+            )
+        )
+    rows.sort(key=lambda row: row.account_id)
+    return AccountAdmissionBreakersResponse(
+        enabled=policy.enabled,
+        failure_threshold=policy.failure_threshold,
+        window_seconds=policy.window_seconds,
+        open_seconds=policy.open_seconds,
+        accounts=rows,
+    )
 
 
 @router.get("/{account_id}/trends", response_model=AccountTrendsResponse)

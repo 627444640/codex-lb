@@ -69,6 +69,15 @@ class RequestLogUsageUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class AccountErrorWindowCounts:
+    account_id: str
+    requests_1h: int
+    errors_1h: int
+    requests_24h: int
+    errors_24h: int
+
+
+@dataclass(frozen=True, slots=True)
 class _RequestLogFilters:
     conditions: list
     needs_related_search_joins: bool
@@ -995,6 +1004,47 @@ class RequestLogsRepository:
             return rollup_earliest
         return raw_earliest
 
+    async def account_error_window_counts(self, *, now: datetime) -> dict[str, AccountErrorWindowCounts]:
+        """Non-deleted request counts and error counts per account for 1h and 24h.
+
+        An error is any status outside ``NON_ERROR_STATUSES`` (success and
+        cancelled). Accounts with no rows in the 24h window are omitted.
+        """
+
+        since_24h = now - timedelta(hours=24)
+        since_1h = now - timedelta(hours=1)
+        is_error = RequestLog.status.notin_(NON_ERROR_STATUSES)
+        in_last_hour = RequestLog.requested_at >= since_1h
+        stmt = (
+            select(
+                RequestLog.account_id,
+                func.count().label("requests_24h"),
+                func.coalesce(func.sum(case((is_error, 1), else_=0)), 0).label("errors_24h"),
+                func.coalesce(func.sum(case((in_last_hour, 1), else_=0)), 0).label("requests_1h"),
+                func.coalesce(func.sum(case((and_(in_last_hour, is_error), 1), else_=0)), 0).label("errors_1h"),
+            )
+            .where(
+                RequestLog.deleted_at.is_(None),
+                RequestLog.requested_at >= since_24h,
+                RequestLog.account_id.is_not(None),
+            )
+            .group_by(RequestLog.account_id)
+        )
+        result = await self._session.execute(stmt)
+        counts: dict[str, AccountErrorWindowCounts] = {}
+        for row in result.all():
+            account_id = row.account_id
+            if not isinstance(account_id, str) or not account_id:
+                continue
+            counts[account_id] = AccountErrorWindowCounts(
+                account_id=account_id,
+                requests_1h=int(row.requests_1h or 0),
+                errors_1h=int(row.errors_1h or 0),
+                requests_24h=int(row.requests_24h or 0),
+                errors_24h=int(row.errors_24h or 0),
+            )
+        return counts
+
     async def add_log(
         self,
         account_id: str | None,
@@ -1050,6 +1100,8 @@ class RequestLogsRepository:
         upstream_proxy_endpoint_id: str | None = None,
         upstream_proxy_fallback_used: bool | None = None,
         upstream_proxy_fail_closed_reason: str | None = None,
+        admission_failover_retried: bool | None = None,
+        admission_failover_from_account_id: str | None = None,
         archive_request_id: str | None = None,
         cache_write_tokens: int | None = None,
         actual_model: str | None = None,
@@ -1126,6 +1178,8 @@ class RequestLogsRepository:
                 upstream_proxy_endpoint_id=upstream_proxy_endpoint_id,
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
+                admission_failover_retried=admission_failover_retried,
+                admission_failover_from_account_id=admission_failover_from_account_id,
                 requested_at=requested_at or utcnow(),
             )
             # Legacy callers may still pass a monetary override. New internal

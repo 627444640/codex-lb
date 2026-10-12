@@ -527,6 +527,9 @@ class RequestLog(Base):
     upstream_proxy_endpoint_id: Mapped[str | None] = mapped_column(String, nullable=True)
     upstream_proxy_fallback_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     upstream_proxy_fail_closed_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set on rows written after the admission breaker. NULL on older rows.
+    admission_failover_retried: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    admission_failover_from_account_id: Mapped[str | None] = mapped_column(String, nullable=True)
     account: Mapped[Account | None] = relationship(
         "Account",
         back_populates="request_logs",

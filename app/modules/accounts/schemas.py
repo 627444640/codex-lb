@@ -135,6 +135,29 @@ class AccountsResponse(DashboardModel):
     accounts: List[AccountSummary] = Field(default_factory=list)
 
 
+class AccountAdmissionBreakerStatus(DashboardModel):
+    account_id: str
+    state: str
+    consecutive_failures: int
+    window_failures: int
+    open_until: datetime | None = None
+    probe_in_flight: bool = False
+    error_rate_1h: float | None = None
+    error_rate_24h: float | None = None
+    requests_1h: int = 0
+    errors_1h: int = 0
+    requests_24h: int = 0
+    errors_24h: int = 0
+
+
+class AccountAdmissionBreakersResponse(DashboardModel):
+    enabled: bool
+    failure_threshold: int
+    window_seconds: float
+    open_seconds: float
+    accounts: list[AccountAdmissionBreakerStatus] = Field(default_factory=list)
+
+
 class AccountImportResponse(DashboardModel):
     account_id: str
     email: str

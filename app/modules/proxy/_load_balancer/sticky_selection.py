@@ -26,6 +26,10 @@ from app.core.balancer import (
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.proxy._load_balancer.admission_breaker import (
+    filter_admission_breaker_candidates,
+    sticky_admission_alternatives,
+)
 from app.modules.proxy._load_balancer.overload_backoff import (
     filter_overload_backoff_candidates,
     isolation_substitute_seed,
@@ -1589,6 +1593,29 @@ async def _select_with_stickiness(
                 # ``overload_reroute_request_local`` and keeps the mapping.
                 reallocate_sticky = True
             elif not ((budget_pressured or rate_limit_far_away) and burn_first_reallocate):
+                admission_alternatives = sticky_admission_alternatives(
+                    states,
+                    overload_backoff_runtime,
+                    owner_account_id=pinned.account_id,
+                    now=now,
+                    routing_strategy=routing_strategy,
+                )
+                if admission_alternatives:
+                    alternative = _choose_from(admission_alternatives)
+                    if alternative.account is not None and alternative.account.account_id != pinned.account_id:
+                        # Request-local: the sticky row stays on the owner so
+                        # the thread returns when the breaker closes.
+                        return finish_selection(alternative)
+                elif admission_alternatives is not None and any(
+                    state.account_id != pinned.account_id for state in states
+                ):
+                    return finish_selection(
+                        SelectionResult(
+                            None,
+                            "No available accounts",
+                            error_code="account_admission_breaker_open",
+                        )
+                    )
                 pinned_result = select_account(
                     [pinned],
                     prefer_earlier_reset=prefer_earlier_reset_accounts,
@@ -1785,13 +1812,58 @@ async def _select_with_stickiness(
     if overload_reroute is not None and overload_reroute_pool is not None:
         fallback_candidates = overload_reroute_pool
         chosen = overload_reroute
+        if isinstance(overload_backoff_runtime, dict):
+            kept = filter_admission_breaker_candidates(
+                fallback_candidates,
+                overload_backoff_runtime,
+                now=time.time(),
+            )
+            if kept is not fallback_candidates:
+                if kept:
+                    replacement = _choose_from(kept)
+                    if replacement.account is not None:
+                        chosen = replacement
+                        fallback_candidates = kept
+                else:
+                    chosen = SelectionResult(
+                        None,
+                        "No available accounts",
+                        error_code="account_admission_breaker_open",
+                    )
     else:
         if overload_backoff_runtime is not None:
             fallback_candidates = filter_overload_backoff_candidates(states, overload_backoff_runtime, now=time.time())
-        chosen = _choose_from(fallback_candidates)
-        if chosen.account is None and fallback_candidates is not states:
-            fallback_candidates = states
-            chosen = _choose_from(states)
+        runtime_for_admission = overload_backoff_runtime if isinstance(overload_backoff_runtime, dict) else {}
+        admission_candidates = filter_admission_breaker_candidates(
+            fallback_candidates,
+            runtime_for_admission,
+            now=time.time(),
+        )
+        if admission_candidates is not fallback_candidates and not admission_candidates:
+            chosen = SelectionResult(
+                None,
+                "No available accounts",
+                error_code="account_admission_breaker_open",
+            )
+        else:
+            if admission_candidates is not fallback_candidates:
+                fallback_candidates = admission_candidates
+            chosen = _choose_from(fallback_candidates)
+            if chosen.account is None and fallback_candidates is not states:
+                widened = filter_admission_breaker_candidates(
+                    states,
+                    runtime_for_admission,
+                    now=time.time(),
+                )
+                if not widened:
+                    chosen = SelectionResult(
+                        None,
+                        "No available accounts",
+                        error_code="account_admission_breaker_open",
+                    )
+                else:
+                    fallback_candidates = widened
+                    chosen = _choose_from(widened)
         # When an *isolated* owner's mapping is being kept while it sits out
         # this turn -- cap-filtered or excluded by this request's retry loop,
         # so it never reached ``selection_states`` and the isolation branch

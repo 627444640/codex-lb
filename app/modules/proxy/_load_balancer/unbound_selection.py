@@ -17,6 +17,7 @@ from app.core.balancer import (
     TrafficClass,
 )
 from app.db.models import Account, AccountStatus
+from app.modules.proxy._load_balancer.admission_breaker import filter_admission_breaker_candidates
 from app.modules.proxy._load_balancer.overload_backoff import filter_overload_backoff_candidates
 from app.modules.proxy._load_balancer.sticky_selection import (
     SelectionInputsProtocol,
@@ -239,6 +240,26 @@ async def run_unbound_selection_path(
                 if result.account is None and overload_free_states is not selection_states:
                     effective_states = selection_states
                     result = _select_from(selection_states)
+                # Admission open accounts are not a preference reorder. A hard
+                # pin (``required_account_id``) keeps its owner; every other
+                # fresh admission must not fall back onto an open account.
+                if required_account_id is None:
+                    admission_states = filter_admission_breaker_candidates(
+                        effective_states,
+                        owner._runtime,
+                        now=time.time(),
+                    )
+                    if admission_states is not effective_states:
+                        if not admission_states:
+                            result = SelectionResult(
+                                None,
+                                "No available accounts",
+                                error_code="account_admission_breaker_open",
+                            )
+                            effective_states = []
+                        else:
+                            effective_states = admission_states
+                            result = _select_from(admission_states)
                 if (
                     result.account is None
                     and result.error_code is None

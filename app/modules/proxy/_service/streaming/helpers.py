@@ -64,6 +64,7 @@ from app.db.models import (
     AccountStatus,  # noqa: F401
 )
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
+from app.modules.proxy._load_balancer.admission_breaker import record_upstream_admission_failure
 from app.modules.proxy._load_balancer.overload_backoff import UPSTREAM_OVERLOAD_CODES, record_upstream_overload
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
@@ -911,6 +912,7 @@ async def _handle_stream_error(
     http_status: int | None = None,
     *,
     privacy_policy: CodexControlRequestPrivacyPolicy = CodexControlRequestPrivacyPolicy.STANDARD,
+    pre_first_output_close: bool = False,
 ) -> ClassifiedFailure:
     classified = classify_upstream_failure(
         error_code=code,
@@ -955,6 +957,13 @@ async def _handle_stream_error(
                 account,
                 redact_account_id=privacy_policy.redacts_sensitive_details,
             )
+        await record_upstream_admission_failure(
+            proxy._load_balancer,
+            account,
+            error_code=code,
+            http_status=http_status,
+            pre_first_output_close=pre_first_output_close,
+        )
     return classified
 
 

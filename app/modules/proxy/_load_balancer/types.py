@@ -41,6 +41,14 @@ class RuntimeState:
     # minute bucket -> [successes, failures], pruned to the configured window.
     # Feeds the selection weight multiplier; replica-local, never persisted.
     outcome_buckets: dict[int, list[int]] | None = None
+    # Admission breaker (see ``_load_balancer/admission_breaker.py``).
+    # Replica-local. Successes do not clear ``admission_failure_times`` while
+    # the breaker is closed, so N failures inside the window still trip.
+    admission_failure_times: list[float] | None = None
+    admission_consecutive_failures: int = 0
+    admission_open_until: float | None = None
+    admission_probe_in_flight: bool = False
+    admission_probe_started_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

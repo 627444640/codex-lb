@@ -76,7 +76,13 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # wrapper requires password/API-key invariants while ordinary installations
 # retain removable authentication and alternative auth modes; a global default
 # would break those existing installations. Guest permissions remain unchanged.
-MAX_SETTINGS_FIELDS = 132
+# 132 -> 136: account admission breaker enable, threshold, window, and open
+# interval. The feature is on with working defaults (3 failures / 60s / 300s)
+# so a sick account leaves new assignment without setup. The knobs stay
+# settable because a two-account pool and the length of an upstream burst are
+# not the same on every install; hardcoding them would force a deploy to
+# widen or shorten the hold. They are omitted from .env.example.
+MAX_SETTINGS_FIELDS = 136
 
 
 def test_generated_settings_reference_matches_code() -> None:

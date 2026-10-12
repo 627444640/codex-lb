@@ -9,6 +9,7 @@ import anyio
 
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, proxy_phase_latency_seconds
 from app.modules.api_keys.service import ApiKeyData
+from app.modules.proxy._load_balancer.admission_breaker import current_admission_failover
 from app.modules.proxy.affinity import _extract_model_class
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
 from app.modules.request_logs.repository import RequestLogUsageUpdate
@@ -229,6 +230,7 @@ class _RequestLogMixin:
         client_ip: str | None = None,
         archive_request_id: str | None = None,
     ) -> None:
+        failover = current_admission_failover()
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,
@@ -281,6 +283,8 @@ class _RequestLogMixin:
                 useragent_group=useragent_group,
                 conversation_id=conversation_id,
                 client_ip=client_ip,
+                admission_failover_retried=failover is not None,
+                admission_failover_from_account_id=None if failover is None else failover.from_account_id,
             ),
             name=f"proxy-request-log-{request_id}",
         )
@@ -464,6 +468,8 @@ class _RequestLogMixin:
         useragent_group: str | None = None,
         conversation_id: str | None = None,
         client_ip: str | None = None,
+        admission_failover_retried: bool | None = None,
+        admission_failover_from_account_id: str | None = None,
     ) -> None:
         proxy = cast(_RequestLogServiceProtocol, self)
         try:
@@ -519,6 +525,8 @@ class _RequestLogMixin:
                     useragent_group=useragent_group,
                     conversation_id=conversation_id,
                     client_ip=client_ip,
+                    admission_failover_retried=admission_failover_retried,
+                    admission_failover_from_account_id=admission_failover_from_account_id,
                 )
         except Exception:
             logger.warning(

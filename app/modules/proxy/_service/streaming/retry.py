@@ -33,6 +33,14 @@ from app.core.utils.retry import backoff_seconds
 from app.core.utils.sse import format_sse_event
 from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
+from app.modules.proxy._load_balancer.admission_breaker import (
+    AdmissionFailoverAction,
+    admission_retry_jitter_seconds,
+    authored_pre_output_close,
+    counts_as_admission_failure,
+    note_admission_failover,
+    plan_admission_failover,
+)
 from app.modules.proxy._load_balancer.overload_backoff import UPSTREAM_OVERLOAD_CODES
 from app.modules.proxy._service.observability import (
     _maybe_log_proxy_request_shape,
@@ -262,6 +270,64 @@ def _payload_size_estimate_bytes(payload: ResponsesRequest) -> int:
     return len(json.dumps(payload.to_payload(), ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
 
 
+def _stream_continuity_pinned(
+    *,
+    require_preferred_account: bool,
+    file_preferred_account_id: str | None,
+    account_id: str,
+    routing_strategy: str,
+) -> bool:
+    """True when this request must stay on the account that just failed."""
+
+    if require_preferred_account or routing_strategy == "single_account":
+        return True
+    return file_preferred_account_id is not None and account_id == file_preferred_account_id
+
+
+def _http_stream_admission_plan(
+    *,
+    error_code: str,
+    http_status: int | None,
+    error_message: str | None,
+    downstream_visible: bool,
+    already_retried: bool,
+    continuity_pinned: bool,
+    attempts_remaining: bool,
+) -> str:
+    pre_close = (not downstream_visible) and authored_pre_output_close(
+        close_code=None,
+        message=error_message,
+    )
+    return plan_admission_failover(
+        error_code=error_code,
+        http_status=http_status,
+        downstream_visible=downstream_visible,
+        already_retried=already_retried,
+        continuity_pinned=continuity_pinned,
+        attempts_remaining=attempts_remaining,
+        pre_first_output_close=pre_close,
+    )
+
+
+def _http_status_500_same_account_retry_pending(
+    exc: BaseException,
+    *,
+    transient_retries: int,
+    max_retries: int,
+    budget_remaining: bool,
+    downstream_visible: bool,
+) -> bool:
+    """HTTP 500 still uses the same-account budget before a cross-account move.
+
+    ``transient_retries`` is how many replays have already started. One more
+    replay fits while that count plus one is still below ``max_retries``.
+    """
+
+    if not isinstance(exc, ProxyResponseError) or exc.status_code != 500:
+        return False
+    return transient_retries + 1 < max_retries and budget_remaining and not downstream_visible
+
+
 def _transient_retry_error_code(tex: BaseException) -> str:
     """Error code the same-account transient retry loop aggregates under.
 
@@ -416,6 +482,7 @@ class _StreamingRetryMixin:
         current_account_lease: AccountLease | None = None
         last_security_work_retry_error: _RetryableStreamError | None = None
         excluded_account_ids: set[str] = set()
+        admission_failover_used = False
         transient_failed_account_id: str | None = None
         hard_affinity_same_owner_retry_attempted = False
         deferred_capacity_account: Account | None = None
@@ -2037,6 +2104,17 @@ class _StreamingRetryMixin:
                                     account.id,
                                     error_code,
                                 )
+                                if counts_as_admission_failure(
+                                    error_code or "",
+                                    tex.status_code if isinstance(tex, ProxyResponseError) else None,
+                                    pre_first_output_close=False,
+                                ):
+                                    _facade().logger.warning(
+                                        "output interrupted mid-stream request_id=%s account_id=%s code=%s",
+                                        request_id,
+                                        account.id,
+                                        error_code,
+                                    )
                                 settlement.record_success = False
                                 settlement.error_code = error_code
                                 settlement.error_message = error_message
@@ -2245,6 +2323,33 @@ class _StreamingRetryMixin:
                                     action,
                                 )
                                 if action == "failover_next":
+                                    admission_plan = _http_stream_admission_plan(
+                                        error_code=code,
+                                        http_status=tex.status_code,
+                                        error_message=error_message,
+                                        downstream_visible=settlement.downstream_visible,
+                                        already_retried=admission_failover_used,
+                                        continuity_pinned=_stream_continuity_pinned(
+                                            require_preferred_account=require_preferred_account,
+                                            file_preferred_account_id=file_preferred_account_id,
+                                            account_id=account.id,
+                                            routing_strategy=routing_strategy,
+                                        ),
+                                        attempts_remaining=attempt < max_attempts - 1,
+                                    )
+                                    if admission_plan == AdmissionFailoverAction.SURFACE:
+                                        failed_response_id = settlement.response_id or request_id
+                                        event = response_failed_event(
+                                            code or "upstream_error",
+                                            error_message or "Upstream error",
+                                            response_id=failed_response_id,
+                                        )
+                                        yield format_sse_event(event)
+                                        return
+                                    if admission_plan == AdmissionFailoverAction.FAILOVER_ONCE:
+                                        await asyncio.sleep(admission_retry_jitter_seconds())
+                                        note_admission_failover(account.id)
+                                        admission_failover_used = True
                                     last_transient_exc = tex
                                     transient_failed_account_id = account.id
                                     await _release_tracked_stream_lease(current_account_lease)
@@ -2277,6 +2382,76 @@ class _StreamingRetryMixin:
                                 await _settle_process_network_budget_exhaustion(account, settlement)
                                 yield format_sse_event(_facade()._proxy_request_timeout_event(request_id))
                                 return
+                            pre_close = (not settlement.downstream_visible) and authored_pre_output_close(
+                                close_code=None,
+                                message=error_message,
+                            )
+                            admission_plan = _http_stream_admission_plan(
+                                error_code=error_code,
+                                http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
+                                error_message=error_message,
+                                downstream_visible=settlement.downstream_visible,
+                                already_retried=admission_failover_used,
+                                continuity_pinned=_stream_continuity_pinned(
+                                    require_preferred_account=require_preferred_account,
+                                    file_preferred_account_id=file_preferred_account_id,
+                                    account_id=account.id,
+                                    routing_strategy=routing_strategy,
+                                ),
+                                attempts_remaining=attempt < max_attempts - 1,
+                            )
+                            if admission_plan == AdmissionFailoverAction.SURFACE:
+                                if settlement.downstream_visible:
+                                    _facade().logger.warning(
+                                        "output interrupted mid-stream request_id=%s account_id=%s code=%s",
+                                        request_id,
+                                        account.id,
+                                        error_code,
+                                    )
+                                await proxy._handle_stream_error(
+                                    account,
+                                    error_payload,
+                                    error_code,
+                                    http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
+                                    pre_first_output_close=pre_close,
+                                )
+                                event = response_failed_event(
+                                    error_code or "upstream_error",
+                                    error_message or "Upstream error",
+                                    response_id=settlement.response_id or request_id,
+                                )
+                                yield format_sse_event(event)
+                                return
+                            if admission_plan == AdmissionFailoverAction.FAILOVER_ONCE and not (
+                                _http_status_500_same_account_retry_pending(
+                                    tex,
+                                    transient_retries=transient_retries,
+                                    max_retries=_facade()._MAX_TRANSIENT_SAME_ACCOUNT_RETRIES,
+                                    budget_remaining=_facade()._remaining_budget_seconds(deadline) > 0,
+                                    downstream_visible=settlement.downstream_visible,
+                                )
+                            ):
+                                await asyncio.sleep(admission_retry_jitter_seconds())
+                                note_admission_failover(account.id)
+                                admission_failover_used = True
+                                await proxy._handle_stream_error(
+                                    account,
+                                    error_payload,
+                                    error_code,
+                                    http_status=tex.status_code if isinstance(tex, ProxyResponseError) else None,
+                                    pre_first_output_close=pre_close,
+                                )
+                                # Earlier HTTP 500s on this account were not
+                                # written yet. This call recorded the current
+                                # attempt; record the earlier ones so the
+                                # backoff threshold still sees three.
+                                await proxy._load_balancer.record_errors(account, transient_retries)
+                                if isinstance(tex, ProxyResponseError):
+                                    last_transient_exc = tex
+                                await _release_tracked_stream_lease(current_account_lease)
+                                current_account_lease = None
+                                excluded_account_ids.add(account.id)
+                                break
                             transient_retries += 1
                             if (
                                 transient_retries < _facade()._MAX_TRANSIENT_SAME_ACCOUNT_RETRIES
