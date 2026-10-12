@@ -24,7 +24,7 @@ import zlib
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from app.core.openai.requests import extract_input_file_ids
 from app.core.types import JsonValue
@@ -37,6 +37,13 @@ HistoryReplayReason = Literal[
     "owner_unavailable",
     "admission_failure",
 ]
+
+
+class _MutableReplayPayload(Protocol):
+    input: JsonValue
+    previous_response_id: str | None
+    conversation: str | None
+
 
 _BATCH_LIMIT = 32
 _MAINTENANCE_INTERVAL_SECONDS = 30.0
@@ -933,7 +940,7 @@ def observe_responses_completion(payload: object, event: object, *, conversation
 
 
 def maybe_apply_model_history_replay(
-    payload: object,
+    payload: _MutableReplayPayload,
     *,
     request_id: str | None,
     reason: HistoryReplayReason,
@@ -965,10 +972,10 @@ def maybe_apply_model_history_replay(
     if replay is None:
         return None
     try:
-        payload.input = replay.request_body.get("input")  # type: ignore[attr-defined]
-        payload.previous_response_id = None  # type: ignore[attr-defined]
+        payload.input = replay.request_body.get("input")
+        payload.previous_response_id = None
         if replay.switch_account:
-            payload.conversation = None  # type: ignore[attr-defined]
+            payload.conversation = None
     except Exception:
         logger.warning("Conversation history replay could not update the request", exc_info=True)
         return None
