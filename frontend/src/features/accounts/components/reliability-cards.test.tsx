@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { I18nextProvider } from "react-i18next";
 
-import { ReliabilityCards, formatRemaining } from "@/features/accounts/components/reliability-cards";
+import { ReliabilityCards } from "@/features/accounts/components/reliability-cards";
+import { formatRemaining } from "@/features/accounts/components/reliability-format";
 import i18n from "@/i18n";
 import type {
   AccountAdmissionBreakersResponse,

@@ -1,30 +1,9 @@
 import { useTranslation } from "react-i18next";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { maskAccountId, requestOutcome } from "@/features/dashboard/components/request-outcome-model";
 import type { RequestLog } from "@/features/dashboard/schemas";
 import { cn } from "@/lib/utils";
-
-export type RequestOutcomeKind = "failover" | "replay" | "error" | "none";
-
-export function maskAccountId(accountId: string): string {
-  if (accountId.length <= 8) {
-    return "••••";
-  }
-  return `${accountId.slice(0, 4)}…${accountId.slice(-4)}`;
-}
-
-export function requestOutcome(request: RequestLog): RequestOutcomeKind {
-  if (request.historyReplayReason) {
-    return "replay";
-  }
-  if (request.admissionFailoverRetried) {
-    return "failover";
-  }
-  if (request.status !== "ok" && request.status !== "cancelled") {
-    return "error";
-  }
-  return "none";
-}
 
 function OutcomeTag({
   label,

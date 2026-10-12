@@ -42,7 +42,8 @@ import {
   type RequestLogColumnId,
   type RequestLogColumnWidths,
 } from "@/features/dashboard/request-log-columns";
-import { RequestOutcomeBadge, requestOutcome } from "@/features/dashboard/components/request-outcome";
+import { requestOutcome } from "@/features/dashboard/components/request-outcome-model";
+import { RequestOutcomeBadge } from "@/features/dashboard/components/request-outcome";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";

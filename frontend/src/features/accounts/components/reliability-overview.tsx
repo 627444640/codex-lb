@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { getAdmissionBreakers, getConversationHistoryCache } from "@/features/accounts/api";
-import { ReliabilityCards, useSecondClock } from "@/features/accounts/components/reliability-cards";
+import { ReliabilityCards } from "@/features/accounts/components/reliability-cards";
+import { useSecondClock } from "@/features/accounts/components/reliability-format";
 
 const REFRESH_MS = 15_000;
 

@@ -10,7 +10,8 @@ import type {
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 import { RequestLogSchema, type RequestLog } from "@/features/dashboard/schemas";
 
-const OPEN_UNTIL = new Date(Date.now() + 4 * 60 * 1000 + 12 * 1000).toISOString();
+const PREVIEW_NOW = Date.now();
+const OPEN_UNTIL = new Date(PREVIEW_NOW + 4 * 60 * 1000 + 12 * 1000).toISOString();
 
 const healthyCache: ConversationHistoryCacheStats = {
   enabled: true,
@@ -212,7 +213,7 @@ export function ReliabilityPreview() {
   }
   return (
     <div className="mx-auto max-w-5xl p-6">
-      <ReliabilityCards breakers={breakers(state)} cache={cacheFor(state)} now={Date.now()} />
+      <ReliabilityCards breakers={breakers(state)} cache={cacheFor(state)} now={PREVIEW_NOW} />
     </div>
   );
 }

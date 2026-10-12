@@ -17225,9 +17225,7 @@ class _ScriptedBridgeUpstream:
         if not self._batches:
             return
         for event in self._batches.popleft():
-            await self._messages.put(
-                _FakeUpstreamMessage("text", text=json.dumps(event, separators=(",", ":")))
-            )
+            await self._messages.put(_FakeUpstreamMessage("text", text=json.dumps(event, separators=(",", ":"))))
 
     async def send_bytes(self, data: bytes) -> None:
         raise AssertionError(f"Unexpected binary frame: {data!r}")
