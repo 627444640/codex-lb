@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import base64
 import json
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
+from sqlalchemy import select
 
 import app.modules.proxy.service as proxy_module
 from app.core.auth import generate_unique_account_id
@@ -22,8 +24,9 @@ from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
 from app.core.openai.models import CompactResponsePayload
 from app.core.utils.request_id import get_request_id
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, RequestLog
 from app.db.session import SessionLocal
+from app.dependencies import get_proxy_service_for_app
 
 pytestmark = pytest.mark.integration
 
@@ -786,6 +789,319 @@ async def test_stream_http_500_failover_does_not_stack_history_replay(async_clie
     assert failed[0]["response"]["error"]["code"] == "server_error"
     assert seen_account_ids == ["acc_h5stack_a", "acc_h5stack_a", "acc_h5stack_a", "acc_h5stack_b"]
     assert seen_previous == ["resp_stack_prev", "resp_stack_prev", "resp_stack_prev", "resp_stack_prev"]
+
+
+# ===========================================================================
+# Streaming — pre-output admission failover of a dispatch-bound body
+# ===========================================================================
+
+# Encrypted reasoning makes the body account-bound at first dispatch. It names
+# no upstream object, so an admission rejection may move it.
+_DISPATCH_BOUND_INPUT = [
+    {"type": "reasoning", "id": "rs_bound_prev", "summary": [], "encrypted_content": "gAAAAB-retained-reasoning"},
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+]
+
+
+def _created_sse_event(response_id: str) -> str:
+    return _sse_event({"type": "response.created", "response": {"id": response_id, "status": "in_progress"}})
+
+
+def _text_delta_sse_event(delta: str) -> str:
+    return _sse_event({"type": "response.output_text.delta", "delta": delta})
+
+
+async def _stream_bound_request(async_client, payload: dict | None = None) -> list[dict]:
+    body = payload or {"model": "gpt-5.1", "instructions": "hi", "input": _DISPATCH_BOUND_INPUT, "stream": True}
+    async with async_client.stream("POST", "/backend-api/codex/responses", json=body) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines() if line]
+    return _extract_events(lines)
+
+
+async def _request_log_rows(app_instance) -> list[RequestLog]:
+    assert await get_proxy_service_for_app(app_instance).drain_persistence_tasks(timeout_seconds=5)
+    async with SessionLocal() as session:
+        result = await session.execute(select(RequestLog))
+        return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_stream_bound_body_overload_before_output_fails_over_to_healthy_account(
+    async_client, app_instance, monkeypatch
+):
+    """The production case: A is overloaded before output and B completes the same body."""
+    owners = {
+        "acc_bound_ok_a": await _import_account(async_client, "acc_bound_ok_a", "bound_ok_a@example.com"),
+        "acc_bound_ok_b": await _import_account(async_client, "acc_bound_ok_b", "bound_ok_b@example.com"),
+    }
+    seen_account_ids: list[str] = []
+    seen_inputs: list[object] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        seen_inputs.append(payload.model_dump(mode="json").get("input"))
+        if len(seen_account_ids) == 1:
+            yield _created_sse_event("resp_bound_ok_a")
+            yield _overload_sse_event("server_is_overloaded")
+            return
+        yield _created_sse_event("resp_bound_ok_b")
+        yield _text_delta_sse_event("ok")
+        yield _success_sse_event("resp_bound_ok_b")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    events = await _stream_bound_request(async_client)
+
+    assert [event["type"] for event in events if event.get("type") in {"response.completed", "response.failed"}] == [
+        "response.completed"
+    ]
+    assert len(seen_account_ids) == 2
+    failed_account, recovered_account = seen_account_ids
+    assert failed_account != recovered_account
+    assert seen_inputs[1] == seen_inputs[0]
+    rows = {row.account_id: row for row in await _request_log_rows(app_instance)}
+    assert set(rows) == {owners[failed_account], owners[recovered_account]}
+    failed_row = rows[owners[failed_account]]
+    assert failed_row.status == "error"
+    assert failed_row.error_code == "server_is_overloaded"
+    assert not failed_row.admission_failover_retried
+    recovered_row = rows[owners[recovered_account]]
+    assert recovered_row.status == "success"
+    assert recovered_row.admission_failover_retried is True
+    assert recovered_row.admission_failover_from_account_id == owners[failed_account]
+
+
+@pytest.mark.asyncio
+async def test_stream_bound_body_overload_without_alternate_surfaces_with_one_row(
+    async_client, app_instance, monkeypatch
+):
+    owner = await _import_account(async_client, "acc_bound_alone", "bound_alone@example.com")
+    seen_account_ids: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        yield _created_sse_event("resp_bound_alone")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    events = await _stream_bound_request(async_client)
+
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert seen_account_ids == ["acc_bound_alone"]
+    rows = await _request_log_rows(app_instance)
+    assert [(row.account_id, row.status, row.error_code) for row in rows] == [(owner, "error", "server_is_overloaded")]
+
+
+@pytest.mark.asyncio
+async def test_stream_bound_body_second_overload_surfaces_without_third_send(async_client, app_instance, monkeypatch):
+    owners = {
+        "acc_bound_twice_a": await _import_account(async_client, "acc_bound_twice_a", "bound_twice_a@example.com"),
+        "acc_bound_twice_b": await _import_account(async_client, "acc_bound_twice_b", "bound_twice_b@example.com"),
+    }
+    seen_account_ids: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        yield _created_sse_event(f"resp_bound_twice_{len(seen_account_ids)}")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    events = await _stream_bound_request(async_client)
+
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert len(seen_account_ids) == 2
+    first, second = seen_account_ids
+    assert first != second
+    rows = {row.account_id: row for row in await _request_log_rows(app_instance)}
+    assert set(rows) == {owners[first], owners[second]}
+    assert not rows[owners[first]].admission_failover_retried
+    assert rows[owners[second]].error_code == "server_is_overloaded"
+    assert rows[owners[second]].admission_failover_retried is True
+    assert rows[owners[second]].admission_failover_from_account_id == owners[first]
+
+
+@pytest.mark.asyncio
+async def test_stream_bound_body_output_started_does_not_fail_over(async_client, app_instance, monkeypatch):
+    owners = {
+        "acc_bound_out_a": await _import_account(async_client, "acc_bound_out_a", "bound_out_a@example.com"),
+        "acc_bound_out_b": await _import_account(async_client, "acc_bound_out_b", "bound_out_b@example.com"),
+    }
+    seen_account_ids: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        yield _created_sse_event("resp_bound_out")
+        yield _text_delta_sse_event("partial")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    events = await _stream_bound_request(async_client)
+
+    assert any(event.get("type") == "response.output_text.delta" for event in events)
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert len(seen_account_ids) == 1
+    rows = await _request_log_rows(app_instance)
+    assert [row.account_id for row in rows] == [owners[seen_account_ids[0]]]
+    assert not rows[0].admission_failover_retried
+
+
+@pytest.mark.asyncio
+async def test_stream_file_pinned_overload_does_not_fail_over(async_client, app_instance, monkeypatch):
+    owner = await _import_account(async_client, "acc_bound_file_a", "bound_file_a@example.com")
+    await _import_account(async_client, "acc_bound_file_b", "bound_file_b@example.com")
+    seen_account_ids: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        yield _created_sse_event("resp_bound_file")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "_resolve_file_account_for_responses", AsyncMock(return_value=owner))
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_file", "file_id": "file_bound_pinned"},
+                    {"type": "input_text", "text": "summarize"},
+                ],
+            }
+        ],
+        "stream": True,
+    }
+
+    events = await _stream_bound_request(async_client, payload)
+
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert seen_account_ids == ["acc_bound_file_a"]
+    rows = await _request_log_rows(app_instance)
+    assert [(row.account_id, row.error_code) for row in rows] == [(owner, "server_is_overloaded")]
+    assert not rows[0].admission_failover_retried
+
+
+@pytest.mark.asyncio
+async def test_stream_anchor_cache_miss_overload_does_not_fail_over(async_client, app_instance, monkeypatch):
+    owner = await _import_account(async_client, "acc_bound_anchor_a", "bound_anchor_a@example.com")
+    await _import_account(async_client, "acc_bound_anchor_b", "bound_anchor_b@example.com")
+    seen_account_ids: list[str] = []
+    seen_previous: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        seen_previous.append(payload.model_dump(mode="json").get("previous_response_id"))
+        yield _created_sse_event("resp_bound_anchor")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(
+        proxy_module.ProxyService, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=owner)
+    )
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": _DISPATCH_BOUND_INPUT,
+        "previous_response_id": "resp_anchor_uncached",
+        "stream": True,
+    }
+
+    events = await _stream_bound_request(async_client, payload)
+
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert seen_account_ids == ["acc_bound_anchor_a"]
+    assert seen_previous == ["resp_anchor_uncached"]
+    rows = await _request_log_rows(app_instance)
+    assert [(row.account_id, row.error_code) for row in rows] == [(owner, "server_is_overloaded")]
+    assert not rows[0].admission_failover_retried
+
+
+@pytest.mark.asyncio
+async def test_stream_history_failover_then_overload_shares_one_resend(
+    async_client, app_instance, monkeypatch, tmp_path
+):
+    """History replay moves the turn once. A second overload is returned, not resent again."""
+    from app.modules.proxy.conversation_history import ConversationHistoryCache, set_conversation_history_cache
+
+    owners = {
+        "acc_bound_hist_a": await _import_account(async_client, "acc_bound_hist_a", "bound_hist_a@example.com"),
+        "acc_bound_hist_b": await _import_account(async_client, "acc_bound_hist_b", "bound_hist_b@example.com"),
+    }
+    cache = ConversationHistoryCache(
+        tmp_path / "conversation_history.db",
+        enabled=True,
+        max_bytes=1024**3,
+        conversation_max_bytes=32 * 1024 * 1024,
+        idle_ttl_seconds=1800,
+        min_free_disk_bytes=1,
+        start_maintenance=False,
+        disk_free=10 * 1024**3,
+    )
+    set_conversation_history_cache(cache)
+    assert cache.record_completed_turn(
+        request_body={
+            "model": "gpt-5.1",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "kept"}]}],
+        },
+        response_id="resp_bound_hist_prev",
+        output_items=[
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "ok"}]},
+        ],
+    )
+    seen_account_ids: list[str] = []
+    seen_previous: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False):
+        seen_account_ids.append(account_id)
+        seen_previous.append(payload.model_dump(mode="json").get("previous_response_id"))
+        yield _created_sse_event(f"resp_bound_hist_{len(seen_account_ids)}")
+        yield _overload_sse_event("server_is_overloaded")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(
+        proxy_module.ProxyService,
+        "_resolve_websocket_previous_response_owner",
+        AsyncMock(return_value=owners["acc_bound_hist_a"]),
+    )
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": _DISPATCH_BOUND_INPUT,
+        "previous_response_id": "resp_bound_hist_prev",
+        "stream": True,
+    }
+
+    events = await _stream_bound_request(async_client, payload)
+
+    failed = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failed) == 1
+    assert failed[0]["response"]["error"]["code"] == "server_is_overloaded"
+    assert seen_account_ids == ["acc_bound_hist_a", "acc_bound_hist_b"]
+    assert seen_previous == ["resp_bound_hist_prev", None]
+    rows = {row.account_id: row for row in await _request_log_rows(app_instance)}
+    assert set(rows) == set(owners.values())
+    assert not rows[owners["acc_bound_hist_a"]].admission_failover_retried
+    assert rows[owners["acc_bound_hist_a"]].history_replay_reason is None
+    replayed = rows[owners["acc_bound_hist_b"]]
+    assert replayed.admission_failover_retried is True
+    assert replayed.admission_failover_from_account_id == owners["acc_bound_hist_a"]
+    assert replayed.history_replay_reason == "admission_failure"
 
 
 @pytest.mark.asyncio
