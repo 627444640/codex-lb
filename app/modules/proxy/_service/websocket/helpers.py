@@ -1062,6 +1062,7 @@ def _websocket_precreated_retry_error_code(
             request_state,
             event_type=event_type,
             error_code=normalized_error_code,
+            payload_response_id=_websocket_response_id(None, payload),
             payload=payload,
             has_other_pending_requests=has_other_pending_requests,
         )

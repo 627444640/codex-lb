@@ -254,6 +254,7 @@ def _websocket_accepted_admission_retry_error_code(
     *,
     event_type: str | None,
     error_code: str | None,
+    payload_response_id: str | None,
     payload: dict[str, JsonValue] | None,
     has_other_pending_requests: bool,
 ) -> str | None:
@@ -267,6 +268,8 @@ def _websocket_accepted_admission_retry_error_code(
     """
 
     if event_type not in _TERMINAL_EVENT_TYPES:
+        return None
+    if payload_response_id is not None and payload_response_id != request_state.response_id:
         return None
     if has_other_pending_requests or request_state.last_downstream_sequence_number is not None:
         return None

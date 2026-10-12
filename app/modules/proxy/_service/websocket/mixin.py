@@ -5815,6 +5815,9 @@ class _WebSocketMixin:
                     upstream_control.suppress_downstream_event = True
                     upstream_control.replay_request_state = request_state
                     return downstream_text
+                # No cached history. The original previous_response_id cannot
+                # be sent to another account, so the terminal is surfaced.
+                retry_error_code = None
             else:
                 # An anchored turn can leave only by replaying cached history
                 # without previous_response_id. A cache miss for server_error

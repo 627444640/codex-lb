@@ -792,6 +792,16 @@ async def test_accepted_admission_cache_miss_surfaces_without_failover(
             "item": {"id": "fc_1", "type": "function_call", "name": "lookup", "arguments": ""},
         },
         {
+            "type": "response.function_call_arguments.delta",
+            "response_id": "resp_x",
+            "delta": '{"q":',
+        },
+        {
+            "type": "response.output_text.delta",
+            "response_id": "resp_x",
+            "delta": "hello",
+        },
+        {
             "type": "response.reasoning_text.delta",
             "response_id": "resp_x",
             "delta": "thinking",
@@ -822,6 +832,7 @@ async def test_accepted_admission_failure_after_any_output_does_not_fail_over(
     try:
         await _accept(service, account, pending, upstream_control)
         await _drive(service, account, pending, output_event, upstream_control)
+        assert pending_request.upstream_model_output_seen is True
         upstream_control = proxy_service._WebSocketUpstreamControl()
         text = await _drive(service, account, pending, _failure_payload("server_error"), upstream_control)
         assert "server_error" in text
@@ -835,59 +846,196 @@ async def test_accepted_admission_failure_after_any_output_does_not_fail_over(
         cache.close()
 
 
+class _OrderUpstream:
+    def __init__(self, messages: list[SimpleNamespace], order: list[str], *, record_close: bool) -> None:
+        self.sent_text: list[str] = []
+        self._messages: asyncio.Queue[SimpleNamespace] = asyncio.Queue()
+        self._order = order
+        self._record_close = record_close
+        for message in messages:
+            self._messages.put_nowait(message)
+
+    async def send_text(self, text: str) -> None:
+        self.sent_text.append(text)
+
+    async def send_bytes(self, _data: bytes) -> None:
+        return None
+
+    async def receive(self) -> SimpleNamespace:
+        return await self._messages.get()
+
+    async def close(self) -> None:
+        if self._record_close:
+            self._order.append("close")
+
+
+class _OrderDownstream:
+    def __init__(self, request_text: str) -> None:
+        self._request_text = request_text
+        self._request_sent = False
+        self._disconnect_sent = False
+        self._done = asyncio.Event()
+        self.sent_text: list[str] = []
+
+    async def receive(self) -> dict[str, object]:
+        if not self._request_sent:
+            self._request_sent = True
+            return {"type": "websocket.receive", "text": self._request_text}
+        if not self._disconnect_sent:
+            await self._done.wait()
+            self._disconnect_sent = True
+            return {"type": "websocket.disconnect"}
+        return {"type": "websocket.disconnect"}
+
+    async def send_text(self, text: str) -> None:
+        self.sent_text.append(text)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = {}
+        if payload.get("type") in {"response.completed", "response.failed", "error"}:
+            self._done.set()
+
+    async def send_bytes(self, _data: bytes) -> None:
+        return None
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        del code, reason
+        self._done.set()
+
+
+def _ws_text(payload: dict[str, JsonValue]) -> SimpleNamespace:
+    text = json.dumps(payload, separators=(",", ":"))
+    return SimpleNamespace(kind="text", text=text, data=None, close_code=None, error=None)
+
+
 @pytest.mark.asyncio
 async def test_accepted_admission_failover_closes_the_original_upstream_before_switch(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cache = _cache(tmp_path)
+    from app.core import shutdown as shutdown_state
     from app.modules.proxy import conversation_history as history_module
-    from app.modules.proxy._service.websocket.mixin import _process_and_forward_upstream_websocket_text
 
+    cache = _cache(tmp_path)
     history_module.set_conversation_history_cache(cache)
     _seed_history(cache)
     reset_history_replay_context()
     reset_admission_request_context()
+    shutdown_state.reset()
     _patch_jitter(monkeypatch)
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    settings = SimpleNamespace(
+        prefer_earlier_reset_accounts=False,
+        prefer_earlier_reset_window="secondary",
+        sticky_threads_enabled=False,
+        sticky_reallocation_budget_threshold_pct=95.0,
+        upstream_stream_transport="default",
+        openai_cache_affinity_max_age_seconds=300,
+        openai_prompt_cache_key_derivation_enabled=True,
+        routing_strategy="usage_weighted",
+        proxy_request_budget_seconds=75.0,
+        compact_request_budget_seconds=75.0,
+        transcription_request_budget_seconds=120.0,
+        upstream_compact_timeout_seconds=None,
+        http_responses_session_bridge_gateway_safe_mode=False,
+        trace_channels=frozenset(),
+        proxy_token_refresh_limit=32,
+        proxy_upstream_websocket_connect_limit=64,
+        proxy_account_response_create_limit=4,
+        proxy_account_stream_limit=8,
+        proxy_account_stream_recovery_reserve=1,
+        proxy_api_key_fair_share_congestion_threshold_pct=0,
+        proxy_response_create_limit=64,
+        proxy_compact_response_create_limit=16,
+        proxy_admission_wait_timeout_seconds=10.0,
+        max_sse_event_bytes=16 * 1024 * 1024,
+        http_responses_session_bridge_instance_id="test-instance",
+        http_responses_session_bridge_instance_ring=[],
+        http_downstream_transport_policy="smart",
+        stream_idle_timeout_seconds=300.0,
+        proxy_downstream_websocket_idle_timeout_seconds=120.0,
+        sse_keepalive_interval_seconds=0.0,
+    )
+
+    async def settings_get() -> SimpleNamespace:
+        return settings
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: SimpleNamespace(get=settings_get))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
-    account = _account("acct-a")
-    pending_request = _accepted_anchor_state()
-    pending: deque[_WebSocketRequestState] = deque([pending_request])
-    upstream_control = proxy_service._WebSocketUpstreamControl()
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_resolve_compact_turn_state_owner", AsyncMock(return_value=None))
     order: list[str] = []
+    original = _OrderUpstream(
+        [
+            _ws_text({"type": "response.created", "response": {"id": "resp_x", "status": "in_progress"}}),
+            _ws_text({"type": "response.in_progress", "response": {"id": "resp_x", "status": "in_progress"}}),
+            _ws_text(_failure_payload("server_error")),
+        ],
+        order,
+        record_close=True,
+    )
+    replacement = _OrderUpstream(
+        [
+            _ws_text({"type": "response.created", "response": {"id": "resp_y", "status": "in_progress"}}),
+            _ws_text(
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_y",
+                        "status": "completed",
+                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                    },
+                }
+            ),
+        ],
+        order,
+        record_close=False,
+    )
+    connect_calls = 0
 
-    async def close() -> None:
-        order.append("close")
-
-    upstream = SimpleNamespace(archive_received=lambda _message: None, close=close)
-    try:
-        await _accept(service, account, pending, upstream_control)
-        upstream_control = proxy_service._WebSocketUpstreamControl()
-        text = json.dumps(_failure_payload("server_error"), separators=(",", ":"))
-        should_stop = await _process_and_forward_upstream_websocket_text(
-            cast(Any, service),
-            cast(Any, SimpleNamespace(send_text=AsyncMock())),
-            cast(Any, upstream),
-            message=SimpleNamespace(kind="text", text=text),
-            text=text,
-            account=account,
-            account_id_value=account.id,
-            pending_requests=pending,
-            pending_lock=anyio.Lock(),
-            client_send_lock=anyio.Lock(),
-            api_key=None,
-            upstream_control=upstream_control,
-            response_create_gate=asyncio.Semaphore(0),
-            downstream_activity=proxy_service._DownstreamWebSocketActivity(),
-            continuity_state=None,
-            codex_session_affinity=False,
-        )
+    async def connect_proxy_websocket(self, headers, **kwargs):
+        del self, headers, kwargs
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            return _account("acct-a"), original
         order.append("switch")
-        assert should_stop is True
-        assert order == ["close", "switch"]
-        assert pending_request.previous_response_id is None
+        return _account("acct-b"), replacement
+
+    monkeypatch.setattr(proxy_service.ProxyService, "_connect_proxy_websocket", connect_proxy_websocket)
+    downstream = _OrderDownstream(
+        json.dumps(
+            {
+                "type": "response.create",
+                "model": "gpt-6-astra",
+                "instructions": "",
+                "previous_response_id": "resp-1",
+                "input": [
+                    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "more"}]},
+                ],
+            },
+            separators=(",", ":"),
+        )
+    )
+    try:
+        await asyncio.wait_for(
+            service.proxy_responses_websocket(
+                cast(Any, downstream),
+                {},
+                codex_session_affinity=False,
+                openai_cache_affinity=False,
+                api_key=None,
+            ),
+            timeout=5,
+        )
+        assert connect_calls == 2
+        assert order.index("close") < order.index("switch")
+        assert replacement.sent_text
+        assert "previous_response_id" not in json.loads(replacement.sent_text[0])
     finally:
+        shutdown_state.reset()
         reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
