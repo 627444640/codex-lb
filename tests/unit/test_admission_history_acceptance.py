@@ -7,11 +7,13 @@ import json
 import logging
 from collections import deque
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import anyio
 import pytest
 
+from app.db.models import Account
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._load_balancer.admission_breaker import (
     AdmissionBreakerPolicy,
@@ -23,7 +25,7 @@ from app.modules.proxy._load_balancer.admission_breaker import (
     reset_admission_failure_dedupe,
     transparent_retry_used,
 )
-from app.modules.proxy._load_balancer.types import RuntimeState
+from app.modules.proxy._load_balancer.types import AccountLease, RuntimeState
 from app.modules.proxy._service.streaming.retry import _http_stream_admission_plan
 from app.modules.proxy._service.support import (
     _RetryableStreamError,
@@ -35,6 +37,7 @@ from app.modules.proxy.conversation_history import (
     ConversationHistoryCache,
     reset_history_replay_context,
 )
+from app.modules.proxy.repo_bundle import ProxyRepoFactory
 
 
 def _cache(tmp_path):
@@ -319,13 +322,13 @@ async def test_http_500_with_previous_response_replays_from_cache(tmp_path) -> N
         cache.close()
 
 
-def _bridge_session(request_state: _WebSocketRequestState) -> object:
+def _bridge_session(request_state: _WebSocketRequestState) -> proxy_service._HTTPBridgeSession:
     return proxy_service._HTTPBridgeSession(
         key=proxy_service._HTTPBridgeSessionKey("prompt_cache", "bridge-key", None),
         headers={},
         affinity=proxy_service._AffinityPolicy(),
         request_model="gpt-6-astra",
-        account=SimpleNamespace(id="acct-bridge"),
+        account=cast(Account, SimpleNamespace(id="acct-bridge")),
         upstream=AsyncMock(),
         upstream_control=proxy_service._WebSocketUpstreamControl(),
         pending_requests=deque([request_state]),
@@ -352,7 +355,7 @@ def _bridge_request(text: str) -> _WebSocketRequestState:
         previous_response_id="resp-1",
         transport="http",
         error_code_override="server_error",
-        account_response_create_lease=object(),
+        account_response_create_lease=cast(AccountLease, object()),
     )
 
 
@@ -384,7 +387,7 @@ async def test_http_bridge_500_replays_cached_history_onto_another_account(tmp_p
     async def capture_send(_session: object, _request_state: object, text: str) -> None:
         sent.append(text)
 
-    service = proxy_service.ProxyService(lambda: None)
+    service = proxy_service.ProxyService(cast(ProxyRepoFactory, lambda: None))
     monkeypatch.setattr(service, "_reconnect_http_bridge_session", AsyncMock())
     monkeypatch.setattr(
         service,
@@ -417,7 +420,7 @@ async def test_http_bridge_without_cache_does_not_switch_with_the_original_id(tm
     history_module.set_conversation_history_cache(cache)
     reset_history_replay_context()
     request_state = _bridge_request('{"model":"gpt-6-astra","input":"more","previous_response_id":"resp-1"}')
-    service = proxy_service.ProxyService(lambda: None)
+    service = proxy_service.ProxyService(cast(ProxyRepoFactory, lambda: None))
     monkeypatch.setattr(service, "_reconnect_http_bridge_session", AsyncMock())
     try:
         retried = await service._retry_http_bridge_precreated_request(

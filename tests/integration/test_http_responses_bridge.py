@@ -17282,6 +17282,12 @@ def _bridge_server_error_event() -> dict[str, Any]:
     }
 
 
+def _chatgpt_account_key(account: Account) -> str:
+    account_id = account.chatgpt_account_id
+    assert isinstance(account_id, str)
+    return account_id
+
+
 def _install_two_account_bridge(
     monkeypatch: pytest.MonkeyPatch,
     accounts: list[Account],
@@ -17386,8 +17392,8 @@ async def test_v1_responses_http_bridge_pre_first_token_server_error_fails_over(
         monkeypatch,
         [owner, other],
         {
-            owner.chatgpt_account_id: deque([failing]),
-            other.chatgpt_account_id: deque([recovered]),
+            _chatgpt_account_key(owner): deque([failing]),
+            _chatgpt_account_key(other): deque([recovered]),
         },
     )
 
@@ -17426,8 +17432,8 @@ async def test_v1_responses_http_bridge_cached_history_replays_after_pre_token_5
         monkeypatch,
         [owner, other],
         {
-            owner.chatgpt_account_id: deque([failing]),
-            other.chatgpt_account_id: deque([recovered]),
+            _chatgpt_account_key(owner): deque([failing]),
+            _chatgpt_account_key(other): deque([recovered]),
         },
     )
     first_input = [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
@@ -17475,8 +17481,8 @@ async def test_v1_responses_http_bridge_uncached_previous_response_500_does_not_
         monkeypatch,
         [owner, other],
         {
-            owner.chatgpt_account_id: deque([failing]),
-            other.chatgpt_account_id: deque([recovered]),
+            _chatgpt_account_key(owner): deque([failing]),
+            _chatgpt_account_key(other): deque([recovered]),
         },
     )
 

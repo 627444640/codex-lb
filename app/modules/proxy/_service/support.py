@@ -1926,11 +1926,9 @@ def _stage_websocket_history_replay(
 
     import json
     from dataclasses import replace
-    from typing import cast
 
     from app.modules.proxy._load_balancer.admission_breaker import transparent_retry_used
     from app.modules.proxy.conversation_history import (
-        HistoryReplayReason,
         mark_request_history_replayed,
         request_body_from_text,
         request_history_replayed,
@@ -1953,7 +1951,7 @@ def _stage_websocket_history_replay(
         return False
     replay = try_plan_history_replay(
         request_body=body,
-        reason=cast(HistoryReplayReason, reason),
+        reason=reason,
         downstream_visible=False,
         already_replayed=False,
         owner_blocked=owner_blocked,

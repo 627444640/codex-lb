@@ -13,6 +13,7 @@ import anyio
 import pytest
 
 from app.core import shutdown as shutdown_state
+from app.core.types import JsonValue
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy._service.support import _WebSocketRequestState
 from app.modules.proxy.conversation_history import (
@@ -23,7 +24,7 @@ from app.modules.proxy.conversation_history import (
 pytestmark = pytest.mark.integration
 
 
-def _turn_body() -> dict[str, object]:
+def _turn_body() -> dict[str, JsonValue]:
     return {
         "model": "gpt-5.1",
         "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "kept"}]}],
