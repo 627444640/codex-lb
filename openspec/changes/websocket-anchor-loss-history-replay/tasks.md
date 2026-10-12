@@ -16,7 +16,7 @@
 
 ## 3. Request-log accounting
 
-- [ ] 3.1 Store the history replay mark on the WebSocket request state when a resend is staged, and pass it on every WebSocket request-log write.
-- [ ] 3.2 Append `concurrent_requests=true` to stale-anchor `failure_detail` and the `continuity_fail_closed` log when other requests were pending on the socket, including the grouped anonymous case.
-- [ ] 3.3 Product path: persisted rows answer the documented SQL with one row per request, distinct reasons, and `status` as the outcome.
-- [ ] 3.4 Product path: a cached anchor loss with a concurrent request fails closed with the marker; a sole request carries no marker.
+- [x] 3.1 Store the history replay mark on the WebSocket request state when a resend is staged, and pass it on every WebSocket request-log write.
+- [x] 3.2 Append `concurrent_requests=true` to stale-anchor `failure_detail` and the `continuity_fail_closed` log when other requests were pending on the socket, including the grouped anonymous case.
+- [x] 3.3 Product path: persisted rows answer the documented SQL with one row per request, distinct reasons, and `status` as the outcome.
+- [x] 3.4 Product path: a cached anchor loss with a concurrent request fails closed with the marker; a sole request carries no marker.
