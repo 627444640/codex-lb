@@ -64,7 +64,7 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   assert.equal(dom.window.document.querySelector('#quality-total').textContent, '60');
   assert.equal(dom.window.document.querySelector('#quality-error-percent').textContent, '5%');
   assert.match(dom.window.document.querySelector('#request-quality-categories').textContent, /上游容量过载/);
-  assert.equal(dom.window.document.querySelector('.quality-guide').getAttribute('href'), '/static/faq.html#error-upstream-overload');
+  assert.equal(dom.window.document.querySelector('.quality-guide').getAttribute('href'), 'static/faq.html#error-upstream-overload');
   assert.match(dom.window.document.querySelector('#history-since').textContent, /不包含真实模型请求结果/);
 
   current = { ...payload(), capacity: { weekly_remaining_percent: 45, weekly_next_reset_at: 1791046713 } };
@@ -77,4 +77,17 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(meter.classList.contains('critical'), true);
   assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('critical'), true);
+});
+
+test('status navigation resolves below the public status mount', () => {
+  const template = readFileSync(resolve(__dirname, '../monitor/static/index.html'), 'utf8');
+  const dom = new JSDOM(template, { url: 'https://status.example.invalid/status/' });
+  try {
+    assert.equal(dom.window.document.querySelector('link[rel="icon"]').href,
+      'https://status.example.invalid/status/static/favicon.svg?v=codex-lb');
+    assert.equal(dom.window.document.querySelector('nav a[href="static/faq.html"]').href,
+      'https://status.example.invalid/status/static/faq.html');
+  } finally {
+    dom.window.close();
+  }
 });

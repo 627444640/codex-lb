@@ -16,6 +16,24 @@
 https://localhost:8443 {
     bind 127.0.0.1 ::1
     tls internal
+    # Optional public-site mount when this site is deliberately published by
+    # a trusted tunnel. Replace the upstream Host with the monitor origin host.
+    handle /status {
+        redir * /status/ 308
+    }
+    handle /status/internal/* {
+        respond "Not Found" 404
+    }
+    handle_path /status/* {
+        reverse_proxy 127.0.0.1:2466 {
+            header_up Host status.example.lan
+            header_up X-Forwarded-For {client_ip}
+            header_up -Forwarded
+            header_up -X-Real-IP
+            header_up -True-Client-IP
+            header_up -CF-Connecting-IP
+        }
+    }
     reverse_proxy 127.0.0.1:2455 {
         header_up X-Forwarded-For {client_ip}
         header_up -Forwarded

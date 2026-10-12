@@ -87,7 +87,7 @@ function render(s){
         head.append(el("strong","",category.label),el("span","quality-count",`${number(category.count)} · 失败占比 ${percent(category.failure_share_percent)}`));
         const models=category.models?.length?`模型：${category.models.join("、")}`:"模型：—";
         row.append(head,el("p","quality-category-meta",`${models} · 最近 ${date(category.last_error_at,true)}`),el("p","quality-guidance",category.guidance));
-        if(category.guide_slug){const guide=document.createElement("a");guide.className="quality-guide";guide.href=`/static/faq.html#${encodeURIComponent(category.guide_slug)}`;guide.textContent="查看处理建议";row.append(guide);}
+        if(category.guide_slug){const guide=document.createElement("a");guide.className="quality-guide";guide.href=`static/faq.html#${encodeURIComponent(category.guide_slug)}`;guide.textContent="查看处理建议";row.append(guide);}
         $("request-quality-categories").append(row);
       }
     }
@@ -112,7 +112,7 @@ function render(s){
 
 }
 let loading=false;
-async function refresh(){if(loading)return;loading=true;$("refresh").disabled=true;try{const res=await fetch("/api/status",{cache:"no-store",signal:AbortSignal.timeout(10000)});if(!res.ok)throw Error("request");const data=await res.json();render(data);$("connection-error").hidden=true;}catch{render({status:"unknown",stale:true});$("connection-error").textContent="暂时无法连接监控服务。页面已停止显示旧数据，请稍后刷新。";$("connection-error").hidden=false;}finally{loading=false;$("refresh").disabled=false;}}
+async function refresh(){if(loading)return;loading=true;$("refresh").disabled=true;try{const res=await fetch("api/status",{cache:"no-store",signal:AbortSignal.timeout(10000)});if(!res.ok)throw Error("request");const data=await res.json();render(data);$("connection-error").hidden=true;}catch{render({status:"unknown",stale:true});$("connection-error").textContent="暂时无法连接监控服务。页面已停止显示旧数据，请稍后刷新。";$("connection-error").hidden=false;}finally{loading=false;$("refresh").disabled=false;}}
 $("refresh").addEventListener("click",refresh);refresh();setInterval(()=>{if(!document.hidden)refresh();},30000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();});
 
 // 概览页内部锚点不改变顶部页面导航的选中状态。
