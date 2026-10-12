@@ -1488,6 +1488,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
     event_type: str | None,
     upstream_control: _WebSocketUpstreamControl,
     original_text: str,
+    concurrent_requests: bool = False,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     error_code = _normalize_error_code(
         _websocket_event_error_code(event_type, payload),
@@ -1520,6 +1521,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
         reason=reason,
         reconnect_requested=reconnect_requested,
         original_text=original_text,
+        concurrent_requests=concurrent_requests,
     )
 
 
@@ -1541,6 +1543,7 @@ class _WebSocketStaleAnchorDiagnostics:
     owner_lookup_outcome: str | None
     previous_response_age_seconds: int | None
     same_session: bool | None
+    concurrent_requests: bool = False
 
 
 def _websocket_previous_response_source(request_state: _WebSocketRequestState) -> str:
@@ -1574,6 +1577,8 @@ def _websocket_previous_response_age_seconds(request_state: _WebSocketRequestSta
 
 def _websocket_stale_anchor_diagnostics(
     request_state: _WebSocketRequestState,
+    *,
+    concurrent_requests: bool = False,
 ) -> _WebSocketStaleAnchorDiagnostics:
     return _WebSocketStaleAnchorDiagnostics(
         previous_response_source=_websocket_previous_response_source(request_state),
@@ -1584,6 +1589,7 @@ def _websocket_stale_anchor_diagnostics(
         owner_lookup_outcome=request_state.previous_response_owner_lookup_outcome,
         previous_response_age_seconds=_websocket_previous_response_age_seconds(request_state),
         same_session=_websocket_same_session_for_previous_response(request_state),
+        concurrent_requests=concurrent_requests,
     )
 
 
@@ -1598,7 +1604,7 @@ def _websocket_stale_anchor_failure_detail(
         else "unknown"
     )
     same_session = str(diagnostics.same_session).lower() if diagnostics.same_session is not None else "unknown"
-    return (
+    detail = (
         "previous_response_not_found "
         f"previous_response_source={diagnostics.previous_response_source} "
         f"fresh_replay_available={str(diagnostics.fresh_replay_available).lower()} "
@@ -1607,6 +1613,9 @@ def _websocket_stale_anchor_failure_detail(
         f"previous_response_age_seconds={previous_response_age_seconds} "
         f"same_session={same_session}"
     )
+    if diagnostics.concurrent_requests:
+        detail += " concurrent_requests=true"
+    return detail
 
 
 def _record_websocket_stale_anchor_failure(
@@ -1614,8 +1623,14 @@ def _record_websocket_stale_anchor_failure(
     *,
     surface: str,
     upstream_error_code: str,
+    concurrent_requests: bool = False,
 ) -> None:
-    diagnostics = _websocket_stale_anchor_diagnostics(request_state)
+    """Fail an anchor loss closed.
+
+    ``concurrent_requests`` marks a loss that arrived while other requests were
+    in flight on the same upstream socket; those never take the history replay.
+    """
+    diagnostics = _websocket_stale_anchor_diagnostics(request_state, concurrent_requests=concurrent_requests)
     request_state.failure_phase_override = "upstream"
     request_state.failure_detail_override = _websocket_stale_anchor_failure_detail(diagnostics)
     request_state.upstream_error_code_override = upstream_error_code
@@ -1636,6 +1651,7 @@ def _record_websocket_stale_anchor_failure(
         owner_lookup_outcome=diagnostics.owner_lookup_outcome,
         previous_response_age_seconds=diagnostics.previous_response_age_seconds,
         same_session=diagnostics.same_session,
+        concurrent_requests=diagnostics.concurrent_requests,
     )
 
 
@@ -1646,6 +1662,7 @@ def _rewrite_websocket_continuity_corruption_event(
     reason: str,
     reconnect_requested: bool,
     original_text: str,
+    concurrent_requests: bool = False,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     del original_text
     if reconnect_requested:
@@ -1655,6 +1672,7 @@ def _rewrite_websocket_continuity_corruption_event(
             request_state,
             surface="websocket_stream",
             upstream_error_code="previous_response_not_found",
+            concurrent_requests=concurrent_requests,
         )
     else:
         _record_continuity_fail_closed(

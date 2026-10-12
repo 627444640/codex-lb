@@ -5479,6 +5479,7 @@ class _WebSocketMixin:
                         grouped_request_state,
                         surface="websocket_stream",
                         upstream_error_code="previous_response_not_found",
+                        concurrent_requests=True,
                     )
                 (
                     grouped_downstream_text,
@@ -5638,6 +5639,7 @@ class _WebSocketMixin:
                 event_type=event_type,
                 upstream_control=upstream_control,
                 original_text=text,
+                concurrent_requests=has_other_pending_requests,
             )
         if retry_error_code is None:
             retry_error_code = _websocket_precreated_retry_error_code(
