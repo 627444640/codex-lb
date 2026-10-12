@@ -11,14 +11,17 @@ The direct WebSocket relay tries the history cache for `previous_response_not_fo
 - The replay is planned before the stale-anchor fail-closed is recorded. A staged replay records no `continuity_fail_closed` and does not mark the anchor stale.
 - A cache miss, a spent one-retry budget, other pending requests on the socket, or any model output keeps the existing fail-closed terminal.
 - For an accepted turn whose prelude carried numeric sequences, the replay suppresses its own prelude. A replay frame that does not advance beyond the exposed sequence settles as `stream_incomplete` and closes downstream with 1011.
+- The request-log row of a WebSocket resend records `history_replay_reason`. The resent attempt is finished by a new upstream reader task, which never saw the context-variable mark, so these rows were written with a null reason. The mark now rides on the request state.
+- An anchor loss that fails closed while other requests are in flight on the same upstream socket appends `concurrent_requests=true` to its stale-anchor diagnostics (`failure_detail` and `continuity_fail_closed`).
 
 ## Capabilities
 
 ### Modified Capabilities
 
 - `conversation-history-replay`: the direct WebSocket accepted-prelude shape of `previous_response_not_found` qualifies for the one pre-output replay, and a staged replay is not logged as fail-closed.
-- `responses-api-compat`: the direct WebSocket sequence rule gets a second narrow exception for that replay.
+- `conversation-history-replay`: a resent request writes one request-log row that names the replay reason, and its `status` records the outcome.
+- `responses-api-compat`: the direct WebSocket sequence rule gets a second narrow exception for that replay, and stale-anchor diagnostics mark concurrent requests.
 
 ## Impact
 
-Direct WebSocket relay only (`app/modules/proxy/_service/websocket/`). The HTTP bridge keeps its own previous-response recovery. No schema change, no new setting, no version bump.
+Direct WebSocket relay (`app/modules/proxy/_service/websocket/`), plus the shared request-state helper in `app/modules/proxy/_service/support.py`. The HTTP bridge keeps its own previous-response recovery; its rows also gain the reason when it stages a resend through the shared helper. No schema change, no new setting, no version bump.

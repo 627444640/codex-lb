@@ -64,3 +64,28 @@ On the direct Responses WebSocket, a `previous_response_not_found` terminal SHAL
 - **WHEN** upstream returns `previous_response_not_found` before any output
 - **THEN** the proxy does not resend the turn again
 - **AND** the client receives the fail-closed terminal
+
+### Requirement: Replays are logged and stats omit conversation text
+
+The proxy SHALL log each history replay with its reason and the extra input tokens spent, and SHALL store that reason and token count on the request log. The reason SHALL be stored on the row that records the outcome of the resent attempt, even when a different task than the one that staged the resend finishes that attempt. A resent request SHALL write exactly one terminal request-log row, so that row's `status` records whether the resend succeeded. Historical rows MAY leave those columns null. The dashboard API SHALL expose `GET /api/accounts/conversation-history-cache` with whether the cache is enabled, the disabled reason, bytes used, the total cap, the per-conversation cap, entry count, hit count, replay count, idle TTL, and the free-disk floor. That response SHALL NOT include conversation text.
+
+#### Scenario: A replay is recorded on the request log
+- **WHEN** the proxy resends a turn from cached history
+- **THEN** the request log stores the replay reason and the extra input tokens
+
+#### Scenario: A WebSocket anchor-loss resend is countable
+- **GIVEN** a direct WebSocket turn was resent from cached history after `previous_response_not_found`
+- **WHEN** the resent attempt completes or fails on a new upstream socket
+- **THEN** exactly one request-log row with `transport = websocket` is written for that request
+- **AND** the row stores `history_replay_reason = previous_response_not_found`
+- **AND** the row's `status` is `success` when the resend completed and `error` when it failed
+
+#### Scenario: Replay reasons stay distinct on the request log
+- **WHEN** a direct WebSocket turn is resent from cached history after a pre-output owner or admission failure
+- **THEN** its request-log row stores that failure's replay reason
+- **AND** the row does not store `previous_response_not_found`
+
+#### Scenario: Cache stats contain no conversation text
+- **WHEN** an operator calls `GET /api/accounts/conversation-history-cache`
+- **THEN** the response includes size, cap, entries, hits, and replays
+- **AND** the response does not include conversation text

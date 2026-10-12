@@ -13,3 +13,10 @@
 - [x] 2.4 Any model output before the terminal: no replay.
 - [x] 2.5 One replay per request: a spent budget or a second anchor loss fails closed.
 - [x] 2.6 Product path: `/backend-api/codex/responses` recovers an accepted anchor loss from the cache, with one `response.created` and an advancing sequence downstream.
+
+## 3. Request-log accounting
+
+- [ ] 3.1 Store the history replay mark on the WebSocket request state when a resend is staged, and pass it on every WebSocket request-log write.
+- [ ] 3.2 Append `concurrent_requests=true` to stale-anchor `failure_detail` and the `continuity_fail_closed` log when other requests were pending on the socket, including the grouped anonymous case.
+- [ ] 3.3 Product path: persisted rows answer the documented SQL with one row per request, distinct reasons, and `status` as the outcome.
+- [ ] 3.4 Product path: a cached anchor loss with a concurrent request fails closed with the marker; a sole request carries no marker.
