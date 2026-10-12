@@ -40,6 +40,11 @@ from app.modules.proxy._service.support import (
     _StreamSettlement,
     _WebSocketRequestState,
 )
+from app.modules.proxy._service.websocket.helpers import (
+    _clear_websocket_stale_previous_response_cache,
+    _is_websocket_stale_previous_response,
+)
+from app.modules.proxy._service.websocket.mixin import _WebSocketReplaySequenceRegression
 from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.conversation_history import (
     ConversationHistoryCache,
@@ -1039,3 +1044,388 @@ async def test_accepted_admission_failover_closes_the_original_upstream_before_s
         reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
+
+
+def _anchor_loss_payload(response_id: str | None = None) -> dict[str, JsonValue]:
+    error: dict[str, JsonValue] = {
+        "type": "invalid_request_error",
+        "code": "previous_response_not_found",
+        "message": "Previous response with id 'resp-1' not found.",
+        "param": "previous_response_id",
+    }
+    if response_id is None:
+        return {"type": "error", "status": 400, "error": error}
+    return {"type": "response.failed", "response": {"id": response_id, "status": "failed", "error": error}}
+
+
+def _anchor_loss_service(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seeded: bool,
+) -> tuple[ConversationHistoryCache, Any, _RequestLogsRecorder, AsyncMock]:
+    from app.modules.proxy import conversation_history as history_module
+
+    cache = _cache(tmp_path)
+    history_module.set_conversation_history_cache(cache)
+    if seeded:
+        _seed_history(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _clear_websocket_stale_previous_response_cache()
+    _patch_jitter(monkeypatch)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    handle_stream_error = AsyncMock()
+    monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    return cache, service, request_logs, handle_stream_error
+
+
+def _close_anchor_loss_service(cache: ConversationHistoryCache) -> None:
+    from app.modules.proxy import conversation_history as history_module
+
+    reset_admission_request_context()
+    _clear_websocket_stale_previous_response_cache()
+    history_module.set_conversation_history_cache(None)
+    cache.close()
+
+
+def _anchor_fail_closed_logged(caplog: pytest.LogCaptureFixture) -> bool:
+    return any(
+        "continuity_fail_closed" in record.getMessage() and "reason=previous_response_not_found" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def _anchor_marked_stale() -> bool:
+    return _is_websocket_stale_previous_response(previous_response_id="resp-1", api_key_id=None)
+
+
+def _assert_fail_closed_terminal(text: str) -> None:
+    event = json.loads(text)
+    assert event["type"] == "response.failed"
+    assert event["response"]["error"]["code"] == "stream_incomplete"
+    assert "resp-1" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_response_id", [None, "resp_x"], ids=["error-event", "response-failed"])
+async def test_websocket_anchor_loss_after_created_replays_cached_history_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    terminal_response_id: str | None,
+) -> None:
+    cache, service, request_logs, handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    caplog.set_level(logging.INFO)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        await _drive(service, account, pending, _anchor_loss_payload(terminal_response_id), upstream_control)
+
+        assert upstream_control.reconnect_requested is True
+        assert upstream_control.suppress_downstream_event is True
+        assert upstream_control.replay_request_state is pending_request
+        replay_body = json.loads(pending_request.request_text or "{}")
+        assert "previous_response_id" not in replay_body
+        assert "kept" in json.dumps(replay_body["input"])
+        assert "more" in json.dumps(replay_body["input"])
+        assert pending_request.replay_count == 1
+        assert pending_request.replay_downstream_response_id == "resp_x"
+        assert pending_request.excluded_account_ids == set()
+        handle_stream_error.assert_not_awaited()
+        assert not _anchor_fail_closed_logged(caplog)
+        assert not _anchor_marked_stale()
+
+        pending.append(pending_request)
+        pending_request.response_create_gate_acquired = True
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        await _drive(
+            service,
+            account,
+            pending,
+            {"type": "response.created", "response": {"id": "resp_y", "status": "in_progress"}},
+            upstream_control,
+        )
+        assert upstream_control.suppress_downstream_event is True
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        completed = await _drive(
+            service,
+            account,
+            pending,
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_y",
+                    "status": "completed",
+                    "output": [
+                        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}
+                    ],
+                },
+            },
+            upstream_control,
+        )
+        assert json.loads(completed)["response"]["id"] == "resp_x"
+        assert await service.drain_persistence_tasks(timeout_seconds=2)
+        assert request_logs.calls[-1]["history_replay_reason"] == "previous_response_not_found"
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+async def test_websocket_anchor_loss_before_created_replays_without_fail_closed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache, service, _request_logs, handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    caplog.set_level(logging.INFO)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _drive(service, account, pending, _anchor_loss_payload(), upstream_control)
+
+        assert upstream_control.reconnect_requested is True
+        assert upstream_control.suppress_downstream_event is True
+        assert upstream_control.replay_request_state is pending_request
+        assert pending_request.previous_response_id is None
+        assert "previous_response_id" not in json.loads(pending_request.request_text or "{}")
+        assert pending_request.replay_count == 1
+        assert pending_request.replay_downstream_response_id is None
+        handle_stream_error.assert_not_awaited()
+        assert not _anchor_fail_closed_logged(caplog)
+        assert not _anchor_marked_stale()
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted", [False, True], ids=["pre-created", "accepted"])
+async def test_websocket_anchor_loss_cache_miss_fails_closed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    accepted: bool,
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=False)
+    caplog.set_level(logging.INFO)
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state(preferred_account_id=None, replay_required_account_id=None)
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        if accepted:
+            await _accept(service, account, pending, upstream_control)
+        text = await _drive(
+            service,
+            account,
+            pending,
+            _anchor_loss_payload("resp_x" if accepted else None),
+            upstream_control,
+        )
+
+        _assert_fail_closed_terminal(text)
+        assert upstream_control.replay_request_state is None
+        assert pending_request.previous_response_id == "resp-1"
+        assert pending_request.history_replay_used is False
+        assert pending_request.replay_count == 0
+        assert _anchor_fail_closed_logged(caplog)
+        assert "fresh_replay_available=false" in caplog.text
+        assert _anchor_marked_stale()
+        finalize.assert_awaited()
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "output_event",
+    [
+        {
+            "type": "response.output_item.added",
+            "response_id": "resp_x",
+            "output_index": 0,
+            "item": {"id": "fc_1", "type": "function_call", "name": "lookup", "arguments": ""},
+        },
+        {"type": "response.output_text.delta", "response_id": "resp_x", "delta": "hello"},
+        {"type": "response.reasoning_text.delta", "response_id": "resp_x", "delta": "thinking"},
+    ],
+    ids=["tool-call", "text", "reasoning"],
+)
+async def test_websocket_anchor_loss_after_model_output_is_not_replayed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_event: dict[str, JsonValue],
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        await _drive(service, account, pending, output_event, upstream_control)
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = await _drive(service, account, pending, _anchor_loss_payload("resp_x"), upstream_control)
+
+        _assert_fail_closed_terminal(text)
+        assert upstream_control.replay_request_state is None
+        assert pending_request.previous_response_id == "resp-1"
+        assert pending_request.history_replay_used is False
+        finalize.assert_awaited()
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spent_by", ["earlier_retry", "first_replay"])
+async def test_websocket_anchor_loss_replays_at_most_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    spent_by: str,
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        if spent_by == "earlier_retry":
+            mark_transparent_retry(pending_request.request_id)
+        else:
+            await _drive(service, account, pending, _anchor_loss_payload(), upstream_control)
+            assert upstream_control.replay_request_state is pending_request
+            pending.append(pending_request)
+            upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = await _drive(service, account, pending, _anchor_loss_payload(), upstream_control)
+
+        _assert_fail_closed_terminal(text)
+        assert upstream_control.replay_request_state is None
+        assert pending_request.replay_count == (1 if spent_by == "first_replay" else 0)
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+def _sequenced(payload: dict[str, JsonValue], sequence_number: int) -> dict[str, JsonValue]:
+    return {**payload, "sequence_number": sequence_number}
+
+
+_RESPONSE_CREATED_X: dict[str, JsonValue] = {
+    "type": "response.created",
+    "response": {"id": "resp_x", "status": "in_progress"},
+}
+_RESPONSE_IN_PROGRESS_X: dict[str, JsonValue] = {
+    "type": "response.in_progress",
+    "response": {"id": "resp_x", "status": "in_progress"},
+}
+_RESPONSE_CREATED_Y: dict[str, JsonValue] = {
+    "type": "response.created",
+    "response": {"id": "resp_y", "status": "in_progress"},
+}
+_RESPONSE_IN_PROGRESS_Y: dict[str, JsonValue] = {
+    "type": "response.in_progress",
+    "response": {"id": "resp_y", "status": "in_progress"},
+}
+
+
+@pytest.mark.asyncio
+async def test_websocket_anchor_loss_replay_suppresses_the_sequenced_prelude(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _drive(service, account, pending, _sequenced(_RESPONSE_CREATED_X, 0), upstream_control)
+        await _drive(service, account, pending, _sequenced(_RESPONSE_IN_PROGRESS_X, 1), upstream_control)
+        pending_request.last_downstream_sequence_number = 1
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        await _drive(service, account, pending, _sequenced(_anchor_loss_payload("resp_x"), 2), upstream_control)
+        assert upstream_control.replay_request_state is pending_request
+
+        pending.append(pending_request)
+        pending_request.response_create_gate_acquired = True
+        for prelude in (_sequenced(_RESPONSE_CREATED_Y, 0), _sequenced(_RESPONSE_IN_PROGRESS_Y, 1)):
+            upstream_control = proxy_service._WebSocketUpstreamControl()
+            await _drive(service, account, pending, prelude, upstream_control)
+            assert upstream_control.suppress_downstream_event is True
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        completed = await _drive(
+            service,
+            account,
+            pending,
+            _sequenced({"type": "response.completed", "response": {"id": "resp_y", "status": "completed"}}, 2),
+            upstream_control,
+        )
+        assert upstream_control.suppress_downstream_event is False
+        assert json.loads(completed)["response"]["id"] == "resp_x"
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+async def test_websocket_anchor_loss_replay_sequence_must_advance(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _drive(service, account, pending, _sequenced(_RESPONSE_CREATED_X, 0), upstream_control)
+        pending_request.last_downstream_sequence_number = 0
+        await _drive(service, account, pending, _sequenced(_anchor_loss_payload("resp_x"), 1), upstream_control)
+        assert upstream_control.replay_request_state is pending_request
+        assert pending_request.suppress_next_in_progress_downstream is False
+
+        pending.append(pending_request)
+        pending_request.response_create_gate_acquired = True
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        await _drive(service, account, pending, _sequenced(_RESPONSE_CREATED_Y, 0), upstream_control)
+        with pytest.raises(_WebSocketReplaySequenceRegression):
+            await _drive(service, account, pending, _sequenced(_RESPONSE_IN_PROGRESS_Y, 0), upstream_control)
+    finally:
+        _close_anchor_loss_service(cache)
+
+
+@pytest.mark.asyncio
+async def test_websocket_anchor_loss_beyond_the_prelude_watermark_fails_closed(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, service, _request_logs, _handle_stream_error = _anchor_loss_service(tmp_path, monkeypatch, seeded=True)
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _drive(service, account, pending, _sequenced(_RESPONSE_CREATED_X, 0), upstream_control)
+        await _drive(service, account, pending, _sequenced(_RESPONSE_IN_PROGRESS_X, 1), upstream_control)
+        pending_request.last_downstream_sequence_number = 2
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = await _drive(service, account, pending, _sequenced(_anchor_loss_payload("resp_x"), 3), upstream_control)
+
+        _assert_fail_closed_terminal(text)
+        assert upstream_control.replay_request_state is None
+        assert pending_request.history_replay_used is False
+        finalize.assert_awaited()
+    finally:
+        _close_anchor_loss_service(cache)

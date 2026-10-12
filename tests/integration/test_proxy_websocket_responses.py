@@ -58,6 +58,7 @@ from app.modules.proxy.capability_routing import (
     REQUIRED_CAPABILITY_HEADER,
     _capability_lineage_unavailable_error,
 )
+from app.modules.proxy.conversation_history import ConversationHistoryCache, set_conversation_history_cache
 
 pytestmark = pytest.mark.integration
 
@@ -11141,7 +11142,10 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
     app_instance,
     monkeypatch,
     caplog,
+    tmp_path,
 ):
+    """With no cached history, a proxy-injected anchor loss fails closed and
+    records the stale-anchor diagnostics."""
     upstream_socket = _SequencedUpstreamWebSocket(
         [],
         deferred_message_batches=[
@@ -11281,6 +11285,9 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
     monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: _FakeSettingsCache())
     monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", fake_connect_proxy_websocket)
     monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", fake_write_request_log)
+    set_conversation_history_cache(
+        ConversationHistoryCache(tmp_path / "conversation_history.db", enabled=False, start_maintenance=False)
+    )
 
     caplog.set_level(logging.WARNING, logger="app.modules.proxy.service")
 
@@ -11314,30 +11321,20 @@ def test_backend_responses_websocket_logs_proxy_injected_stale_anchor_metadata(
                     }
                 )
             )
-            replayed = json.loads(websocket.receive_text())
-            # A replay that never reaches a terminal must not sit on keepalives.
-            for _ in range(3):
-                if replayed["type"] != "codex.keepalive":
-                    break
-                replayed = json.loads(websocket.receive_text())
-            replayed_completed = json.loads(websocket.receive_text())
+            follow_up_events, disconnect = _receive_until_terminal(websocket)
 
     assert first_created["type"] == "response.created"
     assert first_completed["type"] == "response.completed"
-    assert replayed["type"] == "response.created"
-    assert replayed["response"]["id"] == "resp_ws_proxy_injected_replay"
-    assert replayed_completed["type"] == "response.completed"
-    assert connect_count == 2
+    assert disconnect is None
+    assert follow_up_events[-1]["type"] == "response.failed"
+    _assert_previous_response_not_found_error(follow_up_events[-1]["response"]["error"])
+    assert connect_count == 1
     first_payload = json.loads(upstream_socket.sent_text[0])
     second_payload = json.loads(upstream_socket.sent_text[1])
     assert "previous_response_id" not in first_payload
     assert second_payload["previous_response_id"] == "resp_ws_proxy_injected_anchor"
     assert second_payload["input"] == [next_input]
-    replay_payload = json.loads(recovered_upstream.sent_text[-1])
-    assert "previous_response_id" not in replay_payload
-    assert "first" in json.dumps(replay_payload["input"])
-    assert "continue" in json.dumps(replay_payload["input"])
-    assert all(call.get("status") != "error" for call in log_calls)
+    assert recovered_upstream.sent_text == []
     assert "continuity_fail_closed surface=websocket_stream reason=previous_response_not_found" in caplog.text
     assert "previous_response_source=proxy_injected" in caplog.text
     assert "fresh_replay_available=false" in caplog.text
@@ -14528,6 +14525,118 @@ def test_backend_responses_websocket_cached_history_replays_after_pre_token_500(
     assert replayed_input[0] == failover.HISTORICAL_INPUT
     assert replayed_input[-1] == failover.FOLLOW_UP_INPUT
     assert any(item.get("role") == "assistant" for item in replayed_input)
+
+
+def _anchor_loss_event(anchor_id: str, *, response_id: str | None, sequence_number: int) -> _FakeUpstreamMessage:
+    error = {
+        "type": "invalid_request_error",
+        "code": "previous_response_not_found",
+        "message": f"Previous response with id '{anchor_id}' not found.",
+        "param": "previous_response_id",
+    }
+    if response_id is None:
+        return _sequenced_ws_event({"type": "error", "status": 400, "error": error}, sequence_number)
+    return _sequenced_ws_event(
+        {"type": "response.failed", "response": {"id": response_id, "status": "failed", "error": error}},
+        sequence_number,
+    )
+
+
+@pytest.mark.parametrize("accepted", [False, True], ids=["before-created", "after-created"])
+def test_backend_responses_websocket_anchor_loss_replays_cached_history(
+    app_instance,
+    monkeypatch,
+    caplog,
+    accepted,
+):
+    """A previous_response_not_found before any model output resends the cached
+    history once, on the same account, and the client sees one response with
+    advancing sequence numbers."""
+    anchor_id = "resp_ws_anchor_loss_anchor"
+    lost_id = "resp_ws_anchor_loss_lost"
+    replay_id = "resp_ws_anchor_loss_replay"
+    created: dict[str, object] = {"type": "response.created", "response": {"id": lost_id, "status": "in_progress"}}
+    in_progress: dict[str, object] = {
+        "type": "response.in_progress",
+        "response": {"id": lost_id, "status": "in_progress"},
+    }
+    lost_turn = (
+        [
+            _sequenced_ws_event(created, 0),
+            _sequenced_ws_event(in_progress, 1),
+            _anchor_loss_event(anchor_id, response_id=lost_id, sequence_number=2),
+        ]
+        if accepted
+        else [_anchor_loss_event(anchor_id, response_id=None, sequence_number=0)]
+    )
+    owner = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[_completed_first_turn_upstream_batch(anchor_id), lost_turn],
+    )
+    owner_replay = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            [
+                _sequenced_ws_event({"type": "response.created", "response": {"id": replay_id}}, 0),
+                _sequenced_ws_event({"type": "response.in_progress", "response": {"id": replay_id}}, 1),
+                _sequenced_ws_event({"type": "response.output_text.delta", "response_id": replay_id, "delta": "OK"}, 2),
+                _sequenced_ws_event(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": replay_id,
+                            "status": "completed",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [{"type": "output_text", "text": "OK"}],
+                                }
+                            ],
+                        },
+                    },
+                    3,
+                ),
+            ]
+        ],
+    )
+    other = _recovered_upstream("resp_ws_anchor_loss_unused")
+    failover = _TwoAccountWebSocketFailover(owner, other)
+    failover.upstreams_by_account[failover.FIRST_ACCOUNT_ID].append(owner_replay)
+    failover.install(monkeypatch)
+    caplog.set_level(logging.INFO)
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            failover.response_create([failover.HISTORICAL_INPUT]),
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": anchor_id,
+                "input": [failover.FOLLOW_UP_INPUT],
+                "stream": True,
+            },
+        ],
+    )
+
+    assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == (lost_id if accepted else replay_id)
+    sequence_numbers = [event["sequence_number"] for event in events if "sequence_number" in event]
+    assert sequence_numbers == sorted(set(sequence_numbers)), sequence_numbers
+    assert [event["type"] for event in events].count("response.in_progress") == 1
+    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID, failover.FIRST_ACCOUNT_ID]
+    assert not failover.refused_connects
+    assert other.sent_text == []
+    assert json.loads(owner.sent_text[1])["previous_response_id"] == anchor_id
+    replayed = json.loads(owner_replay.sent_text[0])
+    assert "previous_response_id" not in replayed
+    assert replayed["input"][0] == failover.HISTORICAL_INPUT
+    assert replayed["input"][-1] == failover.FOLLOW_UP_INPUT
+    assert any(item.get("role") == "assistant" for item in replayed["input"])
+    assert "continuity_fail_closed" not in caplog.text
+    assert "previous_response_not_found" not in json.dumps(events)
 
 
 def test_backend_responses_websocket_uncached_previous_response_500_does_not_switch_accounts(
