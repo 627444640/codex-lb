@@ -129,7 +129,7 @@ describe("AppHeader", () => {
     const navigation = screen.getByRole("navigation");
     const statusLink = within(navigation).getByRole("link", { name: "Service status" });
 
-    expect(statusLink).toHaveAttribute("href", "https://localhost:2467/");
+    expect(statusLink).toHaveAttribute("href", "https://localhost:3000/status/");
     expect(statusLink).toHaveAttribute("target", "_blank");
     expect(statusLink).toHaveAttribute("rel", "noreferrer");
     expect(navigation.lastElementChild).toBe(statusLink);
@@ -143,7 +143,7 @@ describe("AppHeader", () => {
 
     const statusLinks = screen.getAllByRole("link", { name: "Service status" });
     expect(statusLinks).toHaveLength(1);
-    expect(statusLinks[0]).toHaveAttribute("href", "https://localhost:2467/");
+    expect(statusLinks[0]).toHaveAttribute("href", "https://localhost:3000/status/");
     expect(statusLinks[0]).toHaveAttribute("target", "_blank");
   });
 

@@ -14,11 +14,18 @@ function setup(t,clipboard){
   return {window:dom.window,document:dom.window.document,calls:()=>calls};
 }
 
+function mountedDocument(t) {
+  const template=readFileSync(resolve(__dirname,'../monitor/static/faq.html'),'utf8');
+  const dom=new JSDOM(template,{url:'https://status.example.invalid/status/static/faq.html',runScripts:'outside-only'});
+  t.after(()=>dom.window.close());
+  return dom.window.document;
+}
+
 test('FAQ has no chat controls and copying an address makes no network call',async t=>{
   let copied;const {document,calls}=setup(t,async text=>{copied=text;});
   assert.equal(document.querySelector('h1').textContent,'常见问题');
   assert.equal(document.querySelector('textarea,form,[id^="assistant-"]'),null);
-  assert.equal(document.querySelector('nav [aria-current="page"]').getAttribute('href'),'/static/faq.html');
+  assert.equal(document.querySelector('nav [aria-current="page"]').getAttribute('href'),'static/faq.html');
   document.querySelector('[data-copy-target]').click();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(copied,'https://example.invalid/v1');
   assert.match(document.querySelector('.copy-feedback').textContent,/已复制/);assert.equal(calls(),0);
@@ -30,4 +37,12 @@ test('denied clipboard access selects the address and keeps the guide readable',
   assert.equal(window.getSelection().toString(),'https://example.invalid/v1');
   assert.match(document.querySelector('.copy-feedback').textContent,/复制已选中的地址/);
   assert.equal(document.querySelector('details').open,false);assert.equal(calls(),0);
+});
+
+test('FAQ navigation stays below the public status mount', t => {
+  const document = mountedDocument(t);
+  assert.equal(document.querySelector('nav [aria-current="page"]').href,
+    'https://status.example.invalid/status/static/faq.html');
+  assert.equal(document.querySelector('nav a[href="#overview"]').href,
+    'https://status.example.invalid/status/#overview');
 });
