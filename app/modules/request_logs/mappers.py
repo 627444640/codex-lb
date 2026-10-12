@@ -107,4 +107,6 @@ def to_request_log_entry(
         admission_failover_from_account_id=(
             log.admission_failover_from_account_id if include_sensitive_metadata else None
         ),
+        history_replay_reason=log.history_replay_reason,
+        history_replay_extra_tokens=log.history_replay_extra_tokens,
     )

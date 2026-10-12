@@ -6,7 +6,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, cast
 
 import anyio
@@ -517,6 +517,96 @@ def _bind_websocket_request_dispatch_owner(
         return False
     request_state.preferred_account_id = account_id
     request_state.replay_required_account_id = account_id
+    return True
+
+
+def _history_replay_owner_after_exclusion(
+    request_state: "_WebSocketRequestState",
+    resolved_owner: str | None,
+) -> str | None:
+    """Drop an owner the full-history replay already excluded.
+
+    The session loop re-resolves turn state before every reconnect. A replay
+    that moved off an open owner must not be pinned back to that account.
+    """
+
+    if (
+        request_state.history_replay_used
+        and resolved_owner is not None
+        and resolved_owner in request_state.excluded_account_ids
+    ):
+        return None
+    return resolved_owner
+
+
+def _observe_websocket_history_turn(request_state: "_WebSocketRequestState", payload: object) -> None:
+    from app.modules.proxy.conversation_history import (
+        observe_completed_turn,
+        output_items_from_event_payload,
+        request_body_from_text,
+    )
+
+    response_id, output_items = output_items_from_event_payload(payload)
+    observe_completed_turn(
+        request_body=request_body_from_text(request_state.request_text),
+        response_id=response_id or request_state.response_id,
+        output_items=output_items,
+        conversation_id=request_state.conversation_id,
+    )
+
+
+def _stage_websocket_history_replay(
+    request_state: "_WebSocketRequestState",
+    *,
+    account_id: str,
+    reason: str,
+    owner_blocked: bool,
+) -> bool:
+    """Install one full-history replay on the request, before any output was forwarded."""
+
+    from app.modules.proxy.conversation_history import (
+        mark_request_history_replayed,
+        request_body_from_text,
+        request_history_replayed,
+        try_plan_history_replay,
+    )
+
+    if reason not in {"previous_response_not_found", "stream_incomplete", "owner_unavailable"}:
+        return False
+    if (
+        request_state.history_replay_used
+        or request_history_replayed(request_state.request_id)
+        or request_state.downstream_visible
+        or request_state.upstream_model_output_seen
+        or request_state.replay_count >= 1
+    ):
+        return False
+    body = request_body_from_text(request_state.request_text)
+    if body is None:
+        return False
+    replay = try_plan_history_replay(
+        request_body=body,
+        reason=reason,
+        downstream_visible=False,
+        already_replayed=False,
+        owner_blocked=owner_blocked,
+        file_pinned=request_state.file_required_preferred_account,
+    )
+    if replay is None:
+        return False
+    request_text = json.dumps(replay.request_body, ensure_ascii=False, separators=(",", ":"))
+    request_state.request_text = request_text
+    request_state.fresh_upstream_request_text = request_text
+    request_state.fresh_upstream_request_is_retry_safe = True
+    request_state.previous_response_id = None
+    request_state.proxy_injected_previous_response_id = False
+    request_state.history_replay_used = True
+    mark_request_history_replayed(request_state.request_id)
+    if replay.switch_account:
+        request_state.excluded_account_ids.add(account_id)
+        request_state.replay_required_account_id = None
+        request_state.preferred_account_id = None
+        request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
     return True
 
 

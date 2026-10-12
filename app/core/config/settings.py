@@ -451,6 +451,17 @@ class Settings(BaseSettings):
     account_admission_breaker_window_seconds: float = Field(default=60.0, gt=0)
     account_admission_breaker_open_seconds: int = Field(default=300, ge=1)
 
+    # Full-history replay cache. On by default so a lost previous_response_id
+    # or a pre-output close can be resent without operator setup. Caps, idle
+    # TTL, and the free-disk floor stay configurable because conversation size
+    # and disk headroom differ by host; hardcoding them would force a deploy
+    # to resize the cache. The file is ``data_dir/conversation_history.db``.
+    conversation_history_cache_enabled: bool = True
+    conversation_history_cache_max_bytes: int = Field(default=1024**3, ge=1)
+    conversation_history_cache_conversation_max_bytes: int = Field(default=32 * 1024 * 1024, ge=1)
+    conversation_history_cache_idle_ttl_seconds: int = Field(default=1800, ge=1)
+    conversation_history_cache_min_free_disk_bytes: int = Field(default=512 * 1024 * 1024, ge=0)
+
     # Soft drain & deterministic failover (drain/probe thresholds are fixed
     # constants in ``app/core/balancer/logic.py``)
     soft_drain_enabled: bool = True

@@ -2507,6 +2507,9 @@ class _StreamingRetryMixin:
                                 account,
                                 _stream_settlement_error_payload(settlement),
                                 settlement.error_code or "upstream_error",
+                                pre_first_output_close=(
+                                    not settlement.downstream_visible and settlement.error_code == "stream_incomplete"
+                                ),
                             )
                         elif settled and settlement.record_success:
                             await proxy._load_balancer.record_success(account)
@@ -2516,6 +2519,19 @@ class _StreamingRetryMixin:
                         return
                     continue  # outer loop: account failover after transient exhaustion
                 except _RetryableStreamError as exc:
+                    if exc.history_replay:
+                        # The failed attempt still holds this account's stream
+                        # slot. Release it before the one history resend, or a
+                        # same-account replay cannot be selected again.
+                        await _release_tracked_stream_lease(current_account_lease)
+                        current_account_lease = None
+                        if exc.exclude_account:
+                            require_preferred_account = False
+                            preferred_account_id = None
+                            payload_replay_required_account_id = None
+                            excluded_account_ids.add(account.id)
+                            affinity = replace(affinity, reallocate_sticky=True)
+                        continue
                     if _facade()._is_security_work_authorization_required_error(exc.code, exc.error.get("message")):
                         if (
                             account.security_work_authorized

@@ -52,6 +52,7 @@ from app.modules.accounts.schemas import (
     AccountUsageResetConsumeRequest,
     AccountUsageResetConsumeResponse,
     AccountUsageResetCreditsResponse,
+    ConversationHistoryCacheStatsResponse,
 )
 from app.modules.accounts.service import (
     AccountNotProbableError,
@@ -171,6 +172,30 @@ async def list_admission_breakers(
         window_seconds=policy.window_seconds,
         open_seconds=policy.open_seconds,
         accounts=rows,
+    )
+
+
+@router.get("/conversation-history-cache", response_model=ConversationHistoryCacheStatsResponse)
+async def conversation_history_cache_stats() -> ConversationHistoryCacheStatsResponse:
+    """Occupancy and replay counters for the in-flight history cache.
+
+    The payload is counts and byte sizes. It does not include conversation text.
+    """
+
+    from app.modules.proxy.conversation_history import get_conversation_history_cache
+
+    stats = get_conversation_history_cache().stats()
+    return ConversationHistoryCacheStatsResponse(
+        enabled=stats.enabled,
+        disabled_reason=stats.disabled_reason,
+        bytes_used=stats.bytes_used,
+        bytes_cap=stats.bytes_cap,
+        conversation_bytes_cap=stats.conversation_bytes_cap,
+        entries=stats.entries,
+        hits=stats.hits,
+        replays=stats.replays,
+        idle_ttl_seconds=stats.idle_ttl_seconds,
+        min_free_disk_bytes=stats.min_free_disk_bytes,
     )
 
 

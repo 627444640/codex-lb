@@ -530,6 +530,9 @@ class RequestLog(Base):
     # Set on rows written after the admission breaker. NULL on older rows.
     admission_failover_retried: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     admission_failover_from_account_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set when a pre-output failure was resent from cached history. NULL on older rows.
+    history_replay_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    history_replay_extra_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     account: Mapped[Account | None] = relationship(
         "Account",
         back_populates="request_logs",

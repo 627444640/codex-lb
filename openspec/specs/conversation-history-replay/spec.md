@@ -1,0 +1,69 @@
+# conversation-history-replay Specification
+
+## Purpose
+
+Resend one pre-output turn from a local copy of the conversation when upstream has lost the previous response or the owning account cannot take the turn.
+
+## Requirements
+
+### Requirement: One pre-output full-history replay
+
+The proxy SHALL cache completed turns of an in-flight conversation and, before any output event is forwarded to the client, SHALL resend the current turn at most once when upstream returns `previous_response_not_found` or ends the stream as `stream_incomplete` before the first output. The resend SHALL include the cached history, SHALL omit `previous_response_id`, and SHALL wait for a random delay between 50 and 250 milliseconds. When the owning account is not admission-blocked, the resend SHALL use that same account. When the owning account is admission-open or the failure is `previous_response_owner_unavailable`, the resend SHALL use a different healthy account. A history that contains a file id, or a request pinned by a file, SHALL NOT move to another account. After any output has been forwarded, the proxy SHALL NOT replay. A pre-output close that qualifies for the admission breaker SHALL still be recorded against that breaker. A second failure on the same request SHALL be returned to the client.
+
+#### Scenario: Lost previous response is resent on the same account
+- **GIVEN** the cache holds the completed turns behind a `previous_response_id`
+- **WHEN** upstream returns `previous_response_not_found` before any output
+- **AND** the owning account is not admission-blocked
+- **THEN** the proxy resends the turn once on that account
+- **AND** the resend contains the cached history and no `previous_response_id`
+
+#### Scenario: Open owner moves to a healthy account
+- **GIVEN** the cache holds a full history with no file id
+- **WHEN** the owning account is admission-open or returns `previous_response_owner_unavailable` before any output
+- **THEN** the proxy resends the turn once on a different healthy account
+- **AND** the resend contains the cached history and no `previous_response_id`
+
+#### Scenario: Output already forwarded is not replayed
+- **WHEN** a qualifying failure arrives after an output event was forwarded
+- **THEN** the proxy does not resend the turn
+
+#### Scenario: A file id does not move
+- **GIVEN** the cached history or the current turn contains a file id
+- **WHEN** the owning account is unavailable before any output
+- **THEN** the proxy does not send the turn to a different account
+
+#### Scenario: The close still counts
+- **WHEN** upstream closes with code 1000 before any output and a history replay is staged
+- **THEN** that close still counts toward the owning account's admission breaker
+
+### Requirement: The cache is a bounded separate file
+
+The cache SHALL use a SQLite file other than `store.db`. Memory SHALL hold an index and a batch of compressed deltas, not the conversation text. The proxy SHALL compress each completed turn before writing, SHALL append only the new input suffix, and SHALL NOT write once per token. The default total cap SHALL be 1 GiB and the default per-conversation cap SHALL be 32 MiB. A conversation over its cap SHALL NOT be cached, and later requests for it SHALL follow the behavior used when the cache is absent. Idle entries SHALL expire after 30 minutes by default. Eviction SHALL be least-recently-used. Evicted conversations SHALL be deleted, and the proxy SHALL reclaim their pages with incremental vacuum. The on-disk size, including sidecars, SHALL NOT exceed the total cap. The file mode SHALL be `0600`. When free disk is below the configured floor, the default of which is 512 MiB, the proxy SHALL disable the cache, log a warning, and continue serving requests.
+
+#### Scenario: File size stays within the cap
+- **GIVEN** a cache whose total cap is smaller than the turns being recorded
+- **WHEN** completed turns are recorded until eviction runs
+- **THEN** the cache file size never exceeds the cap
+- **AND** evicted conversations are deleted
+
+#### Scenario: Low disk disables the cache
+- **WHEN** free disk is below the configured floor
+- **THEN** recording a turn does not raise
+- **AND** the cache reports itself disabled because of low disk
+
+#### Scenario: Writes are per completed turn
+- **WHEN** many token deltas complete as a smaller number of turns
+- **THEN** the number of cache write transactions is far below the number of token deltas
+
+### Requirement: Replays are logged and stats omit conversation text
+
+The proxy SHALL log each history replay with its reason and the extra input tokens spent, and SHALL store that reason and token count on the request log. Historical rows MAY leave those columns null. The dashboard API SHALL expose `GET /api/accounts/conversation-history-cache` with whether the cache is enabled, the disabled reason, bytes used, the total cap, the per-conversation cap, entry count, hit count, replay count, idle TTL, and the free-disk floor. That response SHALL NOT include conversation text.
+
+#### Scenario: A replay is recorded on the request log
+- **WHEN** the proxy resends a turn from cached history
+- **THEN** the request log stores the replay reason and the extra input tokens
+
+#### Scenario: Cache stats contain no conversation text
+- **WHEN** an operator calls `GET /api/accounts/conversation-history-cache`
+- **THEN** the response includes size, cap, entries, hits, and replays
+- **AND** the response does not include conversation text
