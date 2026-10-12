@@ -76,6 +76,7 @@ from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
 from app.modules.proxy._service.http_bridge.accepted_replay import (
+    _terminal_payload_reports_output,
     _websocket_accepted_admission_retry_error_code,
     _websocket_accepted_capacity_retry_error_code,
 )
@@ -286,7 +287,9 @@ from app.modules.proxy._service.support import (
     _clear_websocket_request_error_overrides,
     _DeferredKeyedStreamHealthPenalty,
     _event_type_from_payload,
+    _websocket_model_output_started,
     _websocket_request_can_replay_before_visible_output,
+    _websocket_request_is_accepted_lifecycle_only,
     _WebSocketContinuityAnchor,
     _WebSocketContinuityState,
     _WebSocketReceiveTimeout,
@@ -692,6 +695,43 @@ def _websocket_history_failover_allowed(request_state: "_WebSocketRequestState")
     ):
         return False
     return True
+
+
+def _websocket_anchor_loss_history_replay_candidate(
+    request_state: "_WebSocketRequestState",
+    *,
+    event_type: str | None,
+    payload: dict[str, JsonValue] | None,
+    has_other_pending_requests: bool,
+) -> bool:
+    """True when a ``previous_response_not_found`` terminal may resend cached history once.
+
+    Only a turn that still depends on the lost anchor qualifies; a retry-safe
+    fresh body has its own replay. Before ``response.created`` nothing reached
+    the client. After it, only the lifecycle prelude may have, and the replay
+    suppresses its own prelude, so any exposed sequence must belong to those
+    frames for the replay's first forwarded frame to advance past it.
+    """
+
+    if request_state.previous_response_id is None:
+        return False
+    if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text:
+        return False
+    if event_type not in {"error", "response.failed"} or has_other_pending_requests:
+        return False
+    if not request_state.request_text or request_state.replay_count != 0:
+        return False
+    if _websocket_model_output_started(request_state) or _terminal_payload_reports_output(payload):
+        return False
+    watermark = request_state.last_downstream_sequence_number
+    if request_state.response_id is None and request_state.awaiting_response_created:
+        return request_state.response_event_count == 0 and watermark is None
+    payload_response_id = _websocket_response_id(None, payload)
+    if payload_response_id is not None and payload_response_id != request_state.response_id:
+        return False
+    if not _websocket_request_is_accepted_lifecycle_only(request_state):
+        return False
+    return watermark is None or watermark < request_state.response_event_count
 
 
 def _websocket_admission_may_switch_account(request_state: "_WebSocketRequestState") -> bool:
