@@ -12,6 +12,12 @@ The independent monitor uses a private server-to-server connector documented in 
 
 The matching optional monitor source, locked dependencies and synthetic tests are included in [deploy/status-monitor](../deploy/status-monitor/README.md). Start it separately on loopback and keep its runtime state outside the source LB data directory. Repository seed addresses are labelled examples; customize them before publishing guides. The base LB installation does not start this companion automatically.
 
+For the maintained public site, the read-only monitor is available at
+`/status/` when the Caddy/Tunnel path mount is enabled. The proxy strips that
+prefix before sending requests to the loopback monitor, redirects `/status` to
+`/status/`, and returns `404` for `/status/internal/*`. The LAN HTTPS entry at
+`https://<lan-host>:2467/` remains available for private-network access.
+
 ## Frequently asked questions
 
 Use **Settings → Frequently asked questions** to create, search and edit error guides. Each entry includes an error identifier, title, keywords, symptoms, cause, ordered solution steps and limitations. An optional HTTP(S) address adds a copy button and prerequisites to the public entry. Content is plain text; HTML is never executed.

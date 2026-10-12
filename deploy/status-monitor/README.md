@@ -24,6 +24,13 @@ Prepare the optional LB connector in its data directory as described in the oper
 
 For a LAN deployment using the maintained example, the public status page is served at a configured HTTPS origin such as `https://status.example.lan:2467/`; an additional mDNS or IP alias may be listed in `allowed_hosts`. LAN clients must trust the Caddy internal CA certificate. The Settings connector remains `http://127.0.0.1:2466` and is never replaced with the LAN URL. Hostnames, IP addresses and certificates are deployment values, not portable source defaults; update the private runtime copy when the LAN address changes.
 
+When the LB site is also published through a trusted HTTPS tunnel, the same
+read-only monitor may be mounted at `/status/` on that site. The public proxy
+must strip the prefix before forwarding to `127.0.0.1:2466`, redirect `/status`
+to `/status/`, and return `404` for `/status/internal/*`. The monitor process
+and Settings connector remain loopback-only; the existing LAN `2467` site is
+still useful for local access and certificate-based troubleshooting.
+
 Customize seeded guide addresses through **Settings → Frequently asked questions**. Distributed addresses are examples, not working endpoints. Seed import runs only once; subsequent starts retain administrator edits, withdrawals and soft deletions.
 
 ## FAQ and upgrades

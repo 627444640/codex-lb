@@ -31,16 +31,15 @@ const ADVANCED_NAV_ITEMS = [
   { to: "/automations", labelKey: "nav.automations" },
 ] as const;
 
-const STATUS_PAGE_PORT = "2467";
+const STATUS_PAGE_PATH = "/status/";
 
 function getStatusPageHref(): string {
   if (typeof window === "undefined") {
-    return `https://localhost:${STATUS_PAGE_PORT}/`;
+    return `https://localhost${STATUS_PAGE_PATH}`;
   }
   const url = new URL(window.location.href);
   url.protocol = "https:";
-  url.port = STATUS_PAGE_PORT;
-  url.pathname = "/";
+  url.pathname = STATUS_PAGE_PATH;
   url.search = "";
   url.hash = "";
   return url.toString();
