@@ -85,7 +85,7 @@ def test_replay_rebuilds_history_once_on_the_same_account(tmp_path: Path) -> Non
     )
     assert replay is not None
     assert replay.switch_account is False
-    assert replay.request_body["previous_response_id"] is None
+    assert "previous_response_id" not in replay.request_body
     encoded = json.dumps(replay.request_body)
     assert secret in encoded
     assert "assistant-secret-beta" in encoded

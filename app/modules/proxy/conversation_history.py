@@ -321,7 +321,7 @@ class ConversationHistoryCache:
             extra = max(0, _estimate_tokens(full) - _estimate_tokens(current))
             body = dict(request_body)
             body["input"] = full
-            body["previous_response_id"] = None
+            body.pop("previous_response_id", None)
             switch = owner_blocked or reason == "owner_unavailable"
             if switch and (file_pinned or extract_input_file_ids(full)):
                 return None
