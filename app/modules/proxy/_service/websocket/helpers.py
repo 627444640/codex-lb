@@ -76,6 +76,7 @@ from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
 from app.modules.proxy._service.http_bridge.accepted_replay import (
+    _websocket_accepted_admission_retry_error_code,
     _websocket_accepted_capacity_retry_error_code,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
@@ -658,6 +659,41 @@ def _websocket_affinity_may_resolve_hard_owner(affinity_policy: _AffinityPolicy)
     return _affinity_may_resolve_hard_owner(affinity_policy)
 
 
+def _websocket_proxy_injected_fresh_body_can_move(request_state: "_WebSocketRequestState") -> bool:
+    """True when a proxy-injected anchor already has a retry-safe fresh body.
+
+    That body omits ``previous_response_id`` and is the account switch #2127
+    already performs. Cached full history must not replace it.
+    """
+
+    return bool(
+        request_state.proxy_injected_previous_response_id
+        and request_state.fresh_upstream_request_is_retry_safe
+        and request_state.fresh_upstream_request_text
+    )
+
+
+def _websocket_history_failover_allowed(request_state: "_WebSocketRequestState") -> bool:
+    """True when cached history may move an anchored pre-output admission failure.
+
+    A client-supplied ``previous_response_id`` cannot be forwarded to another
+    account. Cached full history strips that anchor and is the only way the
+    turn may leave. File pins, a turn-state owner, and affinity that may
+    resolve a hard sticky owner stay put.
+    """
+
+    if request_state.file_required_preferred_account:
+        return False
+    if _websocket_affinity_may_resolve_hard_owner(request_state.affinity_policy):
+        return False
+    if (
+        request_state.preferred_account_id is not None
+        and request_state.affinity_policy.codex_session_source == "turn_state"
+    ):
+        return False
+    return True
+
+
 def _websocket_admission_may_switch_account(request_state: "_WebSocketRequestState") -> bool:
     """True when one pre-output admission failure may leave this account.
 
@@ -1003,16 +1039,29 @@ def _websocket_precreated_retry_error_code(
     if request_state is None:
         return None
     if request_state.response_id is not None and not request_state.awaiting_response_created:
-        # An accepted response is only replayable under the output-free
-        # capacity rule; every pre-created classifier below refuses it.
-        return _websocket_accepted_capacity_retry_error_code(
+        # An accepted response is replayable under the output-free capacity
+        # rule, or once for a pre-output admission failure (including
+        # ``server_error``, which is not a capacity code). Every other
+        # pre-created classifier below refuses an accepted turn.
+        normalized_error_code = _normalize_error_code(
+            _websocket_event_error_code(event_type, payload),
+            _websocket_event_error_type(event_type, payload),
+        )
+        capacity_code = _websocket_accepted_capacity_retry_error_code(
             request_state,
             event_type=event_type,
-            error_code=_normalize_error_code(
-                _websocket_event_error_code(event_type, payload),
-                _websocket_event_error_type(event_type, payload),
-            ),
+            error_code=normalized_error_code,
             error_message=_websocket_event_error_message(event_type, payload),
+            payload_response_id=_websocket_response_id(None, payload),
+            payload=payload,
+            has_other_pending_requests=has_other_pending_requests,
+        )
+        if capacity_code is not None:
+            return capacity_code
+        return _websocket_accepted_admission_retry_error_code(
+            request_state,
+            event_type=event_type,
+            error_code=normalized_error_code,
             payload_response_id=_websocket_response_id(None, payload),
             payload=payload,
             has_other_pending_requests=has_other_pending_requests,

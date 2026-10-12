@@ -1087,6 +1087,10 @@ async def _replay_http_history(
     # shared retry budget back. Record it here so a later attempt sees it.
     note_history_replay(replay.reason, replay.extra_tokens, request_id=request_id)
     mark_request_history_replayed(request_id)
+    if replay.switch_account and reason == "admission_failure":
+        from app.modules.proxy._load_balancer.admission_breaker import note_admission_failover
+
+        note_admission_failover(getattr(account, "id", ""), request_id=request_id)
     if reason == "stream_incomplete":
         await record_upstream_admission_failure(
             proxy._load_balancer,

@@ -51,7 +51,12 @@ from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_t
 from app.core.utils.request_id import reset_request_id, set_request_id
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.db.models import Account
-from app.modules.proxy._load_balancer.admission_breaker import ADMISSION_FAILURE_CODES
+from app.modules.proxy._load_balancer.admission_breaker import (
+    ADMISSION_FAILURE_CODES,
+    AdmissionBreakerPolicy,
+    admission_retry_jitter_seconds,
+    transparent_retry_used,
+)
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -152,6 +157,7 @@ from app.modules.proxy._service.support import (
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     TERMINAL_EVENT_TYPES,
     _account_capacity_wait_payload,
+    _affinity_may_resolve_hard_owner,
     _clear_websocket_deferred_reasoning_downstream_texts,
     _clear_websocket_precreated_replay_fallback,
     _clear_websocket_request_error_overrides,
@@ -164,7 +170,9 @@ from app.modules.proxy._service.support import (
     _record_response_event,
     _signal_propagated_capacity_startup_ready,
     _signal_propagated_capacity_startup_wait,
+    _stage_websocket_history_replay,
     _ttft_event_visible_at,
+    _websocket_model_output_started,
     _websocket_request_can_replay_before_visible_output,
     _websocket_should_defer_reasoning_prelude,
     _WebSocketReceiveTimeout,
@@ -204,6 +212,10 @@ from app.modules.proxy._service.warmup import (
 )
 from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
+)
+from app.modules.proxy._service.websocket.helpers import (
+    _websocket_history_failover_allowed,
+    _websocket_proxy_injected_fresh_body_can_move,
 )
 from app.modules.proxy.affinity import (
     _extract_model_class,
@@ -2446,6 +2458,78 @@ class _HTTPBridgeUpstreamEventsMixin:
             and _websocket_request_can_replay_before_visible_output(status_request_state)
             and _http_bridge_accepted_capacity_retry_allowed(status_request_state)
         )
+        if (
+            status_request_state is not None
+            and retry_error_code in ADMISSION_FAILURE_CODES
+            and not is_previous_response_not_found_event
+            and status_request_state.response_id is not None
+            and not status_request_state.awaiting_response_created
+            and status_request_state.previous_response_id is not None
+            and not _websocket_proxy_injected_fresh_body_can_move(status_request_state)
+            and not _websocket_model_output_started(status_request_state)
+            and _websocket_history_failover_allowed(status_request_state)
+            and not (session.key.strength == "hard" and _affinity_may_resolve_hard_owner(session.affinity))
+            and AdmissionBreakerPolicy.from_settings().enabled
+            and not transparent_retry_used(status_request_state.request_id)
+            and not status_request_state.history_replay_used
+            and _stage_websocket_history_replay(
+                status_request_state,
+                account_id=session.account.id,
+                reason="admission_failure",
+                owner_blocked=True,
+            )
+        ):
+            # Accepted, no output yet. Cached history is the only way to drop
+            # previous_response_id and leave this account. Close the original
+            # upstream before the replacement request is sent. A cache miss
+            # leaves the later branches unchanged.
+            await self._handle_or_defer_precreated_stream_health(
+                status_request_state,
+                session.account,
+                {"message": retry_error_message or "Upstream error"},
+                retry_error_code,
+            )
+            setattr(status_request_state, "account_health_error_handled", True)
+            await asyncio.sleep(admission_retry_jitter_seconds())
+            try:
+                await session.upstream.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close HTTP bridge upstream before admission history failover",
+                    exc_info=True,
+                )
+            async with session.pending_lock:
+                if status_request_state not in session.pending_requests:
+                    session.pending_requests.appendleft(status_request_state)
+                    session.queued_request_count += 1
+                await _stage_websocket_request_state_for_replay(
+                    status_request_state,
+                    create_gate=session.response_create_gate,
+                    surface="http_bridge",
+                    trigger="capacity_error",
+                )
+            retried = await self._retry_http_bridge_precreated_request(
+                session,
+                request_state=status_request_state,
+            )
+            if retried:
+                return
+            async with session.pending_lock:
+                if status_request_state in session.pending_requests:
+                    session.pending_requests.remove(status_request_state)
+                    session.queued_request_count = max(0, session.queued_request_count - 1)
+            status_request_state.error_http_status_override = 502
+            (
+                _downstream_text,
+                event_block,
+                event,
+                payload,
+                event_type,
+            ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
+            retry_error_code = None
+            auth_error_code = None
+            wait_for_model_capacity_retry = False
+            owner_pinned_quota_error = None
         if (
             auth_error_code is not None
             and not is_previous_response_not_found_event

@@ -127,6 +127,7 @@ from app.modules.proxy._service.compact import (
 )
 from app.modules.proxy._service.http_bridge.accepted_replay import (
     _stage_websocket_request_state_for_replay,
+    _websocket_accepted_capacity_retry_error_code,
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _active_http_bridge_instance_ring as _active_http_bridge_instance_ring,
@@ -352,6 +353,7 @@ from app.modules.proxy._service.support import (
     _StreamSettlement,
     _wait_for_websocket_continuity_gap,
     _websocket_full_replay_should_wait_for_continuity,
+    _websocket_model_output_started,
     _WebSocketConnectFailureEmitted,
     _WebSocketContinuityState,
     _WebSocketReceiveTimeout,
@@ -450,11 +452,13 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_event_error_type,
     _websocket_event_incomplete_reason,
     _websocket_full_resend_conflicts_with_visible_pending,
+    _websocket_history_failover_allowed,
     _websocket_input_items_are_self_contained_fresh_replay,
     _websocket_owner_switch_has_other_pending_requests,
     _websocket_precreated_auth_error_code,
     _websocket_precreated_replay_fallback_error,
     _websocket_precreated_retry_error_code,
+    _websocket_proxy_injected_fresh_body_can_move,
     _websocket_receive_timeout_for_pending_requests,
     _websocket_response_id,
     _wrapped_websocket_error_event,
@@ -5811,57 +5815,113 @@ class _WebSocketMixin:
                     upstream_control.suppress_downstream_event = True
                     upstream_control.replay_request_state = request_state
                     return downstream_text
+                # No cached history. The original previous_response_id cannot
+                # be sent to another account, so the terminal is surfaced.
+                retry_error_code = None
             else:
-                upstream_control.reconnect_requested = True
-                # The loop re-acquires the create gate and admission for a
-                # replay whose gate is not held, so no gate is claimed here.
-                await _stage_websocket_request_state_for_replay(
-                    request_state,
-                    create_gate=None,
-                    surface="websocket",
-                    trigger="capacity_error",
-                )
-                request_state.replay_count += 1
-                _clear_websocket_request_error_overrides(request_state)
-                if accepted_lifecycle_replay and request_state.previous_response_id is not None:
-                    # The owner-switch prep swaps the retained fresh body in and
-                    # releases the anchor owner's pin only when the move is
-                    # proven safe (proxy-injected anchor, account-neutral fresh
-                    # body). A client-supplied anchor or a fresh body that still
-                    # names an account-scoped upload keeps the anchored body: the
-                    # terminal proved the accepted turn produced nothing, so it
-                    # is re-sent as-is to the owner that accepted it (parity with
-                    # the bridge's owner-bound anchored retry). The dispatch
-                    # binding already requires that owner on the reconnect.
-                    _prepare_websocket_request_state_for_account_switch(request_state)
-                if accepted_lifecycle_replay and _websocket_accepted_replay_may_exclude_account(request_state):
-                    # The accepted turn failed on this account; move the
-                    # account-neutral replay to another one like the bridge does.
-                    # A replay still pinned to its owner, or whose Codex session
-                    # may resolve to a hard sticky owner, reconnects there instead.
-                    request_state.excluded_account_ids.add(account.id)
-                    request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
-                upstream_control.suppress_downstream_event = True
-                upstream_control.replay_request_state = request_state
+                # An anchored turn can leave only by replaying cached history
+                # without previous_response_id. A cache miss for server_error
+                # stays on this account and surfaces. Capacity misses keep the
+                # owner or fresh-body replay below.
+                history_moved = False
                 if (
-                    retry_error_code in ADMISSION_FAILURE_CODES
+                    accepted_lifecycle_replay
+                    and retry_error_code in ADMISSION_FAILURE_CODES
+                    and not _websocket_model_output_started(request_state)
+                    and request_state.previous_response_id is not None
+                    and not _websocket_proxy_injected_fresh_body_can_move(request_state)
+                    and _websocket_history_failover_allowed(request_state)
+                    and AdmissionBreakerPolicy.from_settings().enabled
                     and not transparent_retry_used(request_state.request_id)
                     and not request_state.history_replay_used
-                    and AdmissionBreakerPolicy.from_settings().enabled
-                    and not accepted_lifecycle_replay
-                    and account.id not in request_state.excluded_account_ids
-                    and _websocket_admission_may_switch_account(request_state)
                 ):
-                    request_state.excluded_account_ids.add(account.id)
-                    request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
-                    note_admission_failover(account.id, request_id=request_state.request_id)
-                    await asyncio.sleep(admission_retry_jitter_seconds())
-                if accepted_lifecycle_replay:
+                    history_moved = _stage_websocket_history_replay(
+                        request_state,
+                        account_id=account.id,
+                        reason="admission_failure",
+                        owner_blocked=True,
+                    )
+                    if history_moved:
+                        await asyncio.sleep(admission_retry_jitter_seconds())
+                    elif not _websocket_accepted_replay_may_exclude_account(request_state):
+                        # A capacity candidate keeps its owner or fresh-body
+                        # replay. A client anchor the capacity classifier
+                        # refused, including server_error, surfaces when the
+                        # history cache cannot move it.
+                        capacity_code = _websocket_accepted_capacity_retry_error_code(
+                            request_state,
+                            event_type=event_type,
+                            error_code=retry_error_code,
+                            error_message=_websocket_event_error_message(event_type, payload),
+                            payload_response_id=_websocket_response_id(None, payload),
+                            payload=payload,
+                            has_other_pending_requests=has_other_pending_requests,
+                        )
+                        if capacity_code is None:
+                            retry_error_code = None
+                if retry_error_code is not None:
+                    upstream_control.reconnect_requested = True
+                    # The loop re-acquires the create gate and admission for a
+                    # replay whose gate is not held, so no gate is claimed here.
+                    await _stage_websocket_request_state_for_replay(
+                        request_state,
+                        create_gate=None,
+                        surface="websocket",
+                        trigger="capacity_error",
+                    )
+                    request_state.replay_count += 1
+                    _clear_websocket_request_error_overrides(request_state)
+                    if accepted_lifecycle_replay and request_state.previous_response_id is not None:
+                        # The owner-switch prep swaps the retained fresh body in and
+                        # releases the anchor owner's pin only when the move is
+                        # proven safe (proxy-injected anchor, account-neutral fresh
+                        # body). A client-supplied anchor or a fresh body that still
+                        # names an account-scoped upload keeps the anchored body: the
+                        # terminal proved the accepted turn produced nothing, so it
+                        # is re-sent as-is to the owner that accepted it (parity with
+                        # the bridge's owner-bound anchored retry). The dispatch
+                        # binding already requires that owner on the reconnect.
+                        _prepare_websocket_request_state_for_account_switch(request_state)
+                    if accepted_lifecycle_replay and _websocket_accepted_replay_may_exclude_account(request_state):
+                        # The accepted turn failed on this account; move the
+                        # account-neutral replay to another one like the bridge does.
+                        # A replay still pinned to its owner, or whose Codex session
+                        # may resolve to a hard sticky owner, reconnects there instead.
+                        already_excluded = account.id in request_state.excluded_account_ids
+                        request_state.excluded_account_ids.add(account.id)
+                        request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
+                        if (
+                            not already_excluded
+                            and retry_error_code in ADMISSION_FAILURE_CODES
+                            and not _websocket_model_output_started(request_state)
+                            and not transparent_retry_used(request_state.request_id)
+                            and not request_state.history_replay_used
+                            and AdmissionBreakerPolicy.from_settings().enabled
+                        ):
+                            note_admission_failover(account.id, request_id=request_state.request_id)
+                            await asyncio.sleep(admission_retry_jitter_seconds())
+                    upstream_control.suppress_downstream_event = True
+                    upstream_control.replay_request_state = request_state
+                    if (
+                        retry_error_code in ADMISSION_FAILURE_CODES
+                        and not transparent_retry_used(request_state.request_id)
+                        and not request_state.history_replay_used
+                        and AdmissionBreakerPolicy.from_settings().enabled
+                        and not _websocket_model_output_started(request_state)
+                        and account.id not in request_state.excluded_account_ids
+                        and _websocket_admission_may_switch_account(request_state)
+                    ):
+                        request_state.excluded_account_ids.add(account.id)
+                        request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
+                        note_admission_failover(account.id, request_id=request_state.request_id)
+                        await asyncio.sleep(admission_retry_jitter_seconds())
+                if accepted_lifecycle_replay and retry_error_code is not None:
                     # The accepted request still holds its API-key reservation:
                     # the health write waits for its settlement (bridge parity).
                     # Pre-created replays keep the immediate write; they are not
                     # excluded from the reconnect and rely on the penalty to
-                    # steer selection away from this account.
+                    # steer selection away from this account. A surfaced cache
+                    # miss is finalized below and must not be penalized twice.
                     await _record_or_defer_websocket_accepted_replay_health(
                         proxy,
                         request_state,
@@ -5869,7 +5929,7 @@ class _WebSocketMixin:
                         error_message=_websocket_event_error_message(event_type, payload),
                         error_code=retry_error_code,
                     )
-                else:
+                elif not accepted_lifecycle_replay:
                     await proxy._handle_stream_error(
                         account,
                         {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
