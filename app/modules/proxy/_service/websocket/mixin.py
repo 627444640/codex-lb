@@ -354,6 +354,7 @@ from app.modules.proxy._service.support import (
     _wait_for_websocket_continuity_gap,
     _websocket_full_replay_should_wait_for_continuity,
     _websocket_model_output_started,
+    _websocket_request_log_retry_marks,
     _WebSocketConnectFailureEmitted,
     _WebSocketContinuityState,
     _WebSocketReceiveTimeout,
@@ -438,6 +439,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_accepted_replay_can_switch_account,
     _websocket_accepted_replay_may_exclude_account,
     _websocket_admission_may_switch_account,
+    _websocket_anchor_loss_history_replay_candidate,
     _websocket_auth_failure_requires_reauth,
     _websocket_capability_metadata_values,
     _websocket_client_previous_response_full_resend_is_retry_safe,
@@ -5275,9 +5277,9 @@ class _WebSocketMixin:
             else:
                 release_create_gate = False
             if request_state is not None:
-                replay_created_will_be_suppressed = (
+                replay_prelude_will_be_suppressed = (
                     event_type == "response.created" and request_state.suppress_next_created_downstream
-                )
+                ) or (event_type == "response.in_progress" and request_state.suppress_next_in_progress_downstream)
                 sequence_number = payload.get("sequence_number") if payload is not None else None
                 if (
                     request_state.replay_downstream_response_id is not None
@@ -5285,7 +5287,7 @@ class _WebSocketMixin:
                     and isinstance(sequence_number, int)
                     and not isinstance(sequence_number, bool)
                     and sequence_number <= request_state.last_downstream_sequence_number
-                    and not replay_created_will_be_suppressed
+                    and not replay_prelude_will_be_suppressed
                 ):
                     raise _WebSocketReplaySequenceRegression(
                         f"request_id={request_state.request_log_id or request_state.request_id} "
@@ -5477,6 +5479,7 @@ class _WebSocketMixin:
                         grouped_request_state,
                         surface="websocket_stream",
                         upstream_error_code="previous_response_not_found",
+                        concurrent_requests=True,
                     )
                 (
                     grouped_downstream_text,
@@ -5589,6 +5592,37 @@ class _WebSocketMixin:
             )
             if handled_auth_failure:
                 return text
+        # A turn that still needs the lost anchor can only be resent from cached
+        # history. Decide that before the stale-anchor rewrite records the turn
+        # as fail-closed and marks the anchor stale.
+        if (
+            retry_is_previous_response_not_found
+            and _websocket_anchor_loss_history_replay_candidate(
+                request_state,
+                event_type=event_type,
+                payload=payload,
+                has_other_pending_requests=has_other_pending_requests,
+            )
+            and _stage_websocket_history_replay(
+                request_state,
+                account_id=account.id,
+                reason="previous_response_not_found",
+                owner_blocked=account_admission_blocks(proxy._load_balancer, account.id),
+            )
+        ):
+            await _stage_websocket_request_state_for_replay(
+                request_state,
+                create_gate=None,
+                surface="websocket",
+                trigger="previous_response_not_found",
+            )
+            await asyncio.sleep(admission_retry_jitter_seconds())
+            request_state.replay_count += 1
+            _clear_websocket_request_error_overrides(request_state)
+            upstream_control.reconnect_requested = True
+            upstream_control.suppress_downstream_event = True
+            upstream_control.replay_request_state = request_state
+            return text
         retry_safe_previous_response_not_found = (
             retry_is_previous_response_not_found
             and request_state.fresh_upstream_request_is_retry_safe
@@ -5605,6 +5639,7 @@ class _WebSocketMixin:
                 event_type=event_type,
                 upstream_control=upstream_control,
                 original_text=text,
+                concurrent_requests=has_other_pending_requests,
             )
         if retry_error_code is None:
             retry_error_code = _websocket_precreated_retry_error_code(
@@ -5757,24 +5792,9 @@ class _WebSocketMixin:
                 ):
                     # A short continuation depends entirely on the upstream
                     # anchor. Replaying the same lost previous_response_id on a
-                    # new websocket just re-surfaces the raw upstream 400. A
-                    # cached full history can be resent once without that anchor.
-                    if _stage_websocket_history_replay(
-                        request_state,
-                        account_id=account.id,
-                        reason="previous_response_not_found",
-                        owner_blocked=account_admission_blocks(proxy._load_balancer, account.id),
-                    ):
-                        await asyncio.sleep(admission_retry_jitter_seconds())
-                        request_state.replay_count += 1
-                        request_state.awaiting_response_created = True
-                        request_state.response_id = None
-                        _clear_websocket_request_error_overrides(request_state)
-                        upstream_control.reconnect_requested = True
-                        upstream_control.suppress_downstream_event = True
-                        upstream_control.replay_request_state = request_state
-                    else:
-                        retry_error_code = None
+                    # new websocket just re-surfaces the raw upstream 400. The
+                    # cached-history replay was already tried above.
+                    retry_error_code = None
                 else:
                     replay_text = _install_verified_fresh_replay(
                         request_state,
@@ -6460,6 +6480,7 @@ class _WebSocketMixin:
                     client_ip=request_state.client_ip,
                     request_kind=request_state.request_kind,
                     connection_request_kind=request_state.connection_request_kind,
+                    retry_marks=_websocket_request_log_retry_marks(request_state),
                 )
             except Exception:
                 request_log_handoff_succeeded = False
@@ -6601,6 +6622,7 @@ class _WebSocketMixin:
             client_ip=request_state.client_ip,
             request_kind=request_state.request_kind,
             connection_request_kind=request_state.connection_request_kind,
+            retry_marks=_websocket_request_log_retry_marks(request_state),
         )
         _record_upstream_transport_decision(
             downstream_transport=request_state.transport,
@@ -6968,6 +6990,7 @@ class _WebSocketMixin:
                     client_ip=request_state.client_ip,
                     request_kind=request_state.request_kind,
                     connection_request_kind=request_state.connection_request_kind,
+                    retry_marks=_websocket_request_log_retry_marks(request_state),
                 )
             except Exception:
                 request_log_handoff_succeeded = False

@@ -200,6 +200,7 @@ def _format_continuity_fail_closed_diagnostics(
     owner_lookup_outcome: str | None,
     previous_response_age_seconds: int | None,
     same_session: bool | None,
+    concurrent_requests: bool = False,
 ) -> str | None:
     if all(
         value is None
@@ -213,18 +214,19 @@ def _format_continuity_fail_closed_diagnostics(
         )
     ):
         return None
-    return " ".join(
-        (
-            f"previous_response_source={previous_response_source or 'unknown'}",
-            "fresh_replay_available="
-            f"{str(fresh_replay_available).lower() if fresh_replay_available is not None else 'unknown'}",
-            f"owner_lookup_source={owner_lookup_source or 'unknown'}",
-            f"owner_lookup_outcome={owner_lookup_outcome or 'unknown'}",
-            "previous_response_age_seconds="
-            f"{previous_response_age_seconds if previous_response_age_seconds is not None else 'unknown'}",
-            f"same_session={str(same_session).lower() if same_session is not None else 'unknown'}",
-        )
-    )
+    fields = [
+        f"previous_response_source={previous_response_source or 'unknown'}",
+        "fresh_replay_available="
+        f"{str(fresh_replay_available).lower() if fresh_replay_available is not None else 'unknown'}",
+        f"owner_lookup_source={owner_lookup_source or 'unknown'}",
+        f"owner_lookup_outcome={owner_lookup_outcome or 'unknown'}",
+        "previous_response_age_seconds="
+        f"{previous_response_age_seconds if previous_response_age_seconds is not None else 'unknown'}",
+        f"same_session={str(same_session).lower() if same_session is not None else 'unknown'}",
+    ]
+    if concurrent_requests:
+        fields.append("concurrent_requests=true")
+    return " ".join(fields)
 
 
 def _record_continuity_fail_closed(
@@ -240,6 +242,7 @@ def _record_continuity_fail_closed(
     owner_lookup_outcome: str | None = None,
     previous_response_age_seconds: int | None = None,
     same_session: bool | None = None,
+    concurrent_requests: bool = False,
 ) -> None:
     prometheus_available = bool(_service_global("PROMETHEUS_AVAILABLE", PROMETHEUS_AVAILABLE))
     counter = _service_global("continuity_fail_closed_total", continuity_fail_closed_total)
@@ -255,6 +258,7 @@ def _record_continuity_fail_closed(
         owner_lookup_outcome=owner_lookup_outcome,
         previous_response_age_seconds=previous_response_age_seconds,
         same_session=same_session,
+        concurrent_requests=concurrent_requests,
     )
     logger.warning(
         "continuity_fail_closed surface=%s reason=%s previous_response_id=%s session_id=%s "

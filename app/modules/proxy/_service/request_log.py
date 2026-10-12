@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Protocol, cast
 
 import anyio
 
 from app.core.metrics.prometheus import PROMETHEUS_AVAILABLE, proxy_phase_latency_seconds
 from app.modules.api_keys.service import ApiKeyData
-from app.modules.proxy._load_balancer.admission_breaker import current_admission_failover
+from app.modules.proxy._load_balancer.admission_breaker import AdmissionFailoverMark, current_admission_failover
 from app.modules.proxy.affinity import _extract_model_class
-from app.modules.proxy.conversation_history import current_history_replay
+from app.modules.proxy.conversation_history import HistoryReplayMark, current_history_replay
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
 from app.modules.request_logs.repository import RequestLogUsageUpdate
 
@@ -37,6 +38,18 @@ def _is_persistence_task(task: asyncio.Task[None], prefixes: tuple[str, ...] | N
 
 
 _REQUEST_TRANSPORT_HTTP = "http"
+
+
+@dataclass(frozen=True, slots=True)
+class RequestLogRetryMarks:
+    """Failover and history-replay marks for one attempt's request log row.
+
+    A streamed attempt can finish in a different task from the one that
+    recorded these marks, and context variables do not follow it there.
+    """
+
+    admission_failover: AdmissionFailoverMark | None = None
+    history_replay: HistoryReplayMark | None = None
 
 
 def _record_proxy_phase_latency(
@@ -230,9 +243,14 @@ class _RequestLogMixin:
         conversation_id: str | None = None,
         client_ip: str | None = None,
         archive_request_id: str | None = None,
+        retry_marks: RequestLogRetryMarks | None = None,
     ) -> None:
-        failover = current_admission_failover()
-        history_replay = current_history_replay()
+        if retry_marks is None:
+            failover = current_admission_failover()
+            history_replay = current_history_replay()
+        else:
+            failover = retry_marks.admission_failover
+            history_replay = retry_marks.history_replay
         task = asyncio.create_task(
             self._persist_request_log(
                 account_id=account_id,

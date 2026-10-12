@@ -13,6 +13,7 @@ import pytest
 
 from app.core.crypto import TokenEncryptor
 from app.modules.api_keys.service import ApiKeyData
+from app.modules.proxy._service.request_log import RequestLogRetryMarks
 from app.modules.proxy._service.support import (
     _REQUEST_TRANSPORT_HTTP,
     _REQUEST_TRANSPORT_WEBSOCKET,
@@ -352,6 +353,7 @@ async def test_websocket_finalizer_records_bridge_upstream_transport_and_metric(
             "client_ip": None,
             "request_kind": "normal",
             "connection_request_kind": None,
+            "retry_marks": RequestLogRetryMarks(),
         }
     ]
     assert metric_calls == [
@@ -437,6 +439,7 @@ async def test_websocket_connect_failure_records_bridge_upstream_transport_and_m
             "client_ip": None,
             "request_kind": "normal",
             "connection_request_kind": None,
+            "retry_marks": RequestLogRetryMarks(),
         }
     ]
 
@@ -509,6 +512,7 @@ async def test_fail_pending_websocket_requests_records_bridge_upstream_transport
             "client_ip": None,
             "request_kind": "normal",
             "connection_request_kind": None,
+            "retry_marks": RequestLogRetryMarks(),
         }
     ]
     assert metric_calls == [

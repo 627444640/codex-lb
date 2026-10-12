@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, NoReturn, Protocol
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol
 
 import anyio
 
@@ -44,6 +44,7 @@ from app.modules.proxy._service.response_timing import has_non_reasoning_output
 from app.modules.proxy._service.response_timing import observe_output_timing as observe_output_timing
 from app.modules.proxy._service.response_timing import observe_verbatim_output_timing as observe_verbatim_output_timing
 from app.modules.proxy.affinity import _AffinityPolicy
+from app.modules.proxy.conversation_history import HistoryReplayMark
 from app.modules.proxy.load_balancer import (
     AccountLease,
     AccountSelection,
@@ -51,6 +52,9 @@ from app.modules.proxy.load_balancer import (
 )
 from app.modules.proxy.tool_call_dedupe import ToolCallDedupeKey
 from app.modules.proxy.work_admission import AdmissionLease
+
+if TYPE_CHECKING:
+    from app.modules.proxy._service.request_log import RequestLogRetryMarks
 
 logger = logging.getLogger(__name__)
 
@@ -1048,6 +1052,9 @@ class _WebSocketRequestState:
     request_text: str | None = None
     replay_count: int = 0
     history_replay_used: bool = False
+    # The replayed attempt is usually finished by a different reader task than
+    # the one that staged the replay, so the request-log mark rides on the state.
+    history_replay_mark: HistoryReplayMark | None = None
     # Set when a bridge retry puts this request back on the pending deque
     # and returns to wait for another upstream event. Shutdown fails these
     # waits so a silent upstream cannot hold the in-flight drain open.
@@ -1987,6 +1994,7 @@ def _stage_websocket_history_replay(
     request_state.previous_response_id = None
     request_state.proxy_injected_previous_response_id = False
     request_state.history_replay_used = True
+    request_state.history_replay_mark = HistoryReplayMark(reason=replay.reason, extra_tokens=replay.extra_tokens)
     mark_request_history_replayed(request_state.request_id)
     if replay.switch_account:
         request_state.excluded_account_ids.add(account_id)
@@ -1998,3 +2006,14 @@ def _stage_websocket_history_replay(
 
             note_admission_failover(account_id, request_id=request_state.request_id)
     return True
+
+
+def _websocket_request_log_retry_marks(request_state: _WebSocketRequestState) -> RequestLogRetryMarks:
+    from app.modules.proxy._load_balancer.admission_breaker import current_admission_failover
+    from app.modules.proxy._service.request_log import RequestLogRetryMarks
+    from app.modules.proxy.conversation_history import current_history_replay
+
+    return RequestLogRetryMarks(
+        admission_failover=current_admission_failover(),
+        history_replay=request_state.history_replay_mark or current_history_replay(),
+    )

@@ -13,6 +13,7 @@ from app.modules.proxy.replay_safety import (
     responses_input_suffix_matches_pending_tool_calls,
     responses_input_suffix_retains_prior_output,
     responses_payload_is_account_neutral_fresh_replay,
+    responses_payload_names_account_scoped_object,
 )
 
 
@@ -2613,3 +2614,55 @@ def test_account_neutral_replay_marker_requires_tagged_existing_hard_kind() -> N
 def test_account_neutral_replay_marker_rejects_empty_nonce() -> None:
     with pytest.raises(ValueError, match="nonce"):
         make_http_bridge_account_neutral_replay_key("")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"previous_response_id": "resp_prev", "input": []},
+        {"conversation": "conv_1", "input": []},
+        {"prompt": {"id": "pmpt_1"}, "input": []},
+        {"input": [{"type": "item_reference", "id": "msg_1"}]},
+        {"input": [{"role": "user", "content": [{"type": "input_file", "file_id": "file_1"}]}]},
+        {"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "file-abc"}]}]},
+        {"input": [{"role": "user", "content": [{"type": "input_file", "file_url": "sediment://file_1"}]}]},
+        {"input": [], "tools": [{"type": "file_search", "vector_store_ids": ["vs_1"]}]},
+        {"input": [], "tools": [{"type": "code_interpreter", "container": "cntr_1"}]},
+        {"input": [], "tools": [{"type": "code_interpreter", "container": {"type": "auto", "file_ids": ["f"]}}]},
+        {"input": [{"type": "code_interpreter_call", "container_id": "cntr_1"}]},
+    ],
+)
+def test_account_scoped_object_reference_names_owner_only_state(payload: dict[str, JsonValue]) -> None:
+    assert responses_payload_names_account_scoped_object(payload) is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"input": [{"role": "user", "content": "hello"}]},
+        {
+            "input": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "encrypted_content": "gAAAA",
+                },
+                {"type": "message", "id": "msg_1", "role": "assistant", "content": []},
+                {"role": "user", "content": "continue"},
+            ]
+        },
+        {
+            "input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.com/a.png"}]}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "upload",
+                    "parameters": {"type": "object", "properties": {"file_id": {"type": "string"}}},
+                }
+            ],
+        },
+    ],
+)
+def test_account_scoped_object_reference_ignores_inline_retained_output(payload: dict[str, JsonValue]) -> None:
+    assert responses_payload_names_account_scoped_object(payload) is False

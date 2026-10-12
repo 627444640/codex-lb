@@ -76,6 +76,7 @@ from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
 from app.modules.proxy._service.http_bridge.accepted_replay import (
+    _terminal_payload_reports_output,
     _websocket_accepted_admission_retry_error_code,
     _websocket_accepted_capacity_retry_error_code,
 )
@@ -286,7 +287,9 @@ from app.modules.proxy._service.support import (
     _clear_websocket_request_error_overrides,
     _DeferredKeyedStreamHealthPenalty,
     _event_type_from_payload,
+    _websocket_model_output_started,
     _websocket_request_can_replay_before_visible_output,
+    _websocket_request_is_accepted_lifecycle_only,
     _WebSocketContinuityAnchor,
     _WebSocketContinuityState,
     _WebSocketReceiveTimeout,
@@ -692,6 +695,43 @@ def _websocket_history_failover_allowed(request_state: "_WebSocketRequestState")
     ):
         return False
     return True
+
+
+def _websocket_anchor_loss_history_replay_candidate(
+    request_state: "_WebSocketRequestState",
+    *,
+    event_type: str | None,
+    payload: dict[str, JsonValue] | None,
+    has_other_pending_requests: bool,
+) -> bool:
+    """True when a ``previous_response_not_found`` terminal may resend cached history once.
+
+    Only a turn that still depends on the lost anchor qualifies; a retry-safe
+    fresh body has its own replay. Before ``response.created`` nothing reached
+    the client. After it, only the lifecycle prelude may have, and the replay
+    suppresses its own prelude, so any exposed sequence must belong to those
+    frames for the replay's first forwarded frame to advance past it.
+    """
+
+    if request_state.previous_response_id is None:
+        return False
+    if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text:
+        return False
+    if event_type not in {"error", "response.failed"} or has_other_pending_requests:
+        return False
+    if not request_state.request_text or request_state.replay_count != 0:
+        return False
+    if _websocket_model_output_started(request_state) or _terminal_payload_reports_output(payload):
+        return False
+    watermark = request_state.last_downstream_sequence_number
+    if request_state.response_id is None and request_state.awaiting_response_created:
+        return request_state.response_event_count == 0 and watermark is None
+    payload_response_id = _websocket_response_id(None, payload)
+    if payload_response_id is not None and payload_response_id != request_state.response_id:
+        return False
+    if not _websocket_request_is_accepted_lifecycle_only(request_state):
+        return False
+    return watermark is None or watermark < request_state.response_event_count
 
 
 def _websocket_admission_may_switch_account(request_state: "_WebSocketRequestState") -> bool:
@@ -1448,6 +1488,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
     event_type: str | None,
     upstream_control: _WebSocketUpstreamControl,
     original_text: str,
+    concurrent_requests: bool = False,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     error_code = _normalize_error_code(
         _websocket_event_error_code(event_type, payload),
@@ -1480,6 +1521,7 @@ def _maybe_rewrite_websocket_previous_response_not_found_event(
         reason=reason,
         reconnect_requested=reconnect_requested,
         original_text=original_text,
+        concurrent_requests=concurrent_requests,
     )
 
 
@@ -1501,6 +1543,7 @@ class _WebSocketStaleAnchorDiagnostics:
     owner_lookup_outcome: str | None
     previous_response_age_seconds: int | None
     same_session: bool | None
+    concurrent_requests: bool = False
 
 
 def _websocket_previous_response_source(request_state: _WebSocketRequestState) -> str:
@@ -1534,6 +1577,8 @@ def _websocket_previous_response_age_seconds(request_state: _WebSocketRequestSta
 
 def _websocket_stale_anchor_diagnostics(
     request_state: _WebSocketRequestState,
+    *,
+    concurrent_requests: bool = False,
 ) -> _WebSocketStaleAnchorDiagnostics:
     return _WebSocketStaleAnchorDiagnostics(
         previous_response_source=_websocket_previous_response_source(request_state),
@@ -1544,6 +1589,7 @@ def _websocket_stale_anchor_diagnostics(
         owner_lookup_outcome=request_state.previous_response_owner_lookup_outcome,
         previous_response_age_seconds=_websocket_previous_response_age_seconds(request_state),
         same_session=_websocket_same_session_for_previous_response(request_state),
+        concurrent_requests=concurrent_requests,
     )
 
 
@@ -1558,7 +1604,7 @@ def _websocket_stale_anchor_failure_detail(
         else "unknown"
     )
     same_session = str(diagnostics.same_session).lower() if diagnostics.same_session is not None else "unknown"
-    return (
+    detail = (
         "previous_response_not_found "
         f"previous_response_source={diagnostics.previous_response_source} "
         f"fresh_replay_available={str(diagnostics.fresh_replay_available).lower()} "
@@ -1567,6 +1613,9 @@ def _websocket_stale_anchor_failure_detail(
         f"previous_response_age_seconds={previous_response_age_seconds} "
         f"same_session={same_session}"
     )
+    if diagnostics.concurrent_requests:
+        detail += " concurrent_requests=true"
+    return detail
 
 
 def _record_websocket_stale_anchor_failure(
@@ -1574,8 +1623,14 @@ def _record_websocket_stale_anchor_failure(
     *,
     surface: str,
     upstream_error_code: str,
+    concurrent_requests: bool = False,
 ) -> None:
-    diagnostics = _websocket_stale_anchor_diagnostics(request_state)
+    """Fail an anchor loss closed.
+
+    ``concurrent_requests`` marks a loss that arrived while other requests were
+    in flight on the same upstream socket; those never take the history replay.
+    """
+    diagnostics = _websocket_stale_anchor_diagnostics(request_state, concurrent_requests=concurrent_requests)
     request_state.failure_phase_override = "upstream"
     request_state.failure_detail_override = _websocket_stale_anchor_failure_detail(diagnostics)
     request_state.upstream_error_code_override = upstream_error_code
@@ -1596,6 +1651,7 @@ def _record_websocket_stale_anchor_failure(
         owner_lookup_outcome=diagnostics.owner_lookup_outcome,
         previous_response_age_seconds=diagnostics.previous_response_age_seconds,
         same_session=diagnostics.same_session,
+        concurrent_requests=diagnostics.concurrent_requests,
     )
 
 
@@ -1606,6 +1662,7 @@ def _rewrite_websocket_continuity_corruption_event(
     reason: str,
     reconnect_requested: bool,
     original_text: str,
+    concurrent_requests: bool = False,
 ) -> tuple[OpenAIEvent | None, dict[str, JsonValue] | None, str | None, str]:
     del original_text
     if reconnect_requested:
@@ -1615,6 +1672,7 @@ def _rewrite_websocket_continuity_corruption_event(
             request_state,
             surface="websocket_stream",
             upstream_error_code="previous_response_not_found",
+            concurrent_requests=concurrent_requests,
         )
     else:
         _record_continuity_fail_closed(
