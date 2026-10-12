@@ -20,7 +20,7 @@ class FAQTests(unittest.TestCase):
         self.assertIn("<title>Codex LB · 常见问题</title>", response.text)
         self.assertIn("<h1>常见问题</h1>", response.text)
         self.assertIn('id="error-websocket-payload-too-large"', response.text)
-        self.assertIn('src="static/faq.js"', response.text)
+        self.assertIn('src="../static/faq.js"', response.text)
         self.assertNotIn("assistant-", response.text)
         self.assertNotIn("<textarea", response.text)
         self.assertNotIn("错误排查", response.text)
