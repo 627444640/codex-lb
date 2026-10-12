@@ -24,10 +24,12 @@ import logging
 from typing import Literal
 
 from app.core.types import JsonValue
+from app.modules.proxy._load_balancer.admission_breaker import ADMISSION_FAILURE_CODES
 from app.modules.proxy._service.support import (
     _REQUEST_TRANSPORT_WEBSOCKET,
     _affinity_may_resolve_hard_owner,
     _HTTPBridgeSession,
+    _websocket_model_output_started,
     _websocket_request_is_accepted_lifecycle_only,
     _WebSocketRequestState,
 )
@@ -245,6 +247,44 @@ def _websocket_accepted_capacity_retry_error_code(
     if is_upstream_model_capacity_error(error_message) or error_code in _ACCEPTED_CAPACITY_REPLAY_ERROR_CODES:
         return _ACCEPTED_CAPACITY_REPLAY_REPORTED_CODES.get(error_code or "", "server_is_overloaded")
     return None
+
+
+def _websocket_accepted_admission_retry_error_code(
+    request_state: _WebSocketRequestState,
+    *,
+    event_type: str | None,
+    error_code: str | None,
+    payload: dict[str, JsonValue] | None,
+    has_other_pending_requests: bool,
+) -> str | None:
+    """Classify a pre-output admission failure after ``response.created``.
+
+    ``server_error`` is not a capacity code, so the capacity classifier leaves
+    it alone. An accepted turn that has produced no text, tool call, or
+    reasoning may still fail over once. A client-supplied ``previous_response_id``
+    does not disqualify the classification: the caller moves that turn only by
+    replaying cached history without the anchor.
+    """
+
+    if event_type not in _TERMINAL_EVENT_TYPES:
+        return None
+    if has_other_pending_requests or request_state.last_downstream_sequence_number is not None:
+        return None
+    if request_state.replay_count != 0 or not request_state.request_text:
+        return None
+    if request_state.transport == _REQUEST_TRANSPORT_WEBSOCKET and request_state.response_create_sent_at is None:
+        return None
+    if not _websocket_request_is_accepted_lifecycle_only(request_state):
+        return None
+    if _websocket_model_output_started(request_state):
+        return None
+    if _terminal_payload_reports_output(payload):
+        return None
+    if error_code in _ACCEPTED_REPLAY_FAIL_CLOSED_ERROR_CODES:
+        return None
+    if error_code not in ADMISSION_FAILURE_CODES:
+        return None
+    return error_code
 
 
 async def _claim_websocket_replay_create_gate(

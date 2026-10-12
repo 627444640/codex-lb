@@ -7,22 +7,29 @@ import json
 import logging
 from collections import deque
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import anyio
 import pytest
 
-from app.db.models import Account
+from app.core.crypto import TokenEncryptor
+from app.core.types import JsonValue
+from app.core.utils.time import utcnow
+from app.db.models import Account, AccountStatus
+from app.modules.accounts.repository import AccountsRepository
+from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._load_balancer.admission_breaker import (
     AdmissionBreakerPolicy,
     AdmissionFailoverAction,
+    current_admission_failover,
     mark_transparent_retry,
     plan_admission_failover,
     record_admission_failure_locked,
     record_upstream_admission_failure,
     reset_admission_failure_dedupe,
+    reset_admission_request_context,
     transparent_retry_used,
 )
 from app.modules.proxy._load_balancer.types import AccountLease, RuntimeState
@@ -33,11 +40,15 @@ from app.modules.proxy._service.support import (
     _StreamSettlement,
     _WebSocketRequestState,
 )
+from app.modules.proxy.capability_lineage_repository import CapabilityLineageRepository
 from app.modules.proxy.conversation_history import (
     ConversationHistoryCache,
     reset_history_replay_context,
 )
-from app.modules.proxy.repo_bundle import ProxyRepoFactory
+from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
+from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 
 
 def _cache(tmp_path):
@@ -261,8 +272,12 @@ def test_websocket_admission_failure_stages_cached_history(tmp_path) -> None:
         assert state.previous_response_id is None
         assert "acct" in state.excluded_account_ids
         assert transparent_retry_used() is True
+        staged_failover = current_admission_failover()
+        assert staged_failover is not None
+        assert staged_failover.from_account_id == "acct"
     finally:
         _transparent_retry_used.reset(token)
+        reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
 
@@ -316,8 +331,12 @@ async def test_http_500_with_previous_response_replays_from_cache(tmp_path) -> N
         assert raised.value.exclude_account is True
         assert payload.previous_response_id is None
         assert transparent_retry_used() is True
+        failover = current_admission_failover()
+        assert failover is not None
+        assert failover.from_account_id == "acct"
     finally:
         _transparent_retry_used.reset(token)
+        reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
 
@@ -404,6 +423,7 @@ async def test_http_bridge_500_replays_cached_history_onto_another_account(tmp_p
             request_state=request_state,
         )
     finally:
+        reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
     assert retried is True
@@ -428,8 +448,446 @@ async def test_http_bridge_without_cache_does_not_switch_with_the_original_id(tm
             request_state=request_state,
         )
     finally:
+        reset_admission_request_context()
         history_module.set_conversation_history_cache(None)
         cache.close()
     assert retried is False
     assert request_state.previous_response_id == "resp-1"
     assert "acct-bridge" not in request_state.excluded_account_ids
+
+
+class _RequestLogsRecorder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def add_log(self, **kwargs: object) -> None:
+        self.calls.append(dict(kwargs))
+
+
+class _RepoContext:
+    def __init__(self, request_logs: _RequestLogsRecorder) -> None:
+        capability_lineage = AsyncMock(spec=CapabilityLineageRepository)
+        capability_lineage.is_required.return_value = False
+        self._repos = ProxyRepositories(
+            accounts=cast(AccountsRepository, AsyncMock()),
+            usage=cast(UsageRepository, AsyncMock()),
+            request_logs=cast(RequestLogsRepository, request_logs),
+            sticky_sessions=cast(StickySessionsRepository, AsyncMock()),
+            api_keys=cast(ApiKeysRepository, AsyncMock()),
+            additional_usage=cast(AdditionalUsageRepository, AsyncMock()),
+            capability_lineage=capability_lineage,
+        )
+
+    async def __aenter__(self) -> ProxyRepositories:
+        return self._repos
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
+
+
+def _repo_factory(request_logs: _RequestLogsRecorder) -> ProxyRepoFactory:
+    def factory() -> _RepoContext:
+        return _RepoContext(request_logs)
+
+    return factory
+
+
+def _account(account_id: str) -> Account:
+    encryptor = TokenEncryptor()
+    now = utcnow()
+    return Account(
+        id=account_id,
+        chatgpt_account_id=account_id,
+        email=f"{account_id}@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-token"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-token"),
+        id_token_encrypted=encryptor.encrypt("id-token"),
+        last_refresh=now,
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+
+
+def _anchored_create_text() -> str:
+    return json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-6-astra",
+            "previous_response_id": "resp-1",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "more"}]}],
+        },
+        separators=(",", ":"),
+    )
+
+
+def _seed_history(cache: ConversationHistoryCache) -> None:
+    cache.record_completed_turn(
+        request_body={
+            "model": "gpt-6-astra",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "kept"}]}],
+        },
+        response_id="resp-1",
+        output_items=[{"type": "message", "text": "ok"}],
+    )
+
+
+def _accepted_anchor_state(**overrides: Any) -> _WebSocketRequestState:
+    values: dict[str, Any] = {
+        "request_id": "req-accepted-admission",
+        "model": "gpt-6-astra",
+        "service_tier": None,
+        "reasoning_effort": None,
+        "api_key_reservation": None,
+        "started_at": 0.0,
+        "response_create_sent_at": 0.0,
+        "awaiting_response_created": True,
+        "response_id": None,
+        "response_event_count": 0,
+        "response_create_gate_acquired": True,
+        "request_text": _anchored_create_text(),
+        "previous_response_id": "resp-1",
+        "proxy_injected_previous_response_id": False,
+        "preferred_account_id": "acct-a",
+        "replay_required_account_id": "acct-a",
+    }
+    values.update(overrides)
+    return _WebSocketRequestState(**values)
+
+
+def _failure_payload(code: str) -> dict[str, JsonValue]:
+    return {"type": "error", "error": {"type": "server_error", "code": code, "message": "upstream failed"}}
+
+
+def _patch_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.modules.proxy._load_balancer.admission_breaker.admission_retry_jitter_seconds",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy._service.websocket.mixin.admission_retry_jitter_seconds",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy._service.http_bridge.upstream_events.admission_retry_jitter_seconds",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(
+        "app.modules.proxy._service.streaming.retry.admission_retry_jitter_seconds",
+        lambda: 0.0,
+    )
+
+
+async def _drive(
+    service: Any,
+    account: Account,
+    pending: deque[_WebSocketRequestState],
+    payload: dict[str, JsonValue],
+    upstream_control: Any,
+) -> str:
+    return await service._process_upstream_websocket_text(
+        json.dumps(payload, separators=(",", ":")),
+        account=account,
+        account_id_value=account.id,
+        pending_requests=pending,
+        pending_lock=anyio.Lock(),
+        api_key=None,
+        upstream_control=upstream_control,
+        response_create_gate=asyncio.Semaphore(0),
+    )
+
+
+async def _accept(
+    service: Any,
+    account: Account,
+    pending: deque[_WebSocketRequestState],
+    upstream_control: Any,
+) -> None:
+    await _drive(
+        service,
+        account,
+        pending,
+        {"type": "response.created", "response": {"id": "resp_x", "status": "in_progress"}},
+        upstream_control,
+    )
+    await _drive(
+        service,
+        account,
+        pending,
+        {"type": "response.in_progress", "response": {"id": "resp_x", "status": "in_progress"}},
+        upstream_control,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["server_error", "server_is_overloaded"])
+async def test_accepted_pre_output_admission_failure_replays_cached_history_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+) -> None:
+    cache = _cache(tmp_path)
+    from app.modules.proxy import conversation_history as history_module
+
+    history_module.set_conversation_history_cache(cache)
+    _seed_history(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _patch_jitter(monkeypatch)
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        await _drive(service, account, pending, _failure_payload(code), upstream_control)
+
+        assert upstream_control.reconnect_requested is True
+        assert upstream_control.suppress_downstream_event is True
+        assert pending_request.previous_response_id is None
+        assert "previous_response_id" not in json.loads(pending_request.request_text or "{}")
+        assert pending_request.excluded_account_ids == {account.id}
+        assert pending_request.replay_count == 1
+        failover = current_admission_failover()
+        assert failover is not None
+        assert failover.from_account_id == account.id
+
+        pending.append(pending_request)
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        pending_request.response_create_gate_acquired = True
+        await _drive(
+            service,
+            account,
+            pending,
+            {"type": "response.created", "response": {"id": "resp_y", "status": "in_progress"}},
+            upstream_control,
+        )
+        completed = await _drive(
+            service,
+            account,
+            pending,
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_y",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "OK"}],
+                        }
+                    ],
+                },
+            },
+            upstream_control,
+        )
+        assert json.loads(completed)["response"]["id"] == "resp_x"
+        assert await service.drain_persistence_tasks(timeout_seconds=2)
+        assert request_logs.calls
+        assert request_logs.calls[-1]["admission_failover_retried"] is True
+        assert request_logs.calls[-1]["admission_failover_from_account_id"] == account.id
+    finally:
+        reset_admission_request_context()
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_accepted_history_failover_does_not_run_a_second_time(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _cache(tmp_path)
+    from app.modules.proxy import conversation_history as history_module
+
+    history_module.set_conversation_history_cache(cache)
+    _seed_history(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _patch_jitter(monkeypatch)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        await _drive(service, account, pending, _failure_payload("server_error"), upstream_control)
+        assert pending_request.replay_count == 1
+        assert pending_request.previous_response_id is None
+        pending.append(pending_request)
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        pending_request.response_create_gate_acquired = True
+        await _drive(
+            service,
+            account,
+            pending,
+            {"type": "response.created", "response": {"id": "resp_y", "status": "in_progress"}},
+            upstream_control,
+        )
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = await _drive(service, account, pending, _failure_payload("server_is_overloaded"), upstream_control)
+        assert "server_is_overloaded" in text
+        assert upstream_control.reconnect_requested is False
+        assert pending_request.replay_count == 1
+        assert pending_request.excluded_account_ids == {account.id}
+        finalize.assert_awaited()
+    finally:
+        reset_admission_request_context()
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_admission_cache_miss_surfaces_without_failover(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _cache(tmp_path)
+    from app.modules.proxy import conversation_history as history_module
+
+    history_module.set_conversation_history_cache(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _patch_jitter(monkeypatch)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        text = await _drive(service, account, pending, _failure_payload("server_error"), upstream_control)
+        assert json.loads(text)["error"]["code"] == "server_error"
+        assert upstream_control.reconnect_requested is False
+        assert pending_request.excluded_account_ids == set()
+        assert pending_request.previous_response_id == "resp-1"
+        assert current_admission_failover() is None
+        finalize.assert_awaited()
+    finally:
+        reset_admission_request_context()
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "output_event",
+    [
+        {
+            "type": "response.output_item.added",
+            "response_id": "resp_x",
+            "output_index": 0,
+            "item": {"id": "fc_1", "type": "function_call", "name": "lookup", "arguments": ""},
+        },
+        {
+            "type": "response.reasoning_text.delta",
+            "response_id": "resp_x",
+            "delta": "thinking",
+        },
+    ],
+)
+async def test_accepted_admission_failure_after_any_output_does_not_fail_over(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_event: dict[str, JsonValue],
+) -> None:
+    cache = _cache(tmp_path)
+    from app.modules.proxy import conversation_history as history_module
+
+    history_module.set_conversation_history_cache(cache)
+    _seed_history(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _patch_jitter(monkeypatch)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    finalize = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state(preferred_account_id=None, replay_required_account_id=None)
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    try:
+        await _accept(service, account, pending, upstream_control)
+        await _drive(service, account, pending, output_event, upstream_control)
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = await _drive(service, account, pending, _failure_payload("server_error"), upstream_control)
+        assert "server_error" in text
+        assert upstream_control.reconnect_requested is False
+        assert pending_request.excluded_account_ids == set()
+        assert current_admission_failover() is None
+        finalize.assert_awaited()
+    finally:
+        reset_admission_request_context()
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_admission_failover_closes_the_original_upstream_before_switch(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _cache(tmp_path)
+    from app.modules.proxy import conversation_history as history_module
+    from app.modules.proxy._service.websocket.mixin import _process_and_forward_upstream_websocket_text
+
+    history_module.set_conversation_history_cache(cache)
+    _seed_history(cache)
+    reset_history_replay_context()
+    reset_admission_request_context()
+    _patch_jitter(monkeypatch)
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    account = _account("acct-a")
+    pending_request = _accepted_anchor_state()
+    pending: deque[_WebSocketRequestState] = deque([pending_request])
+    upstream_control = proxy_service._WebSocketUpstreamControl()
+    order: list[str] = []
+
+    async def close() -> None:
+        order.append("close")
+
+    upstream = SimpleNamespace(archive_received=lambda _message: None, close=close)
+    try:
+        await _accept(service, account, pending, upstream_control)
+        upstream_control = proxy_service._WebSocketUpstreamControl()
+        text = json.dumps(_failure_payload("server_error"), separators=(",", ":"))
+        should_stop = await _process_and_forward_upstream_websocket_text(
+            cast(Any, service),
+            cast(Any, SimpleNamespace(send_text=AsyncMock())),
+            cast(Any, upstream),
+            message=SimpleNamespace(kind="text", text=text),
+            text=text,
+            account=account,
+            account_id_value=account.id,
+            pending_requests=pending,
+            pending_lock=anyio.Lock(),
+            client_send_lock=anyio.Lock(),
+            api_key=None,
+            upstream_control=upstream_control,
+            response_create_gate=asyncio.Semaphore(0),
+            downstream_activity=proxy_service._DownstreamWebSocketActivity(),
+            continuity_state=None,
+            codex_session_affinity=False,
+        )
+        order.append("switch")
+        assert should_stop is True
+        assert order == ["close", "switch"]
+        assert pending_request.previous_response_id is None
+    finally:
+        reset_admission_request_context()
+        history_module.set_conversation_history_cache(None)
+        cache.close()

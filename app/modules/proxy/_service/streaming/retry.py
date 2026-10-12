@@ -34,6 +34,7 @@ from app.core.utils.sse import format_sse_event
 from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
 from app.modules.proxy._load_balancer.admission_breaker import (
+    ADMISSION_FAILURE_CODES,
     AdmissionFailoverAction,
     admission_retry_jitter_seconds,
     authored_pre_output_close,
@@ -2632,6 +2633,21 @@ class _StreamingRetryMixin:
                     await proxy._handle_stream_error(account, exc.error, exc.code)
                     last_retryable_stream_error = exc
                     if exc.exclude_account:
+                        if exc.code in ADMISSION_FAILURE_CODES and (
+                            admission_failover_used or transparent_retry_used(request_id)
+                        ):
+                            yield format_sse_event(
+                                response_failed_event(
+                                    exc.code,
+                                    str(exc.error.get("message") or "Upstream error"),
+                                    response_id=request_id,
+                                )
+                            )
+                            return
+                        if exc.code in ADMISSION_FAILURE_CODES:
+                            await asyncio.sleep(admission_retry_jitter_seconds())
+                            note_admission_failover(account.id, request_id=request_id)
+                            admission_failover_used = True
                         await _release_tracked_stream_lease(current_account_lease)
                         current_account_lease = None
                         excluded_account_ids.add(account.id)

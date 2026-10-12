@@ -62,6 +62,7 @@ from app.modules.api_keys.service import (
     ApiKeyData,
     ApiKeyUsageReservationData,
 )
+from app.modules.proxy._load_balancer.admission_breaker import ADMISSION_FAILURE_CODES
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -299,6 +300,7 @@ from app.modules.proxy._service.streaming.protocol import _StreamingServiceProto
 from app.modules.proxy._service.streaming.retry import _StreamingRetryMixin
 from app.modules.proxy._service.support import (
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _MODEL_OUTPUT_EVENT_TYPES,
     _REQUEST_TRANSPORT_WEBSOCKET,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,  # noqa: F401
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
@@ -561,6 +563,17 @@ class _StreamingMixin(_StreamingRetryMixin):
                 raise_for_status=True,
             )
             iterator = _facade()._stream_iterator_after_capacity_admission(stream)
+            held_prelude: list[str] = []
+
+            def _note_model_output(kind: str | None) -> None:
+                if kind in _MODEL_OUTPUT_EVENT_TYPES:
+                    settlement.upstream_model_output_seen = True
+
+            async def _close_upstream_before_switch() -> None:
+                close = getattr(iterator, "aclose", None)
+                if close is not None:
+                    await close()
+
             try:
                 first = await iterator.__anext__()
                 first_observed_at = time.monotonic()
@@ -758,10 +771,21 @@ class _StreamingMixin(_StreamingRetryMixin):
                             observed_at=first_observed_at,
                         )
                     observe_output_timing(timings, event_type, first_payload, observed_at=first_observed_at)
-                    settlement.downstream_visible = True
-                    if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
-                        settlement.downstream_text_visible = True
-                    yield first
+                    _note_model_output(event_type)
+                    if (
+                        event_type in {"response.created", "response.in_progress"}
+                        and not settlement.upstream_model_output_seen
+                        and not settlement.downstream_visible
+                    ):
+                        held_prelude.append(first)
+                    else:
+                        for held in held_prelude:
+                            yield held
+                        held_prelude.clear()
+                        settlement.downstream_visible = True
+                        if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
+                            settlement.downstream_text_visible = True
+                        yield first
             if terminal_stream_error is not None:
                 raise terminal_stream_error
             async for line in iterator:
@@ -769,10 +793,21 @@ class _StreamingMixin(_StreamingRetryMixin):
                 if verbatim_type := _verbatim_relay_event_type(line, latency_first_token_ms, ttft_reasoning_deltas):
                     observe_verbatim_output_timing(timings, verbatim_type, line, observed_at=event_observed_at)
                     await _touch_api_key_reservation()
+                    _note_model_output(verbatim_type)
                     if verbatim_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                         saw_text_delta = settlement.downstream_text_visible = True
-                    settlement.downstream_visible = True
-                    yield line
+                    if (
+                        verbatim_type in {"response.created", "response.in_progress"}
+                        and not settlement.upstream_model_output_seen
+                        and not settlement.downstream_visible
+                    ):
+                        held_prelude.append(line)
+                    else:
+                        for held in held_prelude:
+                            yield held
+                        held_prelude.clear()
+                        settlement.downstream_visible = True
+                        yield line
                     continue
                 event_payload = parse_sse_data_json(line)
                 event_type = classify_event_type(event_payload)
@@ -935,16 +970,49 @@ class _StreamingMixin(_StreamingRetryMixin):
                     suppressed_duplicate_tool_call = True
                     continue
                 observe_output_timing(timings, event_type, event_payload, observed_at=event_observed_at)
-                if event_type in {"error", "response.failed"} and not settlement.downstream_visible:
+                _note_model_output(event_type)
+                if (
+                    event_type in {"error", "response.failed"}
+                    and held_prelude
+                    and not settlement.downstream_visible
+                    and not settlement.upstream_model_output_seen
+                    and error_code in ADMISSION_FAILURE_CODES
+                ):
+                    await _close_upstream_before_switch()
+                    if payload.previous_response_id:
+                        await replay_history(error_code, (error_code, None, error_message))
+                    elif preferred_account_id is None or preferred_account_id != account.id:
+                        raise _RetryableStreamError(
+                            error_code or "server_error",
+                            settlement.error or cast(UpstreamError, {"message": error_message or "Upstream error"}),
+                            exclude_account=True,
+                        )
+                elif event_type in {"error", "response.failed"} and not settlement.downstream_visible:
                     await replay_history(error_code, (error_code, None, error_message))
                 if event_payload is not None and not preserve_raw_sse_line:
                     line = format_sse_event(event_payload)
-                settlement.downstream_visible = True
+                if (
+                    event_type in {"response.created", "response.in_progress"}
+                    and not settlement.upstream_model_output_seen
+                    and not settlement.downstream_visible
+                ):
+                    held_prelude.append(line)
+                    continue
+                for held in held_prelude:
+                    yield held
+                held_prelude.clear()
+                if event_type not in {"response.created", "response.in_progress"}:
+                    settlement.downstream_visible = True
                 if event_type in _facade()._TEXT_DELTA_EVENT_TYPES:
                     settlement.downstream_text_visible = True
                 if event_type in {"response.completed", "response.failed", "response.incomplete", "error"}:
                     terminal_event_seen = True
                 yield line
+            if held_prelude:
+                for held in held_prelude:
+                    yield held
+                held_prelude.clear()
+                settlement.downstream_visible = True
             if not terminal_event_seen:
                 await replay_history(stream_incomplete=True)
                 status, error_code, error_message, failure_metadata = _mark_upstream_stream_incomplete(settlement)
@@ -1013,6 +1081,9 @@ class _StreamingMixin(_StreamingRetryMixin):
         except _TerminalStreamError:
             finish_response_timing(timings, ended_at=time.monotonic())
             raise
+        except _RetryableStreamError:
+            finish_response_timing(timings, ended_at=time.monotonic())
+            raise
         except (asyncio.CancelledError, GeneratorExit):
             finish_response_timing(timings, ended_at=time.monotonic())
             if not terminal_event_seen:
@@ -1020,6 +1091,11 @@ class _StreamingMixin(_StreamingRetryMixin):
             raise
         except Exception:
             finish_response_timing(timings, ended_at=time.monotonic())
+            if held_prelude and not settlement.downstream_visible:
+                for held in held_prelude:
+                    yield held
+                held_prelude.clear()
+                settlement.downstream_visible = True
             if settlement.downstream_visible:
                 status, error_code, error_message, failure_metadata = _mark_upstream_stream_incomplete(settlement)
                 yield _facade()._build_rewritten_stream_response_failed_event(

@@ -48376,7 +48376,6 @@ def test_websocket_precreated_retry_error_code_replays_accepted_output_free_capa
         {"pending_function_call_ids": ["call_pending"]},
         {"pending_tool_call_types": {"call_pending": "function_call"}},
         {"deferred_reasoning_downstream_texts": ["data: {}\n\n"]},
-        {"previous_response_id": "resp_anchor"},
         {"last_downstream_sequence_number": 0},
         {"last_downstream_sequence_number": 1},
         {"request_text": None},

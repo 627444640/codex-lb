@@ -863,6 +863,7 @@ class _StreamSettlement:
     record_success: bool = True
     downstream_visible: bool = False
     downstream_text_visible: bool = False
+    upstream_model_output_seen: bool = False
     response_id: str | None = None
     usage_settlement_transferred: bool = False
 
@@ -1686,6 +1687,25 @@ def _websocket_request_is_accepted_lifecycle_only(request_state: _WebSocketReque
     return not (request_state.pending_function_call_ids or request_state.pending_tool_call_types)
 
 
+def _websocket_model_output_started(request_state: _WebSocketRequestState) -> bool:
+    """True when upstream has emitted any model output, not only text deltas.
+
+    Text deltas, tool or function-call items and arguments, and reasoning
+    content all count. ``output_delta_count`` is included and is not sufficient
+    on its own: a tool call or a reasoning prelude can exist while that counter
+    is still zero.
+    """
+
+    return bool(
+        request_state.downstream_visible
+        or request_state.upstream_model_output_seen
+        or request_state.output_delta_count > 0
+        or request_state.pending_function_call_ids
+        or request_state.pending_tool_call_types
+        or request_state.deferred_reasoning_downstream_texts
+    )
+
+
 def _affinity_may_resolve_hard_owner(affinity_policy: _AffinityPolicy) -> bool:
     """Return whether sticky selection may bind this affinity to one owner account.
 
@@ -1973,4 +1993,8 @@ def _stage_websocket_history_replay(
         request_state.replay_required_account_id = None
         request_state.preferred_account_id = None
         request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
+        if reason == "admission_failure":
+            from app.modules.proxy._load_balancer.admission_breaker import note_admission_failover
+
+            note_admission_failover(account_id, request_id=request_state.request_id)
     return True
