@@ -63,4 +63,4 @@ While a conversation is in flight, completed turns are appended to a separate SQ
 
 ---
 
-*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [account-admission-breaker](../openspec/specs/account-admission-breaker/spec.md) · [conversation-history-replay](../openspec/specs/conversation-history-replay/spec.md) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
+*Specs: [account-routing](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-routing) · [account-admission-breaker](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/account-admission-breaker) · [conversation-history-replay](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/conversation-history-replay) · [frontend-architecture](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/frontend-architecture) · [usage-refresh-policy](https://github.com/Soju06/codex-lb/tree/main/openspec/specs/usage-refresh-policy)*
