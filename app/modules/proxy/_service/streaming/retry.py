@@ -39,6 +39,7 @@ from app.modules.proxy._load_balancer.admission_breaker import (
     admission_retry_jitter_seconds,
     authored_pre_output_close,
     counts_as_admission_failure,
+    current_admission_failover,
     note_admission_failover,
     plan_admission_failover,
     reset_admission_failure_dedupe,
@@ -50,6 +51,7 @@ from app.modules.proxy._service.observability import (
     _record_continuity_fail_closed,
     _record_upstream_transport_decision,
 )
+from app.modules.proxy._service.request_log import RequestLogRetryMarks
 from app.modules.proxy._service.streaming.protocol import _StreamingServiceProtocol
 from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
@@ -81,7 +83,7 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.continuity import resolve_required_account_id
-from app.modules.proxy.conversation_history import reset_history_replay_context
+from app.modules.proxy.conversation_history import current_history_replay, reset_history_replay_context
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -92,7 +94,10 @@ from app.modules.proxy.helpers import (
     is_upstream_model_capacity_error,
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
-from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
+from app.modules.proxy.replay_safety import (
+    responses_payload_is_account_neutral_fresh_replay,
+    responses_payload_names_account_scoped_object,
+)
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
 
 _REQUEST_TRANSPORT_HTTP = "http"
@@ -490,7 +495,12 @@ class _StreamingRetryMixin:
         last_security_work_retry_error: _RetryableStreamError | None = None
         excluded_account_ids: set[str] = set()
         admission_failover_used = False
+        retry_marks = RequestLogRetryMarks(
+            admission_failover=current_admission_failover(),
+            history_replay=current_history_replay(),
+        )
         transient_failed_account_id: str | None = None
+        last_selected_account_id: str | None = None
         hard_affinity_same_owner_retry_attempted = False
         deferred_capacity_account: Account | None = None
         deferred_capacity_lease: AccountLease | None = None
@@ -499,6 +509,9 @@ class _StreamingRetryMixin:
         file_preferred_account_id: str | None = rewritten_file_account_id
         require_preferred_account = False
         last_retryable_stream_error: _RetryableStreamError | None = None
+        # Set when the attempt that raised ``last_retryable_stream_error``
+        # already wrote its own request log row.
+        attempt_logged_retryable_stream_error: _RetryableStreamError | None = None
         pending_post_refresh_transient_penalties: list[tuple[Account, UpstreamError, str, int, int]] = []
         deferred_account_error_backoffs: dict[str, Account] = {}
         post_refresh_transient_replacement_selected = False
@@ -723,6 +736,49 @@ class _StreamingRetryMixin:
             )
             return True
 
+        def _capture_retry_marks() -> None:
+            # Called in the task that just recorded a failover or history
+            # replay, so the context variables are still visible here.
+            nonlocal retry_marks
+            retry_marks = RequestLogRetryMarks(
+                admission_failover=retry_marks.admission_failover or current_admission_failover(),
+                history_replay=retry_marks.history_replay or current_history_replay(),
+            )
+
+        def _release_dispatch_owner_for_admission_failover(
+            *,
+            account_id: str,
+            error_code: str | None,
+            attempt_settlement: _StreamSettlement,
+        ) -> None:
+            # An admission rejection before any model output means upstream
+            # never started this response, so the dispatch owner holds nothing
+            # for it. Continuity owners and named upstream objects still bind.
+            nonlocal affinity, payload_replay_required_account_id
+            if (
+                payload_replay_required_account_id != account_id
+                or error_code not in ADMISSION_FAILURE_CODES
+                or attempt_settlement.downstream_visible
+                or attempt_settlement.upstream_model_output_seen
+                or preferred_account_id is not None
+                or _stream_continuity_pinned(
+                    require_preferred_account=require_preferred_account,
+                    file_preferred_account_id=file_preferred_account_id,
+                    account_id=account_id,
+                    routing_strategy=routing_strategy,
+                )
+                or responses_payload_names_account_scoped_object(payload.to_replay_safety_payload())
+            ):
+                return
+            payload_replay_required_account_id = None
+            affinity = replace(affinity, reallocate_sticky=True)
+            logger.info(
+                "admission_failover_released_dispatch_owner request_id=%s account_id=%s code=%s",
+                request_id,
+                account_id,
+                error_code,
+            )
+
         async def _stream_post_refresh_with_capacity_recovery(
             account: Account,
             *,
@@ -755,6 +811,7 @@ class _StreamingRetryMixin:
                     client_ip=client_ip,
                     tool_call_dedupe=tool_call_dedupe,
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                    retry_marks=retry_marks,
                 )
                 try:
                     try:
@@ -1503,25 +1560,27 @@ class _StreamingRetryMixin:
                             response_id=request_id,
                         )
                         yield format_sse_event(event)
-                        await proxy._write_request_log(
-                            account_id=None,
-                            api_key=api_key,
-                            request_id=request_id,
-                            model=payload.model,
-                            latency_ms=int((time.monotonic() - start) * 1000),
-                            status="error",
-                            error_code=last_retryable_stream_error.code,
-                            error_message=error_message,
-                            reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
-                            transport=request_transport,
-                            upstream_transport=upstream_stream_transport,
-                            service_tier=payload.service_tier,
-                            requested_service_tier=payload.service_tier,
-                            useragent=useragent,
-                            useragent_group=useragent_group,
-                            conversation_id=conversation_id,
-                            client_ip=client_ip,
-                        )
+                        if last_retryable_stream_error is not attempt_logged_retryable_stream_error:
+                            await proxy._write_request_log(
+                                account_id=last_selected_account_id,
+                                api_key=api_key,
+                                request_id=request_id,
+                                model=payload.model,
+                                latency_ms=int((time.monotonic() - start) * 1000),
+                                status="error",
+                                error_code=last_retryable_stream_error.code,
+                                error_message=error_message,
+                                reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                                transport=request_transport,
+                                upstream_transport=upstream_stream_transport,
+                                service_tier=payload.service_tier,
+                                requested_service_tier=payload.service_tier,
+                                useragent=useragent,
+                                useragent_group=useragent_group,
+                                conversation_id=conversation_id,
+                                client_ip=client_ip,
+                                retry_marks=retry_marks,
+                            )
                         return
                     if require_preferred_account and preferred_account_id is not None:
                         message = "Previous response owner account is unavailable; retry later."
@@ -1630,6 +1689,7 @@ class _StreamingRetryMixin:
                     post_refresh_transient_replacement_selected = True
 
                 account_id_value = account.id
+                last_selected_account_id = account.id
                 if last_pre_dispatch_transport_error is not None:
                     # The preserved connect failure is only authoritative when
                     # replacement selection is empty. Once another account is
@@ -2034,6 +2094,7 @@ class _StreamingRetryMixin:
                                 ),
                                 tool_call_dedupe=tool_call_dedupe,
                                 enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                                retry_marks=retry_marks,
                             )
                             try:
                                 try:
@@ -2390,6 +2451,12 @@ class _StreamingRetryMixin:
                                         await asyncio.sleep(admission_retry_jitter_seconds())
                                         note_admission_failover(account.id, request_id=request_id)
                                         admission_failover_used = True
+                                        _capture_retry_marks()
+                                        _release_dispatch_owner_for_admission_failover(
+                                            account_id=account.id,
+                                            error_code=code,
+                                            attempt_settlement=settlement,
+                                        )
                                     last_transient_exc = tex
                                     transient_failed_account_id = account.id
                                     await _release_tracked_stream_lease(current_account_lease)
@@ -2487,6 +2554,12 @@ class _StreamingRetryMixin:
                                 await asyncio.sleep(admission_retry_jitter_seconds())
                                 note_admission_failover(account.id, request_id=request_id)
                                 admission_failover_used = True
+                                _capture_retry_marks()
+                                _release_dispatch_owner_for_admission_failover(
+                                    account_id=account.id,
+                                    error_code=error_code,
+                                    attempt_settlement=settlement,
+                                )
                                 await proxy._handle_stream_error(
                                     account,
                                     error_payload,
@@ -2510,6 +2583,7 @@ class _StreamingRetryMixin:
                                         error_payload,
                                         exclude_account=True,
                                     )
+                                    attempt_logged_retryable_stream_error = last_retryable_stream_error
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
                                 excluded_account_ids.add(account.id)
@@ -2557,6 +2631,7 @@ class _StreamingRetryMixin:
                                     error_payload,
                                     exclude_account=True,
                                 )
+                                attempt_logged_retryable_stream_error = last_retryable_stream_error
                             await _release_tracked_stream_lease(current_account_lease)
                             current_account_lease = None
                             excluded_account_ids.add(account.id)
@@ -2584,6 +2659,7 @@ class _StreamingRetryMixin:
                     if exc.history_replay:
                         # History replay and admission failover share one resend.
                         admission_failover_used = True
+                        _capture_retry_marks()
                         # The failed attempt still holds this account's stream
                         # slot. Release it before the one history resend, or a
                         # same-account replay cannot be selected again.
@@ -2632,6 +2708,7 @@ class _StreamingRetryMixin:
                         continue
                     await proxy._handle_stream_error(account, exc.error, exc.code)
                     last_retryable_stream_error = exc
+                    attempt_logged_retryable_stream_error = exc
                     if exc.exclude_account:
                         if exc.code in ADMISSION_FAILURE_CODES and (
                             admission_failover_used or transparent_retry_used(request_id)
@@ -2648,6 +2725,12 @@ class _StreamingRetryMixin:
                             await asyncio.sleep(admission_retry_jitter_seconds())
                             note_admission_failover(account.id, request_id=request_id)
                             admission_failover_used = True
+                            _capture_retry_marks()
+                            _release_dispatch_owner_for_admission_failover(
+                                account_id=account.id,
+                                error_code=exc.code,
+                                attempt_settlement=settlement,
+                            )
                         await _release_tracked_stream_lease(current_account_lease)
                         current_account_lease = None
                         excluded_account_ids.add(account.id)
@@ -2989,6 +3072,7 @@ class _StreamingRetryMixin:
                                     settlement.error_code or error_code or "upstream_error",
                                     transient_error_payload,
                                 )
+                                attempt_logged_retryable_stream_error = last_retryable_stream_error
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
                                 excluded_account_ids.add(account.id)

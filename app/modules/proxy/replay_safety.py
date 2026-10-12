@@ -1034,12 +1034,43 @@ def _contains_account_scoped_input_state(value: JsonValue) -> bool:
     return False
 
 
+def responses_payload_names_account_scoped_object(payload: Mapping[str, JsonValue]) -> bool:
+    """Return whether a request names an upstream object only its dispatch account can resolve.
+
+    Retained output that travels inline, such as encrypted reasoning or item
+    ids, is not a named object. A pre-output admission rejection may move it.
+    """
+
+    if any(payload.get(key) not in (None, "") for key in ("conversation", "previous_response_id", "prompt")):
+        return True
+    pending: list[JsonValue] = [payload.get(key) for key in ("input", "tools", "tool_choice")]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            item_type = current.get("type")
+            if item_type == "item_reference" or _mapping_has_account_scoped_object_reference(current):
+                return True
+            if item_type == "code_interpreter" and _is_nonblank_string(current.get("container")):
+                return True
+            # A function schema may name a property ``file_id`` without referencing one.
+            pending.extend(
+                nested for key, nested in current.items() if not (item_type == "function" and key == "parameters")
+            )
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
+
+
 def _mapping_has_account_scoped_reference(value: Mapping[str, JsonValue]) -> bool:
+    if value.get("encrypted_content") not in (None, ""):
+        return True
+    return _mapping_has_account_scoped_object_reference(value)
+
+
+def _mapping_has_account_scoped_object_reference(value: Mapping[str, JsonValue]) -> bool:
     for key in ("file_id", "container_id", "vector_store_id"):
         if value.get(key) not in (None, ""):
             return True
-    if value.get("encrypted_content") not in (None, ""):
-        return True
     for url_field, allow_data in (("image_url", True), ("file_url", False)):
         url_value = value.get(url_field)
         if url_value not in (None, "") and not _url_is_account_neutral(url_value, allow_data=allow_data):

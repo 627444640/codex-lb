@@ -273,6 +273,7 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.observability import (
     _truncate_identifier as _truncate_identifier,
 )
+from app.modules.proxy._service.request_log import RequestLogRetryMarks
 from app.modules.proxy._service.streaming.helpers import (
     _handle_stream_error as _handle_stream_error_helper,
 )
@@ -475,6 +476,7 @@ class _StreamingMixin(_StreamingRetryMixin):
         preferred_account_id: str | None = None,
         tool_call_dedupe: _WebSocketUpstreamControl | None = None,
         enforce_openai_sdk_contract: bool = True,
+        retry_marks: RequestLogRetryMarks | None = None,
     ) -> AsyncIterator[str]:
         proxy = cast(_StreamingServiceProtocol, self)
         replay_history = partial(_replay_http_history, proxy, payload, account, settlement, request_id, allow_retry)
@@ -1167,6 +1169,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 useragent_group=useragent_group,
                 conversation_id=conversation_id,
                 client_ip=client_ip,
+                retry_marks=retry_marks,
             )
             _maybe_log_proxy_service_tier_trace(
                 "stream",
