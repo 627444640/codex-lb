@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.types import JsonValue
 from app.modules.accounts.schemas import ConversationHistoryCacheStatsResponse
 from app.modules.proxy._load_balancer.admission_breaker import (
     AdmissionBreakerPolicy,
@@ -48,7 +49,7 @@ def _cache(tmp_path: Path, **overrides: object) -> ConversationHistoryCache:
     return ConversationHistoryCache(**settings)  # type: ignore[arg-type]
 
 
-def _turn(text: str, *, previous: str | None = None) -> dict[str, object]:
+def _turn(text: str, *, previous: str | None = None) -> dict[str, JsonValue]:
     return {
         "model": "gpt-6-astra",
         "instructions": "be brief",
@@ -57,7 +58,7 @@ def _turn(text: str, *, previous: str | None = None) -> dict[str, object]:
     }
 
 
-def _output(text: str) -> list[dict[str, object]]:
+def _output(text: str) -> list[JsonValue]:
     return [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}]
 
 
@@ -300,9 +301,13 @@ def test_http_model_replay_and_websocket_stage(tmp_path: Path) -> None:
     cache.record_completed_turn(request_body=_turn("kept"), response_id="resp-1", output_items=_output("reply"))
 
     class _Payload:
+        input: JsonValue
+        previous_response_id: str | None
+        conversation: str | None
+
         def __init__(self) -> None:
             self.input = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "more"}]}]
-            self.previous_response_id: str | None = "resp-1"
+            self.previous_response_id = "resp-1"
             self.conversation = None
 
         def model_dump(self, mode: str = "json") -> dict[str, object]:
@@ -326,6 +331,7 @@ def test_http_model_replay_and_websocket_stage(tmp_path: Path) -> None:
     )
     assert replay is not None
     assert payload.previous_response_id is None
+    assert isinstance(payload.input, list)
     assert any("kept" in json.dumps(item) for item in payload.input)
 
     state = _WebSocketRequestState(

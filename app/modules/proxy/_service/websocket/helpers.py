@@ -565,7 +565,6 @@ def _stage_websocket_history_replay(
     """Install one full-history replay on the request, before any output was forwarded."""
 
     from app.modules.proxy.conversation_history import (
-        HistoryReplayReason,
         mark_request_history_replayed,
         request_body_from_text,
         request_history_replayed,
@@ -587,7 +586,7 @@ def _stage_websocket_history_replay(
         return False
     replay = try_plan_history_replay(
         request_body=body,
-        reason=cast(HistoryReplayReason, reason),
+        reason=reason,
         downstream_visible=False,
         already_replayed=False,
         owner_blocked=owner_blocked,
