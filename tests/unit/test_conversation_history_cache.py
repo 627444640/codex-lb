@@ -21,16 +21,23 @@ from app.modules.proxy._load_balancer.admission_breaker import (
 )
 from app.modules.proxy._load_balancer.types import RuntimeState
 from app.modules.proxy._service.streaming.helpers import _replay_http_history
-from app.modules.proxy._service.support import _RetryableStreamError, _StreamSettlement, _WebSocketRequestState
-from app.modules.proxy._service.websocket.helpers import (
-    _history_replay_owner_after_exclusion,
+from app.modules.proxy._service.support import (
+    _RetryableStreamError,
     _stage_websocket_history_replay,
+    _StreamSettlement,
+    _WebSocketRequestState,
 )
+from app.modules.proxy._service.websocket.helpers import _history_replay_owner_after_exclusion
 from app.modules.proxy.conversation_history import (
     ConversationHistoryCache,
     maybe_apply_model_history_replay,
     reset_history_replay_context,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_replay_budget() -> None:
+    reset_history_replay_context()
 
 
 def _cache(tmp_path: Path, **overrides: object) -> ConversationHistoryCache:
@@ -334,6 +341,7 @@ def test_http_model_replay_and_websocket_stage(tmp_path: Path) -> None:
     assert isinstance(payload.input, list)
     assert any("kept" in json.dumps(item) for item in payload.input)
 
+    reset_history_replay_context()
     state = _WebSocketRequestState(
         request_id="req-ws",
         model="gpt-6-astra",

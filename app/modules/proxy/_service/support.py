@@ -1047,6 +1047,10 @@ class _WebSocketRequestState:
     request_text: str | None = None
     replay_count: int = 0
     history_replay_used: bool = False
+    # Set when a bridge retry puts this request back on the pending deque
+    # and returns to wait for another upstream event. Shutdown fails these
+    # waits so a silent upstream cannot hold the in-flight drain open.
+    requeued_pending_upstream: bool = False
     # Counts only the one extra replay permitted after the initial recovery
     # replay when the replacement upstream socket also closes cleanly before
     # producing any response event.
@@ -1909,3 +1913,64 @@ def _openai_error_envelope_from_response_failed_payload(
     if isinstance(resets_in, int | float):
         error_detail["resets_in_seconds"] = resets_in
     return envelope
+
+
+def _stage_websocket_history_replay(
+    request_state: _WebSocketRequestState,
+    *,
+    account_id: str,
+    reason: str,
+    owner_blocked: bool,
+) -> bool:
+    """Install one full-history replay on the request, before any output was forwarded."""
+
+    import json
+    from dataclasses import replace
+
+    from app.modules.proxy._load_balancer.admission_breaker import transparent_retry_used
+    from app.modules.proxy.conversation_history import (
+        mark_request_history_replayed,
+        request_body_from_text,
+        request_history_replayed,
+        try_plan_history_replay,
+    )
+
+    if reason not in {"previous_response_not_found", "stream_incomplete", "owner_unavailable", "admission_failure"}:
+        return False
+    if (
+        request_state.history_replay_used
+        or request_history_replayed(request_state.request_id)
+        or transparent_retry_used(request_state.request_id)
+        or request_state.downstream_visible
+        or request_state.upstream_model_output_seen
+        or request_state.replay_count >= 1
+    ):
+        return False
+    body = request_body_from_text(request_state.request_text)
+    if body is None:
+        return False
+    replay = try_plan_history_replay(
+        request_body=body,
+        reason=reason,
+        downstream_visible=False,
+        already_replayed=False,
+        owner_blocked=owner_blocked,
+        file_pinned=request_state.file_required_preferred_account,
+        request_id=request_state.request_id,
+    )
+    if replay is None:
+        return False
+    request_text = json.dumps(replay.request_body, ensure_ascii=False, separators=(",", ":"))
+    request_state.request_text = request_text
+    request_state.fresh_upstream_request_text = request_text
+    request_state.fresh_upstream_request_is_retry_safe = True
+    request_state.previous_response_id = None
+    request_state.proxy_injected_previous_response_id = False
+    request_state.history_replay_used = True
+    mark_request_history_replayed(request_state.request_id)
+    if replay.switch_account:
+        request_state.excluded_account_ids.add(account_id)
+        request_state.replay_required_account_id = None
+        request_state.preferred_account_id = None
+        request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
+    return True

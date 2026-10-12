@@ -51,6 +51,7 @@ from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_t
 from app.core.utils.request_id import reset_request_id, set_request_id
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
 from app.db.models import Account
+from app.modules.proxy._load_balancer.admission_breaker import ADMISSION_FAILURE_CODES
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -1081,6 +1082,21 @@ class _HTTPBridgeUpstreamEventsMixin:
             if observed_close_code is not None
             else None
         )
+        if observed_response_events == 0 and session.account is not None:
+            from app.modules.proxy._load_balancer.admission_breaker import (
+                authored_pre_output_close,
+                record_upstream_admission_failure,
+            )
+
+            await record_upstream_admission_failure(
+                self._load_balancer,
+                session.account,
+                error_code=error_code,
+                pre_first_output_close=authored_pre_output_close(
+                    close_code=observed_close_code,
+                    message=error_message,
+                ),
+            )
         _log_http_bridge_event(
             "reader_failure",
             session.key,
@@ -1693,6 +1709,11 @@ class _HTTPBridgeUpstreamEventsMixin:
         *,
         observed_at: float | None = None,
     ) -> None:
+        # An upstream event means a requeued wait is no longer silent.
+        # Shutdown only fails requests that are still waiting after this.
+        async with session.pending_lock:
+            for request_state in session.pending_requests:
+                request_state.requeued_pending_upstream = False
         observed_at = _service_time().monotonic() if observed_at is None else observed_at
         event_block = f"data: {text}\n\n"
         payload = parse_sse_data_json(event_block)
@@ -2293,6 +2314,22 @@ class _HTTPBridgeUpstreamEventsMixin:
                 _record_response_event(terminal_request_state, event_type)
 
         status_request_state = terminal_request_state or matched_request_state
+        if event_type == "response.completed" and status_request_state is not None:
+            # The websocket relay records the turn. The bridge shares that cache,
+            # so a later 500 on previous_response_id can resend the full history.
+            from app.modules.proxy.conversation_history import (
+                observe_completed_turn,
+                output_items_from_event_payload,
+                request_body_from_text,
+            )
+
+            observed_response_id, observed_output = output_items_from_event_payload(payload)
+            observe_completed_turn(
+                request_body=request_body_from_text(status_request_state.request_text),
+                response_id=observed_response_id or status_request_state.response_id,
+                output_items=observed_output,
+                conversation_id=status_request_state.conversation_id,
+            )
         if status_request_state is None and is_previous_response_not_found_event:
             session.upstream_control.reconnect_requested = True
             return
@@ -2576,7 +2613,30 @@ class _HTTPBridgeUpstreamEventsMixin:
                         payload,
                         event_type,
                     ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
-                else:
+                elif not is_upstream_model_capacity_error(retry_error_message):
+                    # No verified fresh body. A cached full history can still
+                    # be resent once without the anchor. A cache miss keeps
+                    # the owner-unavailable terminal and does not switch.
+                    # Model-capacity errors are not admission failures; the
+                    # client anchor must fail closed without a resend.
+                    status_request_state.error_code_override = owner_pinned_quota_error
+                    restored_to_pending = False
+                    async with session.pending_lock:
+                        if status_request_state not in session.pending_requests:
+                            session.pending_requests.appendleft(status_request_state)
+                            session.queued_request_count += 1
+                            restored_to_pending = True
+                    retried = await self._retry_http_bridge_precreated_request(
+                        session,
+                        request_state=status_request_state,
+                    )
+                    if retried:
+                        return
+                    if restored_to_pending:
+                        async with session.pending_lock:
+                            if status_request_state in session.pending_requests:
+                                session.pending_requests.remove(status_request_state)
+                                session.queued_request_count = max(0, session.queued_request_count - 1)
                     status_request_state.error_http_status_override = 502
                     session.upstream_control.reconnect_requested = True
                     session.upstream_control.retire_after_drain = True
@@ -2649,6 +2709,43 @@ class _HTTPBridgeUpstreamEventsMixin:
                 event_type = "response.failed"
             if status_request_state.precreated_replay_reason == _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE:
                 _clear_websocket_precreated_replay_fallback(status_request_state)
+        elif (
+            retry_error_code in ADMISSION_FAILURE_CODES
+            and status_request_state is not None
+            and status_request_state.previous_response_id is not None
+            and status_request_state.response_id is None
+            and not status_request_state.downstream_visible
+            and not status_request_state.upstream_model_output_seen
+            and not is_upstream_model_capacity_error(retry_error_message)
+        ):
+            # A pre-created 500 that still names previous_response_id is not a
+            # plain account switch. Retry once so a cached full history can
+            # drop the anchor. A cache miss returns before any other account
+            # is contacted, and the original error continues downstream.
+            await self._handle_or_defer_precreated_stream_health(
+                status_request_state,
+                session.account,
+                {"message": retry_error_message or "Upstream error"},
+                retry_error_code,
+            )
+            status_request_state.error_code_override = retry_error_code
+            restored_to_pending = False
+            async with session.pending_lock:
+                if status_request_state not in session.pending_requests:
+                    session.pending_requests.appendleft(status_request_state)
+                    session.queued_request_count += 1
+                    restored_to_pending = True
+            retried = await self._retry_http_bridge_precreated_request(
+                session,
+                request_state=status_request_state,
+            )
+            if retried:
+                return
+            if restored_to_pending:
+                async with session.pending_lock:
+                    if status_request_state in session.pending_requests:
+                        session.pending_requests.remove(status_request_state)
+                        session.queued_request_count = max(0, session.queued_request_count - 1)
         elif (
             retry_error_code is not None
             and retry_error_code != _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE

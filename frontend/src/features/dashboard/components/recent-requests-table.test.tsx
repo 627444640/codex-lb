@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
+import i18n from "@/i18n";
 import {
   ALL_REQUEST_LOG_COLUMNS,
   MAX_REQUEST_LOG_COLUMN_WIDTH,
@@ -19,6 +20,10 @@ const NULL_FAILURE_METADATA = {
   upstreamStatusCode: null,
   upstreamErrorCode: null,
   bridgeStage: null,
+  admissionFailoverRetried: false,
+  admissionFailoverFromAccountId: null,
+  historyReplayReason: null,
+  historyReplayExtraTokens: null,
 };
 const NULL_USERAGENT_METADATA = {
   useragent: null,
@@ -88,6 +93,10 @@ const LAYOUT_REQUEST = {
   costUsd: 0.01,
   costBreakdown: null,
   latencyMs: 1000,
+  admissionFailoverRetried: false,
+  admissionFailoverFromAccountId: null,
+  historyReplayReason: null,
+  historyReplayExtraTokens: null,
 } satisfies RequestLog;
 
 function openRequestDetails() {
@@ -181,6 +190,24 @@ describe("RecentRequestsTable", () => {
     expect(screen.queryByRole("columnheader", { name: "API Key" })).not.toBeInTheDocument();
     expect(screen.queryByText("Layout Key")).not.toBeInTheDocument();
     expect(screen.getByText("gpt-5.1")).toBeInTheDocument();
+  });
+
+  it("localizes the model column header in zh-CN", async () => {
+    await i18n.changeLanguage("zh-CN");
+    try {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[]}
+          requests={[LAYOUT_REQUEST]}
+          visibleColumns={["time", "model"]}
+        />,
+      );
+
+      expect(screen.getByRole("columnheader", { name: "模型" })).toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("resizes only the selected column by pointer and clamps it to bounds", () => {

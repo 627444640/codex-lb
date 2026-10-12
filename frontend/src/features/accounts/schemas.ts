@@ -376,6 +376,46 @@ export type OauthStatusResponse = z.infer<typeof OauthStatusResponseSchema>;
 export type ManualOauthCallbackResponse = z.infer<
   typeof ManualOauthCallbackResponseSchema
 >;
+export const AccountAdmissionBreakerStatusSchema = z.object({
+  accountId: z.string(),
+  state: z.enum(["closed", "open", "half_open"]),
+  consecutiveFailures: z.number().int().nonnegative(),
+  windowFailures: z.number().int().nonnegative(),
+  openUntil: z.string().nullable(),
+  probeInFlight: z.boolean(),
+  errorRate1h: z.number().nullable(),
+  errorRate24h: z.number().nullable(),
+  requests1h: z.number().int().nonnegative(),
+  errors1h: z.number().int().nonnegative(),
+  requests24h: z.number().int().nonnegative(),
+  errors24h: z.number().int().nonnegative(),
+});
+
+export const AccountAdmissionBreakersResponseSchema = z.object({
+  enabled: z.boolean(),
+  failureThreshold: z.number().int().positive(),
+  windowSeconds: z.number().positive(),
+  openSeconds: z.number().positive(),
+  accounts: z.array(AccountAdmissionBreakerStatusSchema),
+});
+
+export const ConversationHistoryCacheStatsSchema = z.object({
+  enabled: z.boolean(),
+  disabledReason: z.string().nullable(),
+  bytesUsed: z.number().int().nonnegative(),
+  bytesCap: z.number().int().positive(),
+  conversationBytesCap: z.number().int().positive(),
+  entries: z.number().int().nonnegative(),
+  hits: z.number().int().nonnegative(),
+  replays: z.number().int().nonnegative(),
+  idleTtlSeconds: z.number().int().nonnegative(),
+  minFreeDiskBytes: z.number().int().nonnegative(),
+});
+
+export type AccountAdmissionBreakerStatus = z.infer<typeof AccountAdmissionBreakerStatusSchema>;
+export type AccountAdmissionBreakersResponse = z.infer<typeof AccountAdmissionBreakersResponseSchema>;
+export type ConversationHistoryCacheStats = z.infer<typeof ConversationHistoryCacheStatsSchema>;
+
 export type RuntimeConnectAddressResponse = z.infer<
   typeof RuntimeConnectAddressResponseSchema
 >;

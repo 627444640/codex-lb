@@ -310,6 +310,7 @@ from app.modules.proxy._service.support import (
     _RetryableStreamError,
     _StreamSettlement,
     _TerminalStreamError,
+    _TransientStreamError,
     _ttft_event_latency_ms,
     _verbatim_relay_event_type,
     _WebSocketUpstreamControl,
@@ -568,20 +569,17 @@ class _StreamingMixin(_StreamingRetryMixin):
                 response_create_lease.release()
                 await proxy._load_balancer.release_account_lease(account_response_create_lease)
                 account_response_create_lease = None
-                status = "error"
-                error_code = "stream_incomplete"
-                error_message = "Upstream websocket closed before response.completed"
-                settlement.record_success = False
-                terminal_event_seen = settlement.account_health_error = True
-                settlement.error = {"message": error_message}
-                yield format_sse_event(
-                    response_failed_event(
-                        error_code,
-                        error_message,
-                        response_id=request_id,
-                    )
+                (
+                    status,
+                    error_code,
+                    error_message,
+                    failure_metadata,
+                ) = _mark_upstream_stream_incomplete(settlement)
+                await replay_history(stream_incomplete=True)
+                raise _TransientStreamError(
+                    "stream_incomplete",
+                    cast(UpstreamError, {"message": "Upstream stream ended before response.completed"}),
                 )
-                return
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 finish_response_timing(timings, ended_at=time.monotonic())
                 response_create_lease.release()
@@ -937,6 +935,8 @@ class _StreamingMixin(_StreamingRetryMixin):
                     suppressed_duplicate_tool_call = True
                     continue
                 observe_output_timing(timings, event_type, event_payload, observed_at=event_observed_at)
+                if event_type in {"error", "response.failed"} and not settlement.downstream_visible:
+                    await replay_history(error_code, (error_code, None, error_message))
                 if event_payload is not None and not preserve_raw_sse_line:
                     line = format_sse_event(event_payload)
                 settlement.downstream_visible = True

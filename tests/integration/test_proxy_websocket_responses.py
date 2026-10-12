@@ -14391,3 +14391,177 @@ def test_backend_responses_websocket_re_sends_an_anchored_accepted_failure_in_a_
     assert "previous_response_id" not in replayed_payload
     assert replayed_payload["input"] == [failover.HISTORICAL_INPUT, failover.FOLLOW_UP_INPUT]
     assert other_account_upstream.sent_text == []
+
+
+def _pre_token_server_error_event() -> _FakeUpstreamMessage:
+    """Admission failure before response.created. No output has been forwarded."""
+    return _ws_event(
+        {
+            "type": "error",
+            "status": 500,
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "message": "upstream failed before the first token",
+            },
+        }
+    )
+
+
+def test_backend_responses_websocket_pre_first_token_server_error_fails_over(
+    app_instance,
+    monkeypatch,
+):
+    """A server_error before response.created is one admission failover onto
+    another account. The client sees a single completed lifecycle."""
+    first_upstream = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    recovered_upstream = _recovered_upstream("resp_ws_pre_token_recovered")
+    failover = _TwoAccountWebSocketFailover(first_upstream, recovered_upstream)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(app_instance)
+
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_pre_token_recovered"
+    failover.assert_retried_on_another_account()
+    assert len(first_upstream.sent_text) == 1
+    assert len(recovered_upstream.sent_text) == 1
+
+
+def test_backend_responses_websocket_second_create_on_same_connection_still_fails_over(
+    app_instance,
+    monkeypatch,
+):
+    """The one-resend budget is per response.create, not per socket.
+
+    The first create fails over from A to B. The second create is sent on the
+    same client socket, reuses B, and must still fail over once. This test
+    does not reset the budget between the two creates; the suite fixture only
+    resets around the whole test.
+    """
+    first_failure = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    second_recovery = _recovered_upstream("resp_ws_budget_second")
+    shared_recovered = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _completed_first_turn_upstream_batch("resp_ws_budget_first"),
+            [_pre_token_server_error_event()],
+        ],
+    )
+    failover = _TwoAccountWebSocketFailover(first_failure, shared_recovered)
+    failover.upstreams_by_account[failover.FIRST_ACCOUNT_ID].append(second_recovery)
+    failover.install(monkeypatch)
+    second_input = {"role": "user", "content": [{"type": "input_text", "text": "unrelated second turn"}]}
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            failover.response_create([failover.HISTORICAL_INPUT]),
+            failover.response_create([second_input]),
+        ],
+    )
+
+    assert disconnect is None
+    assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_budget_second"
+    assert failover.connect_accounts == [
+        failover.FIRST_ACCOUNT_ID,
+        failover.SECOND_ACCOUNT_ID,
+        failover.FIRST_ACCOUNT_ID,
+    ], failover.connect_accounts
+    assert failover.excluded_at_connect[1] == {failover.FIRST_ACCOUNT_ID}
+    assert failover.excluded_at_connect[2] == {failover.SECOND_ACCOUNT_ID}, failover.excluded_at_connect
+    assert not failover.refused_connects
+    replayed = json.loads(second_recovery.sent_text[0])
+    assert replayed["input"] == [second_input]
+
+
+def test_backend_responses_websocket_cached_history_replays_after_pre_token_500(
+    app_instance,
+    monkeypatch,
+):
+    """A 500 on a short previous_response_id continuation resends the cached
+    history once, without the anchor, on another account."""
+    anchor_id = "resp_ws_cached_500_anchor"
+    owner = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[
+            _completed_first_turn_upstream_batch(anchor_id),
+            [_pre_token_server_error_event()],
+        ],
+    )
+    recovered = _recovered_upstream("resp_ws_cached_500_replay")
+    failover = _TwoAccountWebSocketFailover(owner, recovered)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            failover.response_create([failover.HISTORICAL_INPUT]),
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": anchor_id,
+                "input": [failover.FOLLOW_UP_INPUT],
+                "stream": True,
+            },
+        ],
+    )
+
+    assert [event["type"] for event in failover.turn_events[0]] == ["response.created", "response.completed"]
+    created_id = _assert_ws_single_response_lifecycle_completed(events, disconnect)
+    assert created_id == "resp_ws_cached_500_replay"
+    failover.assert_retried_on_another_account()
+    assert len(owner.sent_text) == 2
+    failed_follow_up = json.loads(owner.sent_text[1])
+    assert failed_follow_up["previous_response_id"] == anchor_id
+    replayed = json.loads(recovered.sent_text[0])
+    assert "previous_response_id" not in replayed
+    replayed_input = replayed["input"]
+    assert replayed_input[0] == failover.HISTORICAL_INPUT
+    assert replayed_input[-1] == failover.FOLLOW_UP_INPUT
+    assert any(item.get("role") == "assistant" for item in replayed_input)
+
+
+def test_backend_responses_websocket_uncached_previous_response_500_does_not_switch_accounts(
+    app_instance,
+    monkeypatch,
+):
+    """Without a cached history, a pre-token 500 that names previous_response_id
+    is returned to the client. The other account is not contacted."""
+    owner = _SequencedUpstreamWebSocket(
+        [],
+        deferred_message_batches=[[_pre_token_server_error_event()]],
+    )
+    other = _recovered_upstream("resp_ws_uncached_500_unused")
+    failover = _TwoAccountWebSocketFailover(owner, other)
+    failover.install(monkeypatch)
+
+    events, disconnect = failover.run(
+        app_instance,
+        requests=[
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": "resp_ws_never_cached",
+                "input": [failover.FOLLOW_UP_INPUT],
+                "stream": True,
+            }
+        ],
+    )
+
+    assert disconnect is None
+    assert events
+    assert events[-1]["type"] in {"response.failed", "error"}
+    assert failover.connect_accounts == [failover.FIRST_ACCOUNT_ID]
+    assert other.sent_text == []
+    assert len(owner.sent_text) == 1
+    forwarded = json.loads(owner.sent_text[0])
+    assert forwarded["previous_response_id"] == "resp_ws_never_cached"

@@ -111,6 +111,7 @@ from app.modules.proxy._load_balancer.admission_breaker import (
     authored_pre_output_close,
     note_admission_failover,
     record_upstream_admission_failure,
+    transparent_retry_used,
 )
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
@@ -346,6 +347,7 @@ from app.modules.proxy._service.support import (
     _record_websocket_route_metadata,
     _request_log_client_fields,
     _sleep_for_account_selection_recovery,
+    _stage_websocket_history_replay,
     _stream_settlement_error_payload,
     _StreamSettlement,
     _wait_for_websocket_continuity_gap,
@@ -429,7 +431,6 @@ from app.modules.proxy._service.websocket.helpers import (
     _sanitize_websocket_previous_response_error,
     _sanitize_websocket_terminal_error_fields,
     _serialize_websocket_error_event,
-    _stage_websocket_history_replay,
     _trim_websocket_previous_response_input_items,
     _upstream_websocket_disconnect_message,
     _websocket_accepted_replay_can_switch_account,
@@ -483,7 +484,7 @@ from app.modules.proxy.capability_routing import (
     strip_capability_metadata,
 )
 from app.modules.proxy.continuity import resolve_required_account_id
-from app.modules.proxy.conversation_history import account_admission_blocks
+from app.modules.proxy.conversation_history import account_admission_blocks, reset_history_replay_context
 from app.modules.proxy.durable_bridge_coordinator import (
     DurableBridgeLookup as DurableBridgeLookup,
 )
@@ -1292,13 +1293,16 @@ async def _process_upstream_websocket_transport_end(
         not history_replay_staged
         and replay_request_state is not None
         and pre_output_close
+        and not transparent_retry_used(replay_request_state.request_id)
+        and replay_request_state.replay_count < 1
+        and not replay_request_state.history_replay_used
         and AdmissionBreakerPolicy.from_settings().enabled
         and account.id not in replay_request_state.excluded_account_ids
         and _websocket_admission_may_switch_account(replay_request_state)
     ):
         replay_request_state.excluded_account_ids.add(account.id)
         replay_request_state.affinity_policy = replace(replay_request_state.affinity_policy, reallocate_sticky=True)
-        note_admission_failover(account.id)
+        note_admission_failover(account.id, request_id=replay_request_state.request_id)
         await asyncio.sleep(admission_retry_jitter_seconds())
     if replay_request_state is not None:
         upstream_control.replay_request_state = replay_request_state
@@ -1760,6 +1764,11 @@ class _WebSocketMixin:
                                 )
                             continue
                         if _is_websocket_response_create(payload):
+                            # One connection serves many creates. The retry budget
+                            # is per request, so a later create is not charged for
+                            # an earlier resend. Internal upstream replays do not
+                            # enter this branch.
+                            reset_history_replay_context()
                             if shutdown_state.is_draining():
                                 async with client_send_lock:
                                     await websocket.send_text(
@@ -5627,11 +5636,21 @@ class _WebSocketMixin:
             and not retry_safe_previous_response_not_found
             and not retry_safe_owner_replay
         ):
-            await proxy._handle_stream_error(
-                account,
-                {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
-                retry_error_code,
-            )
+            try:
+                await proxy._handle_stream_error(
+                    account,
+                    {"message": _websocket_event_error_message(event_type, payload) or "Upstream error"},
+                    retry_error_code,
+                )
+            except Exception:
+                # A health-write failure must not skip the replay or the
+                # fail-closed terminal. Either way the client has to leave
+                # this socket; waiting on keepalives is not a result.
+                _facade().logger.warning(
+                    "Failed to record websocket owner-unavailable error account_id=%s",
+                    account.id,
+                    exc_info=True,
+                )
             if _stage_websocket_history_replay(
                 request_state,
                 account_id=account.id,
@@ -5768,6 +5787,30 @@ class _WebSocketMixin:
                         _clear_websocket_request_error_overrides(request_state)
                         upstream_control.suppress_downstream_event = True
                         upstream_control.replay_request_state = request_state
+            elif (
+                request_state.previous_response_id is not None
+                and request_state.preferred_account_id is None
+                and retry_error_code in ADMISSION_FAILURE_CODES
+                and not request_state.downstream_visible
+                and not request_state.upstream_model_output_seen
+            ):
+                # The owner cannot be resolved. A cached history may move
+                # without the anchor. The original id must not.
+                if _stage_websocket_history_replay(
+                    request_state,
+                    account_id=account.id,
+                    reason="admission_failure",
+                    owner_blocked=True,
+                ):
+                    await asyncio.sleep(admission_retry_jitter_seconds())
+                    request_state.replay_count += 1
+                    request_state.awaiting_response_created = True
+                    request_state.response_id = None
+                    _clear_websocket_request_error_overrides(request_state)
+                    upstream_control.reconnect_requested = True
+                    upstream_control.suppress_downstream_event = True
+                    upstream_control.replay_request_state = request_state
+                    return downstream_text
             else:
                 upstream_control.reconnect_requested = True
                 # The loop re-acquires the create gate and admission for a
@@ -5802,6 +5845,8 @@ class _WebSocketMixin:
                 upstream_control.replay_request_state = request_state
                 if (
                     retry_error_code in ADMISSION_FAILURE_CODES
+                    and not transparent_retry_used(request_state.request_id)
+                    and not request_state.history_replay_used
                     and AdmissionBreakerPolicy.from_settings().enabled
                     and not accepted_lifecycle_replay
                     and account.id not in request_state.excluded_account_ids
@@ -5809,7 +5854,7 @@ class _WebSocketMixin:
                 ):
                     request_state.excluded_account_ids.add(account.id)
                     request_state.affinity_policy = replace(request_state.affinity_policy, reallocate_sticky=True)
-                    note_admission_failover(account.id)
+                    note_admission_failover(account.id, request_id=request_state.request_id)
                     await asyncio.sleep(admission_retry_jitter_seconds())
                 if accepted_lifecycle_replay:
                     # The accepted request still holds its API-key reservation:

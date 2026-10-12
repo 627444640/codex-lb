@@ -505,15 +505,15 @@ describe("DashboardPage", () => {
 
     renderWithProviders(<DashboardPage />);
 
-    expect(screen.getByRole("button", { name: "Columns (12)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Columns (13)" })).toBeInTheDocument();
     expect(screen.queryByRole("slider")).not.toBeInTheDocument();
     expect(screen.queryByText(/^Width$/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Columns (12)" }));
+    await user.click(screen.getByRole("button", { name: "Columns (13)" }));
     expect(screen.getByText("Visible columns")).toBeInTheDocument();
     await user.click(screen.getByRole("menuitemcheckbox", { name: "Plan" }));
 
-    expect(screen.getByRole("menu", { name: "Columns (11)" })).toBeInTheDocument();
+    expect(screen.getByRole("menu", { name: "Columns (12)" })).toBeInTheDocument();
     const selectedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
       | RecentRequestsTableProps
       | undefined;
@@ -535,7 +535,7 @@ describe("DashboardPage", () => {
     const restoredProps = recentRequestsTableSpy.mock.lastCall?.[0] as
       | RecentRequestsTableProps
       | undefined;
-    expect(restoredProps?.visibleColumns).toHaveLength(12);
+    expect(restoredProps?.visibleColumns).toHaveLength(13);
     expect(restoredProps?.columnWidths).toEqual({});
     expect(
       window.localStorage.getItem(REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY),

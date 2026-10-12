@@ -3085,6 +3085,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 await _send_http_bridge_request_text_with_archive_id(session, request_state, retry_text_data)
             _clear_websocket_request_error_overrides(request_state)
             session.last_used_at = _service_time().monotonic()
+            request_state.requeued_pending_upstream = True
             return True
         except UpstreamWebSocketTransportError:
             # The new socket may have accepted response.create. Let the reader
@@ -3129,6 +3130,21 @@ class _HTTPBridgeRequestSubmitMixin:
             if transport_only_unanchored_replay:
                 return False
             if _websocket_request_can_replay_before_visible_output(request_state):
+                return True
+            # A continuation that still names previous_response_id is not a
+            # plain replay. Let it through so a cached full history can drop
+            # that anchor; a cache miss returns before any account switch.
+            cached_anchor_replay = (
+                request_state.previous_response_id is not None
+                and bool(request_state.request_text)
+                and request_state.response_event_count == 0
+                and request_state.replay_count < 1
+                and not request_state.downstream_visible
+                and not request_state.upstream_model_output_seen
+                and request_state.last_downstream_sequence_number is None
+                and (request_state.response_create_sent_at is not None or request_state.transport == "http")
+            )
+            if cached_anchor_replay:
                 return True
             if (
                 clean_close_retry_max_count <= 0
@@ -3217,13 +3233,36 @@ class _HTTPBridgeRequestSubmitMixin:
             if request_state.previous_response_id is not None and not (
                 request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
             ):
-                # Once a continuation is pending upstream, reconnecting without
-                # replay cannot complete the current request, while replaying it
-                # is unsafe without upstream idempotency guarantees. Proxy-
-                # injected anchors and proof-gated client full resends are
-                # equivalent to the client's own retry once the anchor is
-                # stripped. The latter remains pinned to the current owner.
-                return False
+                # A continuation with no verified fresh body must not move
+                # while it still carries previous_response_id. A cached full
+                # history can be resent once without that anchor.
+                from app.modules.proxy._load_balancer.admission_breaker import ADMISSION_FAILURE_CODES
+                from app.modules.proxy._service.support import _stage_websocket_history_replay
+                from app.modules.proxy.conversation_history import account_admission_blocks
+
+                override = request_state.error_code_override or ""
+                if override in ADMISSION_FAILURE_CODES:
+                    history_reason = "admission_failure"
+                    history_owner_blocked = True
+                elif account_admission_blocks(self._load_balancer, session.account.id):
+                    history_reason = "owner_unavailable"
+                    history_owner_blocked = True
+                else:
+                    history_reason = "stream_incomplete"
+                    history_owner_blocked = False
+                history_staged = (
+                    request_state.response_event_count == 0
+                    and not request_state.downstream_visible
+                    and not request_state.upstream_model_output_seen
+                    and _stage_websocket_history_replay(
+                        request_state,
+                        account_id=session.account.id,
+                        reason=history_reason,
+                        owner_blocked=history_owner_blocked,
+                    )
+                )
+                if not history_staged:
+                    return False
             close_classification = _classify_upstream_close(
                 session.last_upstream_close_code,
                 response_events_seen=request_state.response_event_count,
@@ -3286,6 +3325,16 @@ class _HTTPBridgeRequestSubmitMixin:
                         return False
                     if not hard_owner_bound:
                         request_state.excluded_account_ids.add(session.account.id)
+            elif request_state.history_replay_used:
+                request_text = request_state.request_text or ""
+                account_bound_replay = False
+                require_preferred_reconnect = False
+                # Count this resend before the replacement socket is sent to.
+                # A close inside send_text is observed by the reader before
+                # this function returns, and a still-zero replay_count would
+                # start another reconnect and never finish.
+                if request_state.replay_count < 1:
+                    request_state.replay_count += 1
             else:
                 # Account-scoped uploaded files cannot be replayed on a
                 # different owner. Keep the preferred account mandatory for
@@ -3472,6 +3521,7 @@ class _HTTPBridgeRequestSubmitMixin:
             await _send_http_bridge_request_text_with_archive_id(session, request_state, request_text)
             session.last_used_at = _service_time().monotonic()
             request_state.clean_close_retry_result = True
+            request_state.requeued_pending_upstream = True
             return True
         except asyncio.CancelledError:
             request_state.clean_close_retry_result = False

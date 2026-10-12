@@ -1,0 +1,9 @@
+# Acceptance round
+
+The admission breaker and the conversation cache shipped as separate retries. A Codex turn that still carries `previous_response_id` cannot move on a bare 500, and an SSE body that ends before `response.completed` has no websocket close code, so the HTTP path never counted it.
+
+Breaker phase stays in each replica's memory. Turning `account_admission_breaker_enabled` or `conversation_history_cache_enabled` off restores the previous fail-closed path. The cache file can be deleted. Request-log columns are nullable.
+
+Example: account A returns `server_error` before any output on a turn whose `previous_response_id` is in the cache and whose history has no file id. The proxy drops the id, waits 50–250ms, and sends the cached history once to account B. A second failure is returned to the client.
+
+HTTP 500 still spends three tries on the first account and one move to the next. That move is recorded on the request id, so a pre-token failure on the second account returns the error and does not send the cached history again. Shutdown fails bridge requests that were put back on the pending deque and then closes the history cache, so the drain does not wait out a silent upstream and the sqlite connection does not outlive the process. A wedged SQLite teardown that is still pending when `close_db` hits its deadline stays owned, and the next `close_db` does not wait out that deadline again for the same task. The accounts page shows A as 熔断中 with a countdown once three such failures land inside the window. Account cards and the cache card sit on separate rows. The cache count is labeled 对话数. The window line reads `60 秒内 1/3`. A grey 熔断未启用 banner sits above the cards when the breaker is off. The request list column 处理结果 shows 已换号, 已重发, and 报错, with filters 已挽回 and 最终报错.

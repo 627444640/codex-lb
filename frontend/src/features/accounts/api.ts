@@ -16,6 +16,8 @@ import {
   AccountUsageResetConsumeResponseSchema,
   AccountUsageResetCreditsResponseSchema,
   AccountTrendsResponseSchema,
+  AccountAdmissionBreakersResponseSchema,
+  ConversationHistoryCacheStatsSchema,
   AccountProbeRequestSchema,
   AccountProbeResponseSchema,
   ConsumeRateLimitResetCreditResponseSchema,
@@ -195,6 +197,14 @@ export function submitManualOauthCallback(payload: unknown) {
   return post(`${OAUTH_BASE_PATH}/manual-callback`, ManualOauthCallbackResponseSchema, {
     body: validated,
   });
+}
+
+export function getAdmissionBreakers() {
+  return get(`${ACCOUNTS_BASE_PATH}/admission-breakers`, AccountAdmissionBreakersResponseSchema);
+}
+
+export function getConversationHistoryCache() {
+  return get(`${ACCOUNTS_BASE_PATH}/conversation-history-cache`, ConversationHistoryCacheStatsSchema);
 }
 
 export function getRuntimeConnectAddress() {

@@ -49,6 +49,9 @@ class RuntimeState:
     admission_open_until: float | None = None
     admission_probe_in_flight: bool = False
     admission_probe_started_at: float | None = None
+    # Set once when the open interval elapses, so the half-open log fires
+    # on the transition rather than on every status poll.
+    admission_half_open_logged: bool = False
 
 
 @dataclass(frozen=True, slots=True)

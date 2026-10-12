@@ -77,6 +77,12 @@ _SQLITE_TEARDOWN_WEDGED_INFO_KEY = "sqlite_teardown_wedged"
 # abandoned teardown may outlive its reclaim (the interrupt is best-effort),
 # so the close_db drain is explicitly bounded as a whole.
 _wedged_teardown_cleanup_tasks: set[asyncio.Task[Any]] = set()
+# Tasks a bounded close_db drain already gave up on. A later close_db must
+# not pay that deadline again for the same still-pending task (one wedge
+# would otherwise add the full drain to every following shutdown). A task
+# that finishes later is dropped here, and the bookkeeping close it schedules
+# is a new registry entry, so the next close_db still drains that close.
+_wedged_teardown_abandoned_tasks: set[asyncio.Task[Any]] = set()
 
 # PostgreSQL pool checkout timeout and connection recycle window. Fixed
 # application constants (issue #1340): recycle keeps pooled connections
@@ -973,31 +979,51 @@ async def init_db() -> None:
             raise
 
 
+def _pending_wedged_teardown_tasks() -> set[asyncio.Task[Any]]:
+    """Registry entries a close_db drain still has to wait for.
+
+    Finished tasks leave both sets. Tasks a previous drain already abandoned
+    stay owned, but they are not waited on again. A bookkeeping close scheduled
+    after one of those tasks finishes is a new entry and is still pending.
+    """
+    finished = {task for task in _wedged_teardown_cleanup_tasks if task.done()}
+    if finished:
+        _wedged_teardown_cleanup_tasks.difference_update(finished)
+        _wedged_teardown_abandoned_tasks.difference_update(finished)
+    _wedged_teardown_abandoned_tasks.intersection_update(_wedged_teardown_cleanup_tasks)
+    return set(_wedged_teardown_cleanup_tasks - _wedged_teardown_abandoned_tasks)
+
+
 async def close_db() -> None:
-    if _wedged_teardown_cleanup_tasks:
+    pending = _pending_wedged_teardown_tasks()
+    if pending:
         # Abandoned wedged teardowns plus their deferred bookkeeping closes.
         # Drain until the registry is stable — an abandoned teardown that
         # completes during the drain schedules its bookkeeping close only
         # after any one-time snapshot — and bound the whole drain so a
         # teardown still wedged despite the reclaim (the interrupt is
         # best-effort) cannot wedge shutdown too: one deadline covers the
-        # abandoned teardown and the bounded close it chains.
+        # abandoned teardown and the bounded close it chains. Tasks still
+        # pending at the deadline stay owned, and a later close_db does not
+        # wait out the deadline again for those same tasks.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 2 * _SQLITE_TEARDOWN_TIMEOUT_SECONDS
-        while _wedged_teardown_cleanup_tasks:
+        while pending:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 logger.warning(
                     "close_db abandoned %d still-pending wedged-teardown task(s) after the bounded "
                     "drain; their connections were already reclaimed (issue #1682)",
-                    len(_wedged_teardown_cleanup_tasks),
+                    len(pending),
                 )
+                _wedged_teardown_abandoned_tasks.update(task for task in pending if not task.done())
                 break
-            await asyncio.wait(tuple(_wedged_teardown_cleanup_tasks), timeout=remaining)
+            await asyncio.wait(tuple(pending), timeout=remaining)
             # Completion callbacks (deregistration and scheduling of the
             # deferred bookkeeping close) run via call_soon; yield once so
             # the registry reflects them before the next stability check.
             await asyncio.sleep(0)
+            pending = _pending_wedged_teardown_tasks()
     await engine.dispose()
     if _background_engine is not None:
         await _background_engine.dispose()

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 
 import { AppHeader } from "@/components/layout/app-header";
 import {
@@ -30,6 +30,13 @@ const ApisPage = lazy(() => import("@/features/apis/components/apis-page").then(
 const SettingsPage = lazy(() =>
   import("@/features/settings/components/settings-page").then((m) => ({ default: m.SettingsPage })),
 );
+const ReliabilityPreview = import.meta.env.DEV
+  ? lazy(() =>
+      import("@/features/accounts/components/reliability-preview").then((m) => ({
+        default: m.ReliabilityPreview,
+      })),
+    )
+  : null;
 
 function AppLayout() {
   const logout = useAuthStore((state) => state.logout);
@@ -66,6 +73,14 @@ function AppLayout() {
 }
 
 export default function App() {
+  const location = useLocation();
+  if (import.meta.env.DEV && ReliabilityPreview && location.pathname === "/reliability-preview") {
+    return (
+      <TooltipProvider>
+        <ReliabilityPreview />
+      </TooltipProvider>
+    );
+  }
   return (
     <TooltipProvider>
       <Toaster richColors />

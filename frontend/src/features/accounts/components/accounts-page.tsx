@@ -9,6 +9,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useDialogState } from "@/hooks/use-dialog-state";
 import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
+import { ReliabilityOverview } from "@/features/accounts/components/reliability-overview";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
 import { ImportDialog } from "@/features/accounts/components/import-dialog";
 import { ResetCreditConfirmDialog } from "@/features/accounts/components/reset-credit-confirm-dialog";
@@ -159,6 +160,8 @@ export function AccountsPage() {
       {mutationError ? (
         <AlertMessage variant="error">{mutationError}</AlertMessage>
       ) : null}
+
+      <ReliabilityOverview />
 
       {!accountsQuery.data ? (
         <AccountsSkeleton />

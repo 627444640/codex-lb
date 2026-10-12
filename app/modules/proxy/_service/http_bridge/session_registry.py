@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Mapping
 from typing import Any
 
@@ -96,6 +97,59 @@ class _HTTPBridgeSessionRegistryMixin:
         # common resource finalization removes the latter entry.
         self._http_bridge_sessions = {}
         self._http_bridge_detached_sessions = {}
+
+    async def fail_requeued_http_bridge_requests(self: _HTTPBridgeServiceProtocol) -> int:
+        """Fail bridge requests that were requeued and are still waiting.
+
+        A retry puts the request back on ``pending_requests`` and returns to
+        the upstream reader. If that socket sends nothing else, the HTTP
+        handler stays in flight and lifespan drain waits out its timeout.
+        Shutdown calls this before the drain so those handlers finish.
+        """
+
+        registry_lock = getattr(self, "_http_bridge_lock", None)
+        if registry_lock is None:
+            return 0
+        async with registry_lock:
+            sessions = [
+                *self._http_bridge_sessions.values(),
+                *self._http_bridge_detached_sessions.values(),
+            ]
+        failed = 0
+        for session in sessions:
+            pending_requests = getattr(session, "pending_requests", None)
+            pending_lock = getattr(session, "pending_lock", None)
+            if pending_requests is None or pending_lock is None:
+                continue
+            async with pending_lock:
+                stuck = [
+                    request_state
+                    for request_state in pending_requests
+                    if getattr(request_state, "requeued_pending_upstream", False)
+                ]
+                for request_state in stuck:
+                    pending_requests.remove(request_state)
+                    request_state.requeued_pending_upstream = False
+                queued = getattr(session, "queued_request_count", None)
+                if isinstance(queued, int):
+                    session.queued_request_count = max(0, queued - len(stuck))
+            if not stuck:
+                continue
+            account = getattr(session, "account", None)
+            account_id = getattr(account, "id", None)
+            await self._fail_pending_websocket_requests(
+                account=account,
+                account_id_value=account_id if isinstance(account_id, str) else None,
+                pending_requests=deque(stuck),
+                pending_lock=pending_lock,
+                error_code="upstream_unavailable",
+                error_message="HTTP bridge requeued request cancelled during shutdown",
+                api_key=None,
+                response_create_gate=getattr(session, "response_create_gate", None),
+                penalize_account=False,
+            )
+            failed += len(stuck)
+        return failed
 
     async def close_all_http_bridge_sessions(self: _HTTPBridgeServiceProtocol) -> None:
         async with self._http_bridge_lock:
