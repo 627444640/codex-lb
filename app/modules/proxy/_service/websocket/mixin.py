@@ -354,6 +354,7 @@ from app.modules.proxy._service.support import (
     _wait_for_websocket_continuity_gap,
     _websocket_full_replay_should_wait_for_continuity,
     _websocket_model_output_started,
+    _websocket_request_log_retry_marks,
     _WebSocketConnectFailureEmitted,
     _WebSocketContinuityState,
     _WebSocketReceiveTimeout,
@@ -6477,6 +6478,7 @@ class _WebSocketMixin:
                     client_ip=request_state.client_ip,
                     request_kind=request_state.request_kind,
                     connection_request_kind=request_state.connection_request_kind,
+                    retry_marks=_websocket_request_log_retry_marks(request_state),
                 )
             except Exception:
                 request_log_handoff_succeeded = False
@@ -6618,6 +6620,7 @@ class _WebSocketMixin:
             client_ip=request_state.client_ip,
             request_kind=request_state.request_kind,
             connection_request_kind=request_state.connection_request_kind,
+            retry_marks=_websocket_request_log_retry_marks(request_state),
         )
         _record_upstream_transport_decision(
             downstream_transport=request_state.transport,
@@ -6985,6 +6988,7 @@ class _WebSocketMixin:
                     client_ip=request_state.client_ip,
                     request_kind=request_state.request_kind,
                     connection_request_kind=request_state.connection_request_kind,
+                    retry_marks=_websocket_request_log_retry_marks(request_state),
                 )
             except Exception:
                 request_log_handoff_succeeded = False
