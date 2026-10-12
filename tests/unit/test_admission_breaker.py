@@ -122,27 +122,35 @@ def test_filter_drops_open_accounts_and_does_not_return_the_original_list() -> N
 
 
 def test_failover_is_once_before_output_and_stops_after() -> None:
-    kwargs = {
-        "error_code": "server_error",
-        "http_status": 500,
-        "downstream_visible": False,
-        "already_retried": False,
-        "continuity_pinned": False,
-        "attempts_remaining": True,
-        "pre_first_output_close": False,
-        "policy": _POLICY,
-    }
-    assert plan_admission_failover(**kwargs) == AdmissionFailoverAction.FAILOVER_ONCE
-    assert plan_admission_failover(**{**kwargs, "already_retried": True}) == AdmissionFailoverAction.SURFACE
-    assert plan_admission_failover(**{**kwargs, "downstream_visible": True}) == AdmissionFailoverAction.SURFACE
-    assert plan_admission_failover(**{**kwargs, "continuity_pinned": True}) == AdmissionFailoverAction.SURFACE
-    assert plan_admission_failover(**{**kwargs, "attempts_remaining": False}) == AdmissionFailoverAction.SURFACE
-    assert (
-        plan_admission_failover(**{**kwargs, "error_code": "rate_limit_exceeded", "http_status": 429})
-        == AdmissionFailoverAction.PASSTHROUGH
-    )
-    disabled = AdmissionBreakerPolicy(enabled=False)
-    assert plan_admission_failover(**{**kwargs, "policy": disabled}) == AdmissionFailoverAction.PASSTHROUGH
+    def decide(
+        *,
+        error_code: str = "server_error",
+        http_status: int | None = 500,
+        downstream_visible: bool = False,
+        already_retried: bool = False,
+        continuity_pinned: bool = False,
+        attempts_remaining: bool = True,
+        pre_first_output_close: bool = False,
+        policy: AdmissionBreakerPolicy | None = _POLICY,
+    ) -> str:
+        return plan_admission_failover(
+            error_code=error_code,
+            http_status=http_status,
+            downstream_visible=downstream_visible,
+            already_retried=already_retried,
+            continuity_pinned=continuity_pinned,
+            attempts_remaining=attempts_remaining,
+            pre_first_output_close=pre_first_output_close,
+            policy=policy,
+        )
+
+    assert decide() == AdmissionFailoverAction.FAILOVER_ONCE
+    assert decide(already_retried=True) == AdmissionFailoverAction.SURFACE
+    assert decide(downstream_visible=True) == AdmissionFailoverAction.SURFACE
+    assert decide(continuity_pinned=True) == AdmissionFailoverAction.SURFACE
+    assert decide(attempts_remaining=False) == AdmissionFailoverAction.SURFACE
+    assert decide(error_code="rate_limit_exceeded", http_status=429) == AdmissionFailoverAction.PASSTHROUGH
+    assert decide(policy=AdmissionBreakerPolicy(enabled=False)) == AdmissionFailoverAction.PASSTHROUGH
 
 
 def test_failover_mark_records_the_first_account_only() -> None:
