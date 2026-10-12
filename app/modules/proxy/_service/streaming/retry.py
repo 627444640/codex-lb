@@ -2508,8 +2508,7 @@ class _StreamingRetryMixin:
                                 _stream_settlement_error_payload(settlement),
                                 settlement.error_code or "upstream_error",
                                 pre_first_output_close=(
-                                    not settlement.downstream_visible
-                                    and settlement.error_code == "stream_incomplete"
+                                    not settlement.downstream_visible and settlement.error_code == "stream_incomplete"
                                 ),
                             )
                         elif settled and settlement.record_success:
