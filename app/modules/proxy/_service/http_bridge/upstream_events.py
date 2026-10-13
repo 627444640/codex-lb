@@ -214,6 +214,7 @@ from app.modules.proxy._service.warmup import (
     _WarmupUsageSnapshot as _WarmupUsageSnapshot,
 )
 from app.modules.proxy._service.websocket.helpers import (
+    _websocket_anchor_loss_history_replay_candidate,
     _websocket_history_failover_allowed,
     _websocket_proxy_injected_fresh_body_can_move,
 )
@@ -1850,6 +1851,76 @@ class _HTTPBridgeUpstreamEventsMixin:
         if request_state is not None:
             setattr(request_state, "account_health_error_handled", True)
 
+    async def _replay_http_bridge_anchor_loss_from_history(
+        self: Any,
+        session: "_HTTPBridgeSession",
+        request_state: _WebSocketRequestState,
+        *,
+        event_type: str | None,
+        payload: dict[str, JsonValue] | None,
+        has_other_pending_requests: bool,
+    ) -> bool:
+        """Resend one pre-output HTTP bridge turn from cached history.
+
+        Returns True only after the replacement ``response.create`` is sent.
+        The caller must not forward the upstream error in that case. A cache
+        miss, output that already reached the client, or a failed send returns
+        False and leaves the existing fail-closed terminal in place. The
+        resend spends the one shared retry and is not attempted again. A hard
+        session stays on the account that owns the turn; this path does not
+        reassign an unavailable sticky owner.
+        """
+
+        if not _websocket_anchor_loss_history_replay_candidate(
+            request_state,
+            event_type=event_type,
+            payload=payload,
+            has_other_pending_requests=has_other_pending_requests,
+        ):
+            return False
+        from app.modules.proxy.conversation_history import account_admission_blocks
+
+        anchor_id = request_state.previous_response_id
+        if not _stage_websocket_history_replay(
+            request_state,
+            account_id=session.account.id,
+            reason="previous_response_not_found",
+            owner_blocked=account_admission_blocks(self._load_balancer, session.account.id),
+        ):
+            return False
+        await asyncio.sleep(admission_retry_jitter_seconds())
+        async with session.pending_lock:
+            if request_state not in session.pending_requests:
+                session.pending_requests.appendleft(request_state)
+                if _http_bridge_request_counts_against_queue(request_state):
+                    session.queued_request_count += 1
+            staged = await _stage_websocket_request_state_for_replay(
+                request_state,
+                create_gate=session.response_create_gate,
+                surface="http_bridge",
+                trigger="previous_response_not_found",
+            )
+        if staged:
+            _clear_websocket_request_error_overrides(request_state)
+            retried = await self._retry_http_bridge_precreated_request(
+                session,
+                request_state=request_state,
+            )
+            if retried:
+                return True
+        async with session.pending_lock:
+            if request_state in session.pending_requests:
+                session.pending_requests.remove(request_state)
+                if _http_bridge_request_counts_against_queue(request_state):
+                    session.queued_request_count = max(0, session.queued_request_count - 1)
+        # The body was rebuilt, but nothing was delivered to the client.
+        # Restore the anchor so the fail-closed diagnostic still names it,
+        # and consume the one retry so a later close cannot send it again.
+        if request_state.previous_response_id is None:
+            request_state.previous_response_id = anchor_id
+        request_state.replay_count = max(request_state.replay_count, 1)
+        return False
+
     async def _process_parsed_http_bridge_upstream_event(
         self: Any,
         session: "_HTTPBridgeSession",
@@ -2413,6 +2484,17 @@ class _HTTPBridgeUpstreamEventsMixin:
             event_block = f"data: {rewritten_text}\n\n"
 
         if status_request_state is not None and is_previous_response_not_found_event:
+            # Plan the cached resend before the stale-anchor rewrite. That
+            # rewrite records continuity_fail_closed and would otherwise return
+            # stream_incomplete while the history cache still holds the turn.
+            if await self._replay_http_bridge_anchor_loss_from_history(
+                session,
+                status_request_state,
+                event_type=event_type,
+                payload=payload,
+                has_other_pending_requests=has_other_pending_requests,
+            ):
+                return
             status_request_state.error_http_status_override = 502
             status_request_state.previous_response_not_found_rewritten = (
                 response_id is None and not has_other_pending_requests
