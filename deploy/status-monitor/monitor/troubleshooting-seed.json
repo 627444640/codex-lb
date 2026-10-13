@@ -58,6 +58,26 @@
     "sort_order": 50
   },
   {
+    "slug": "error-response-protection-unavailable",
+    "code": "internal_error",
+    "title": "上游响应保护不可用",
+    "signature": "response protection is unavailable",
+    "scope": "适用于流式请求返回 internal_error，错误文字为 response protection is unavailable 的情况。",
+    "cause": "已核对的日志表明请求已经到达 Codex LB 并完成账号选择，随后上游流式响应在生成过程中失败，网关将其记录为内部错误并可能返回 502。当前证据不能确定上游具体组件、账号凭据、模型路径或网络边界中的哪一项是根因。",
+    "solutions": [
+      "先等待片刻，只重试一次；避免连续提交相同的长请求。",
+      "如果仍然失败，由管理员确认备用账号处于可用状态，并用备用账号发送同类短请求；不要只重复重启当前服务。",
+      "用同一账号测试另一个模型或新建短会话，区分账号、模型和上下文路径。",
+      "持续失败时记录 Asia/Taipei 的发生时间、模型、入口和脱敏后的错误类别；不要提交 API Key、完整请求正文或原始会话截图。"
+    ],
+    "limitations": "这条消息表示网关记录到的上游终态错误；当前日志未保留原始 SSE，因此具体上游组件仍待核对。健康检查、HTTP 200、切换路径、调大超时或重启，单独都不能证明真实模型请求已经恢复。",
+    "endpoint_url": "",
+    "endpoint_label": "API 基地址",
+    "endpoint_help": "",
+    "status": "published",
+    "sort_order": 55
+  },
+  {
     "slug": "error-upstream-overload",
     "code": "server_is_overloaded",
     "title": "上游容量过载",
