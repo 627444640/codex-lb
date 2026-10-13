@@ -40,7 +40,8 @@ class GuideTests(unittest.TestCase):
 
     def test_seed_once_and_full_lifecycle_survives_restart(self):
         initial = self.client.get("/internal/guides", headers=self.headers).json()["guides"]
-        self.assertEqual(len(initial), 10)
+        self.assertEqual(len(initial), 11)
+        self.assertIn("error-response-protection-unavailable", {guide["slug"] for guide in initial})
         self.assertIn('id="error-413"', self.page())
         row = self.save()
         self.assertNotIn("Synthetic guide", self.page())
@@ -65,7 +66,7 @@ class GuideTests(unittest.TestCase):
         self.assertNotIn("Synthetic guide", self.page())
         restarted = create_app(self.settings, run_collector=False)
         after = restarted.state.guides.list()
-        self.assertEqual(len(after), 11)
+        self.assertEqual(len(after), 12)
         self.assertIsNotNone(after[0].deleted_at)
         restored = self.client.post(
             f"/internal/guides/{row['id']}/restore", json={"revision": row["revision"]}, headers=self.headers
@@ -79,8 +80,8 @@ class GuideTests(unittest.TestCase):
             "DELETE", f"/internal/guides/{row.id}", json={"revision": row.revision}, headers=self.headers
         )
         app = create_app(self.settings, run_collector=False)
-        self.assertEqual(len(app.state.guides.list()), 10)
-        self.assertEqual(len(app.state.guides.list(public=True)), 9)
+        self.assertEqual(len(app.state.guides.list()), 11)
+        self.assertEqual(len(app.state.guides.list(public=True)), 10)
 
     def test_upgrade_preserves_existing_monitor_data(self):
         root = Path(self.temp.name)
@@ -104,20 +105,20 @@ class GuideTests(unittest.TestCase):
         notice = upgraded.state.store.notices()[0]
         self.assertEqual(notice["id"], notice_id)
         self.assertEqual(notice["body"], "Preserve this content")
-        self.assertEqual(len(upgraded.state.guides.list()), 10)
+        self.assertEqual(len(upgraded.state.guides.list()), 11)
 
     def test_seed_version_upgrade_adds_new_guides_without_overwriting_edits(self):
         root = Path(self.temp.name) / "seed-upgrade"
         settings = Settings(source_db=root / "source.db", state_dir=root / "state", checks=())
         old_store = Store(settings)
         with old_store.db() as conn:
-            conn.execute("DELETE FROM monitor_meta WHERE key='troubleshooting-seed-v2'")
-            conn.execute("INSERT INTO monitor_meta VALUES ('troubleshooting-seed-v1','done')")
+            conn.execute("DELETE FROM monitor_meta WHERE key='troubleshooting-seed-v3'")
+            conn.execute("INSERT INTO monitor_meta VALUES ('troubleshooting-seed-v2','done')")
         upgraded = create_app(settings, run_collector=False)
-        self.assertEqual(len(upgraded.state.guides.list()), 10)
+        self.assertEqual(len(upgraded.state.guides.list()), 11)
         with upgraded.state.store.db() as conn:
             self.assertIsNotNone(
-                conn.execute("SELECT 1 FROM monitor_meta WHERE key='troubleshooting-seed-v2'").fetchone()
+                conn.execute("SELECT 1 FROM monitor_meta WHERE key='troubleshooting-seed-v3'").fetchone()
             )
 
     def test_private_routes_require_local_service_auth(self):

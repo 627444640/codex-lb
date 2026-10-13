@@ -13,7 +13,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from .store import Store
 
-SEED_MARKER = "troubleshooting-seed-v2"
+SEED_MARKER = "troubleshooting-seed-v3"
 
 
 class GuideContent(BaseModel):

@@ -35,6 +35,7 @@ class FAQTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         for slug in (
             "error-upstream-processing",
+            "error-response-protection-unavailable",
             "error-upstream-overload",
             "error-stream-incomplete",
             "error-continuation",
