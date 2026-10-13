@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .official_status import unknown as unknown_official_status
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -313,13 +314,40 @@ class Store:
         s = self.latest()
         stale = not s or now - s["collected_at"] > max(3 * self.settings.poll_seconds, 120)
         if s is None:
-            s = {"collected_at": None, "status": "unknown", "components": [], "pool": None, "requests": None}
+            s = {
+                "collected_at": None,
+                "status": "unknown",
+                "components": [],
+                "pool": None,
+                "requests": None,
+                "official_status": None,
+            }
         if stale:
             s["status"] = "unknown"
             s["pool"] = s["requests"] = s["request_quality"] = None
+            s["official_status"] = (
+                unknown_official_status(self.settings.official_status, None, "监控采样已过期，官方状态暂不可确认")
+                if self.settings.official_status.enabled
+                else None
+            )
             s["components"] = [
                 {"id": c["id"], "name": c["name"], "status": "unknown", "detail": "采样已过期"} for c in s["components"]
             ]
+        official = s.get("official_status")
+        if self.settings.official_status.enabled and official is None:
+            official = unknown_official_status(self.settings.official_status, None, "等待官方状态首次采样")
+        if official and official.get("fetched_at") is not None:
+            official_age = now - official["fetched_at"]
+            if official_age > self.settings.official_status.stale_seconds:
+                official = {
+                    **official,
+                    "status": "unknown",
+                    "indicator": None,
+                    "description": "官方状态采样已过期",
+                    "stale": True,
+                    "components": [],
+                    "incidents": [],
+                }
         weekly_remaining_percent, weekly_next_reset_at = weekly_capacity_details(s["pool"])
         # Explicit output contract: never serialize Settings, auth, or SMTP objects.
         return {
@@ -329,6 +357,7 @@ class Store:
             "stale": stale,
             "poll_seconds": self.settings.poll_seconds,
             "components": s["components"],
+            "official_status": official,
             "capacity": {
                 "weekly_remaining_percent": weekly_remaining_percent,
                 "weekly_next_reset_at": weekly_next_reset_at,
