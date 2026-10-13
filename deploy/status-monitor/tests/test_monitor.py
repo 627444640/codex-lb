@@ -15,7 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitor.collector import collect, read_source, sql_time
-from monitor.config import Settings, load_settings
+from monitor.config import OfficialStatusSettings, Settings, load_settings
 from monitor.mailer import deliver_pending
 from monitor.server import create_app
 from monitor.store import Store
@@ -268,6 +268,29 @@ class CollectorTests(Fixture):
         self.assertEqual(c["detail"], "暂无真实模型请求样本，业务质量待调用后确认")
         self.assertIsNone(s["requests"]["error_percent"])
 
+    def test_official_provider_status_does_not_change_local_health(self):
+        def provider_status(settings, now):
+            return {
+                "provider": "OpenAI",
+                "status": "outage",
+                "description": "Provider incident",
+                "fetched_at": now,
+                "stale": False,
+                "components": [],
+                "incidents": [],
+            }
+
+        snapshot = collect(self.settings, self.now, official_status_fn=provider_status)
+        self.assertEqual(snapshot["status"], "operational")
+        self.assertEqual(snapshot["official_status"]["status"], "outage")
+        self.assertNotIn("official", {component["id"] for component in snapshot["components"]})
+
+        store = Store(self.settings)
+        store.record(snapshot)
+        self.assertIsNone(store.history(self.now)["readiness_percent"])
+        self.assertEqual(store.history(self.now)["samples"], 1)
+        self.assertEqual(store.incidents(), [])
+
     def test_idle_requests_do_not_hide_unhealthy_gateway(self):
         settings = replace(
             self.settings,
@@ -349,6 +372,29 @@ class StateTests(Fixture):
         self.assertIsNone(result["capacity"]["weekly_next_reset_at"])
         self.assertIsNone(result["requests"])
 
+    def test_enabled_official_status_stays_unknown_when_monitor_snapshot_is_stale(self):
+        settings = replace(self.settings, official_status=OfficialStatusSettings(enabled=True))
+        store = Store(settings)
+        first = store.public(self.now)
+        self.assertEqual(first["official_status"]["status"], "unknown")
+        self.assertNotIn("未启用", first["official_status"]["description"])
+
+        snapshot = self.snapshot()
+        snapshot["official_status"] = {
+            "provider": "OpenAI",
+            "status": "operational",
+            "description": "All systems operational",
+            "fetched_at": self.now,
+            "stale": False,
+            "components": [],
+            "incidents": [],
+        }
+        store.record(snapshot)
+        result = store.public(self.now + 181)
+        self.assertEqual(result["official_status"]["status"], "unknown")
+        self.assertTrue(result["official_status"]["stale"])
+        self.assertNotIn("未启用", result["official_status"]["description"])
+
     def test_history_has_no_invented_samples(self):
         self.store.record(self.snapshot())
         history = self.store.history(self.now)
@@ -417,6 +463,7 @@ class ControlTests(Fixture):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "operational")
         self.assertEqual(response.json()["requests"]["total"], 0)
+        self.assertIsNone(response.json()["official_status"])
         capacity = response.json()["capacity"]
         self.assertEqual(capacity["weekly_remaining_percent"], 80)
         self.assertAlmostEqual(capacity["weekly_next_reset_at"], self.now + 7200)
