@@ -127,3 +127,128 @@ The FAQ page and administrator settings MUST NOT expose chat inputs, model confi
 #### Scenario: Administrator manages guide content
 - **WHEN** an administrator opens the settings page
 - **THEN** the FAQ guide editor remains available and there is no assistant configuration section
+
+### Requirement: Public status exposes bounded request quality diagnostics
+The public status response SHALL include a recent request-quality window separate
+from the live request window. It SHALL provide sample counts, error percentage,
+sample and error timestamps, and grouped error categories with counts, failure
+shares, affected model names and a public FAQ slug when one exists. It MUST
+exclude request IDs, account identifiers, client addresses, raw error messages,
+credentials and unknown error-code strings.
+
+#### Scenario: Current request window is idle but recent failures exist
+- **WHEN** the live request window has no normal samples and the bounded recent
+  window contains completed failures
+- **THEN** the response SHALL retain the recent sample and failure counts and
+  categories instead of returning only an empty request result
+- **AND** the public page SHALL state that the live window is idle while showing
+  the recent request-quality evidence
+
+#### Scenario: Unknown error code is recorded
+- **WHEN** a request log contains an error code outside the canonical category map
+- **THEN** the public response SHALL classify it as an unknown/other category
+- **AND** the original unknown code and raw message SHALL not appear publicly
+
+#### Scenario: Deleted or probe request rows exist
+- **WHEN** a request row is soft-deleted, marked as a non-normal internal request,
+  comes from an external model source, or uses a Luna probe model
+- **THEN** the row SHALL be excluded from public request-quality aggregates
+
+### Requirement: Status page distinguishes infrastructure readiness from business quality
+The status page SHALL label its calendar history as infrastructure readiness and
+state that the metric excludes real model request outcomes. It SHALL present
+request-quality severity and counts separately from readiness and SHALL preserve
+the existing idle behavior that does not claim business success without a real
+request.
+
+#### Scenario: Infrastructure probes are healthy and recent requests are degraded
+- **WHEN** readiness probes are operational and the request-quality window meets
+  the configured attention threshold
+- **THEN** the page SHALL show the readiness result separately and expose the
+  request-quality attention state and category guidance
+
+#### Scenario: Monitor sample is stale
+- **WHEN** the latest monitor snapshot is stale or unavailable
+- **THEN** the public response SHALL mark the status unknown and clear both live
+  request and recent request-quality values rather than showing old green data
+
+### Requirement: Public incident summary accounts for active incidents
+The public status response SHALL include a bounded summary of recent request
+incidents and SHALL count any still-open request incident even when it opened
+before the recent summary window. The summary SHALL not change stored incident
+rows or notification behavior.
+
+#### Scenario: Older request incident remains open
+- **WHEN** a request incident opened before the recent summary window remains
+  unclosed
+- **THEN** the summary SHALL report an active incident
+- **AND** the page SHALL not state that there are no active request incidents
+
+#### Scenario: Recent incidents are recovered
+- **WHEN** request incidents in the recent window are all closed
+- **THEN** the page SHALL show their recent count and latest recovered state while
+  limiting the detailed list to a readable recent subset
+
+### Requirement: Official provider status is optional and server-side
+
+When `official_status.enabled` is true, the monitor SHALL periodically fetch
+the configured fixed HTTPS OpenAI Statuspage summary endpoint without
+credentials, validate a bounded JSON response, and normalize the provider
+state. When the setting is absent or false, the monitor SHALL make no provider
+request.
+
+#### Scenario: Official status is disabled by default
+
+- **WHEN** a monitor configuration has no enabled official-status setting
+- **THEN** the monitor does not make an outbound provider-status request
+- **AND** the public response omits or marks `official_status` unavailable
+
+#### Scenario: Provider response is valid
+
+- **WHEN** the provider returns a valid summary response
+- **THEN** the monitor exposes a normalized provider state, provider page
+  update time and local fetch time
+- **AND** the bounded component and active-incident summaries are available to
+  the public page
+
+### Requirement: Official state remains separate from local health
+
+The public status response SHALL expose provider state under a separate
+`official_status` object. Provider state SHALL NOT change local aggregate
+status, local components, readiness history, local incidents or email alerts.
+
+#### Scenario: Provider reports degradation while the gateway is healthy
+
+- **WHEN** the provider indicator is `minor` and all local components are
+  operational
+- **THEN** the provider card shows degraded
+- **AND** the local status banner and local readiness history remain based on
+  local observations
+
+### Requirement: Failed or stale provider data is unknown
+
+Timeouts, non-success responses, malformed or oversized JSON, unknown status
+enums and expired provider samples SHALL produce an unknown/stale provider
+state. The monitor MUST NOT present old provider data as current green data and
+MUST NOT expose raw upstream errors, headers, credentials or unbounded payloads.
+
+#### Scenario: Provider fetch fails
+
+- **WHEN** the provider request times out or returns an invalid response
+- **THEN** the public card states that the official status is unavailable or
+  waiting for confirmation
+- **AND** local status, incidents and request quality are unchanged
+
+### Requirement: Public UI identifies the official source
+
+The status page SHALL render a separate “OpenAI 官方状态” section with the
+source link, provider description, provider update time, local fetch time and
+bounded active incident summaries. The page SHALL state that provider status
+is an aggregate signal and does not prove a local authenticated model request.
+The browser SHALL fetch only the same-origin public status API.
+
+#### Scenario: Visitor reads official status
+
+- **WHEN** a fresh official provider sample is available
+- **THEN** the visitor sees the normalized state and source metadata
+- **AND** the source link opens the official status page in a separate tab

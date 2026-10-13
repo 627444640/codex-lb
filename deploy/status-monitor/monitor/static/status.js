@@ -2,6 +2,9 @@
 const $ = (id) => document.getElementById(id);
 const labels = {operational:"正常",degraded:"降级",outage:"异常",unknown:"待核对"};
 const heads = {operational:"所有观测项运行正常",degraded:"部分服务需要关注",outage:"检测到服务异常",unknown:"部分状态等待确认"};
+const officialComponentLabels = {operational:"正常",degraded_performance:"性能降级",partial_outage:"部分异常",major_outage:"严重异常",under_maintenance:"维护中",unknown:"待核对"};
+const officialIncidentLabels = {investigating:"调查中",identified:"已确认",monitoring:"监控中",resolved:"已恢复",postmortem:"复盘中",unknown:"待核对"};
+const OFFICIAL_STATUS_ROOT = "https://status.openai.com/";
 const date = (ts, short=false) => ts == null ? "—" : new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Taipei",...(short?{}:{month:"2-digit",day:"2-digit"}),hour:"2-digit",minute:"2-digit",...(short?{second:"2-digit"}:{}) ,hour12:false}).format(new Date(ts*1000));
 const number = (n) => n == null ? "—" : n.toLocaleString("zh-CN");
 const percent = (n) => n == null ? "—" : `${Number(n.toFixed(2))}%`;
@@ -9,7 +12,39 @@ const duration = (n) => n == null ? "—" : `${(n/1000).toFixed(2)}s`;
 const ENERGY_BLOCKS = 40;
 function el(tag, cls, text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
 function empty(container, mark, title, body){container.replaceChildren();const n=el("div","empty-state");n.append(el("span","empty-mark",mark),el("p","",title),el("span","",body));container.append(n);}
-function render(s){
+function officialComponentState(status){return status==="operational"?"operational":status==="major_outage"?"outage":status==="unknown"?"unknown":"degraded";}
+function officialLink(value, incident=false){
+  try{
+    const url=new URL(value);
+    if(url.protocol!=="https:"||url.hostname!=="status.openai.com"||url.port||url.username||url.password||url.search||url.hash)return OFFICIAL_STATUS_ROOT;
+    if(incident&&!/^\/incidents\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname))return OFFICIAL_STATUS_ROOT;
+    if(!incident&&!/^\/$/.test(url.pathname))return OFFICIAL_STATUS_ROOT;
+    return url.href;
+  }catch{return OFFICIAL_STATUS_ROOT;}
+}
+function renderOfficialStatus(official, connectionUnavailable=false){
+  const panel=$("official-status-panel"), enabled=official!==null&&official!==undefined, fresh=enabled&&!official.stale;
+  const staleExpired=enabled&&official.stale&&/过期/.test(official.description||"");
+  const state=fresh&&Object.hasOwn(labels,official.status)?official.status:"unknown";
+  panel.className=`panel official-status-panel ${state}`;
+  $("official-status-state").textContent=connectionUnavailable?"暂时无法读取":!enabled?"未启用":fresh?({operational:"正常",degraded:"降级",outage:"异常"}[state]||"待核对"):"待核对";
+  $("official-status-description").textContent=connectionUnavailable?"暂时无法连接状态服务，请稍后刷新。":!enabled?"官方状态采集尚未启用。":official.stale?(official.description||"官方状态暂时无法获取。"):(official.description||"官方状态待核对");
+  const link=$("official-status-link");link.href=officialLink(official?.source_url||OFFICIAL_STATUS_ROOT);
+  $("official-page-updated").textContent=`官方更新时间：${official?.page_updated_at?date(official.page_updated_at):"—"}`;
+  $("official-fetched-at").textContent=`本地成功读取时间：${official?.fetched_at?date(official.fetched_at):"—"}`;
+  const components=$("official-status-components");components.replaceChildren();
+  const componentDetails=$("official-components-details"), visibleComponents=fresh&&Array.isArray(official.components)?official.components:[];
+  $("official-status-components-count").textContent=visibleComponents.length?`${visibleComponents.length} 项`:"暂不可用";
+  componentDetails.hidden=connectionUnavailable;
+  if(!visibleComponents.length){components.append(el("p","empty-copy",!enabled?"启用后显示官方组件":official.stale?(staleExpired?"读取过期，暂不显示组件":"暂时无法读取组件"):"暂无可显示的官方组件"));}
+  else for(const component of visibleComponents){const row=el("div","official-component-row"),componentState=officialComponentState(component.status);row.append(el("span","official-component-name",component.name),el("span",`component-status ${componentState}`,officialComponentLabels[component.status]||"待核对"));components.append(row);}
+  const incidents=$("official-status-incidents");incidents.replaceChildren();
+  const visibleIncidents=fresh&&Array.isArray(official.incidents)?official.incidents.slice(0,5):[];
+  if(!visibleIncidents.length){incidents.append(el("p","empty-copy",connectionUnavailable?"暂时无法读取活动事件":!enabled?"启用后显示活动事件":official.stale?(staleExpired?"读取过期，暂不显示活动事件":"暂时无法读取活动事件"):"暂无活动中的官方事件"));}
+  else {incidents.append(el("h4","official-subheading","当前官方事件"));for(const incident of visibleIncidents){const item=el("article","official-incident"),meta=el("div","official-incident-meta");meta.append(el("span",`tag ${incident.impact==="critical"||incident.impact==="major"?"outage":"warning"}`,officialIncidentLabels[incident.status]||"待核对"),el("span","",incident.updated_at?date(incident.updated_at):"时间待核对"));const title=document.createElement("a");title.href=officialLink(incident.url,true);title.target="_blank";title.rel="noopener noreferrer";title.textContent=incident.name;item.append(meta,title);incidents.append(item);}}
+  $("official-status-note").textContent=connectionUnavailable?"暂时无法读取官方状态；本地服务状态仍可单独查看。":!enabled?"官方状态采集已关闭。":official.stale?(staleExpired?"官方状态读取已过期；本地服务状态仍可单独查看。":"官方状态暂时无法获取；本地服务状态仍可单独查看。"):"官方状态是聚合指标，不能代替本地真实模型请求结果。";
+}
+function render(s, options={}){
   const state=s.stale||!Object.hasOwn(labels,s.status)?"unknown":s.status;
   const idle=Boolean(s.requests && !s.requests.total);
   const quality=s.request_quality;
@@ -36,6 +71,7 @@ function render(s){
   $("components").replaceChildren();
   for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`),componentLabel=c.id==="requests"&&c.status==="unknown"&&idle?"无样本":c.id==="quota_warning"&&c.status==="degraded"?"低余量预警":labels[c.status];main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(componentLabel));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",quota_warning:"△",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
   if(!s.components?.length)$("components").append(el("p","empty-copy","等待健康检查"));
+  renderOfficialStatus(s.official_status, options.connectionUnavailable===true);
   const h=s.history||{days:[],samples:0};
   $("readiness-percent").textContent=percent(h.readiness_percent);
   $("coverage").textContent=`累计采样 ${h.samples} 次`;
@@ -112,7 +148,7 @@ function render(s){
 
 }
 let loading=false;
-async function refresh(){if(loading)return;loading=true;$("refresh").disabled=true;try{const res=await fetch("/api/status",{cache:"no-store",signal:AbortSignal.timeout(10000)});if(!res.ok)throw Error("request");const data=await res.json();render(data);$("connection-error").hidden=true;}catch{render({status:"unknown",stale:true});$("connection-error").textContent="暂时无法连接监控服务。页面已停止显示旧数据，请稍后刷新。";$("connection-error").hidden=false;}finally{loading=false;$("refresh").disabled=false;}}
+async function refresh(){if(loading)return;loading=true;$("refresh").disabled=true;try{const res=await fetch("/api/status",{cache:"no-store",signal:AbortSignal.timeout(10000)});if(!res.ok)throw Error("request");const data=await res.json();render(data);$("connection-error").hidden=true;}catch{render({status:"unknown",stale:true,official_status:null},{connectionUnavailable:true});$("connection-error").textContent="暂时无法连接监控服务。页面已停止显示旧数据，请稍后刷新。";$("connection-error").hidden=false;}finally{loading=false;$("refresh").disabled=false;}}
 $("refresh").addEventListener("click",refresh);refresh();setInterval(()=>{if(!document.hidden)refresh();},30000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh();});
 
 // 概览页内部锚点不改变顶部页面导航的选中状态。
