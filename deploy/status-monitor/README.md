@@ -4,6 +4,32 @@ This optional Python 3.13 component provides the public status page, administrat
 
 The monitor reads selected non-sensitive LB SQLite fields in read-only mode. Its own guide and sample data are stored separately. There is no second browser administrator login: management requests use the existing LB administrator session and a private loopback service connector.
 
+The optional `official_status` setting in the private `runtime/config.json`
+adds a separate OpenAI provider-status card to the public page. It is disabled by default and does not affect local
+gateway health, readiness history, request quality, incidents or email alerts.
+Enable it in the private runtime configuration, then restart the monitor so the
+new settings are loaded, only when the host is allowed to make the outbound
+HTTPS request:
+
+```json
+{
+  "official_status": {
+    "enabled": true,
+    "url": "https://status.openai.com/api/v2/summary.json",
+    "page_url": "https://status.openai.com/",
+    "stale_seconds": 300
+  }
+}
+```
+
+The monitor validates the fixed OpenAI Statuspage source, bounds the response,
+and exposes only normalized status, timestamps, public component names and a
+small incident summary through `/api/status`. A timeout, invalid response or
+expired sample is shown as unknown/stale. `page_updated_at` is the provider's
+timestamp; `fetched_at` is the local monitor read time. The provider status is
+an aggregate signal and does not prove a successful authenticated model
+request on this LB.
+
 ## Isolated setup
 
 Run from this directory on a POSIX host with Python 3.13:

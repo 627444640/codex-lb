@@ -10,6 +10,24 @@ Announcements support drafts, immediate or scheduled publishing, an optional end
 
 The independent monitor uses a private server-to-server connector documented in [the capability context](../openspec/specs/status-page-management/context.md). Operators do not paste service-control tokens into the browser. The monitor can report an unhealthy LB process while its host remains alive; host-level failures require an external observer.
 
+## Official upstream status
+
+The monitor can optionally read the OpenAI Statuspage summary endpoint and
+display it in a separate **OpenAI 官方状态** card. Set `official_status.enabled`
+to `true` in the private monitor `runtime/config.json` to enable the read, then
+restart the monitor to load the setting. The source
+is fixed to `https://status.openai.com/api/v2/summary.json`; no API key is
+required and the browser never calls the provider directly.
+
+The provider status remains separate from the local gateway, quota, request
+quality, readiness history and local incidents. The page shows both the
+provider's `page.updated_at` and the monitor's local `fetched_at`. Timeouts,
+invalid responses, unknown provider values and stale samples render as
+`待核对`; old green provider data is not retained as current state. The card
+links to [OpenAI Status](https://status.openai.com/) and states that the
+provider metric is an aggregate signal rather than proof of a local model
+request.
+
 The matching optional monitor source, locked dependencies and synthetic tests are included in [deploy/status-monitor](../deploy/status-monitor/README.md). Start it separately on loopback and keep its runtime state outside the source LB data directory. Repository seed addresses are labelled examples; customize them before publishing guides. The base LB installation does not start this companion automatically.
 
 For the maintained public site, the read-only monitor is available at

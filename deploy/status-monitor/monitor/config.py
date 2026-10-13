@@ -9,6 +9,17 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 
+OFFICIAL_STATUS_URL = "https://status.openai.com/api/v2/summary.json"
+OFFICIAL_STATUS_PAGE_URL = "https://status.openai.com/"
+
+
+@dataclass(frozen=True)
+class OfficialStatusSettings:
+    enabled: bool = False
+    url: str = OFFICIAL_STATUS_URL
+    page_url: str = OFFICIAL_STATUS_PAGE_URL
+    stale_seconds: int = 300
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -31,6 +42,7 @@ class Settings:
             {"id": "gateway", "name": "负载均衡服务", "url": "http://127.0.0.1:2455/health/ready"},
         )
     )
+    official_status: OfficialStatusSettings = field(default_factory=OfficialStatusSettings)
     smtp: dict = field(default_factory=dict)
 
     @property
@@ -82,6 +94,34 @@ class Settings:
             raise ValueError("Invalid monitoring interval")
         if not 60 <= self.request_window_seconds <= 3600 or not 1 <= self.retention_days <= 365:
             raise ValueError("Invalid monitoring window or retention")
+        official = self.official_status
+        if not isinstance(official, OfficialStatusSettings):
+            raise ValueError("Invalid official status configuration")
+        if type(official.enabled) is not bool or type(official.stale_seconds) is not int:
+            raise ValueError("Invalid official status types")
+        if not isinstance(official.url, str) or not isinstance(official.page_url, str):
+            raise ValueError("Invalid official status URLs")
+        official_url = urlsplit(official.url)
+        page_url = urlsplit(official.page_url)
+        if (
+            official_url.scheme != "https"
+            or official_url.netloc != "status.openai.com"
+            or official_url.path != "/api/v2/summary.json"
+            or official_url.username
+            or official_url.password
+            or official_url.query
+            or official_url.fragment
+            or page_url.scheme != "https"
+            or page_url.netloc != "status.openai.com"
+            or page_url.path not in {"", "/"}
+            or page_url.username
+            or page_url.password
+            or page_url.query
+            or page_url.fragment
+        ):
+            raise ValueError("Invalid official status source")
+        if not 120 <= official.stale_seconds <= 86400:
+            raise ValueError("Invalid official status stale interval")
         if not 1 <= self.alert_failures <= 20 or not 1 <= self.alert_recoveries <= 20:
             raise ValueError("Invalid alert debounce")
         if not 0 < self.low_quota_percent < 100 or not 0 < self.high_error_percent < 100:
@@ -115,6 +155,8 @@ def load_settings(path: Path):
         data["checks"] = tuple(data["checks"])
     if "allowed_hosts" in data:
         data["allowed_hosts"] = tuple(data["allowed_hosts"])
+    if "official_status" in data:
+        data["official_status"] = OfficialStatusSettings(**data["official_status"])
     if data.get("smtp", {}).get("password_file"):
         p = Path(data["smtp"]["password_file"]).expanduser()
         data["smtp"]["password_file"] = str(p if p.is_absolute() else base / p)

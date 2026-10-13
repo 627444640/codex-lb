@@ -37,6 +37,12 @@ def main():
             "allowed_hosts": [],
             "title": "Codex LB",
             "poll_seconds": 60,
+            "official_status": {
+                "enabled": False,
+                "url": "https://status.openai.com/api/v2/summary.json",
+                "page_url": "https://status.openai.com/",
+                "stale_seconds": 300,
+            },
             "smtp": {
                 "enabled": False,
                 "host": "smtp.163.com",

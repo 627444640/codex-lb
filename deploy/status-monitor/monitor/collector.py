@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import httpx
 
 from .config import Settings
+from .official_status import fetch as fetch_official_status
 from .quality import WINDOW_SECONDS, OutcomeGroup, public_request_quality, summarize_request_quality
 
 
@@ -275,10 +276,17 @@ def probe(check):
     }
 
 
-def collect(settings: Settings, now=None, probe_fn=probe):
+def collect(settings: Settings, now=None, probe_fn=probe, official_status_fn=fetch_official_status):
     now = time.time() if now is None else now
     components = [probe_fn(check) for check in settings.checks]
-    result = {"collected_at": now, "pool": None, "requests": None, "request_quality": None, "components": components}
+    result = {
+        "collected_at": now,
+        "pool": None,
+        "requests": None,
+        "request_quality": None,
+        "official_status": official_status_fn(settings.official_status, now),
+        "components": components,
+    }
     requests = None
     try:
         result.update(read_source(settings, now))
