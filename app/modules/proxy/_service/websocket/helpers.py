@@ -281,6 +281,7 @@ from app.modules.proxy._service.observability import (
 from app.modules.proxy._service.support import (
     _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE,
     _HARD_HTTP_BRIDGE_AFFINITY_KINDS,  # noqa: F401
+    _REQUEST_TRANSPORT_HTTP,
     _WEBSOCKET_FULL_REPLAY_WAIT_MIN_ITEMS,
     _WEBSOCKET_FULL_REPLAY_WAIT_POLL_SECONDS,  # noqa: F401
     _affinity_may_resolve_hard_owner,
@@ -1575,16 +1576,35 @@ def _websocket_previous_response_age_seconds(request_state: _WebSocketRequestSta
     return max(0, int((utcnow() - to_utc_naive(requested_at)).total_seconds()))
 
 
+def _http_cached_history_replay_available(request_state: _WebSocketRequestState) -> bool:
+    """True when the HTTP bridge cache holds a chain for this anchor.
+
+    Direct WebSocket diagnostics keep their historical meaning: a retry-safe
+    client full resend. The HTTP bridge was logging ``fresh_replay_available``
+    false while ``conversation_history.db`` already held the conversation.
+    """
+
+    if request_state.transport != _REQUEST_TRANSPORT_HTTP:
+        return False
+    previous_response_id = request_state.previous_response_id
+    if not previous_response_id:
+        return False
+    from app.modules.proxy.conversation_history import cached_history_replay_available
+
+    return cached_history_replay_available(previous_response_id)
+
+
 def _websocket_stale_anchor_diagnostics(
     request_state: _WebSocketRequestState,
     *,
     concurrent_requests: bool = False,
 ) -> _WebSocketStaleAnchorDiagnostics:
+    fresh_body_available = bool(
+        request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text is not None
+    )
     return _WebSocketStaleAnchorDiagnostics(
         previous_response_source=_websocket_previous_response_source(request_state),
-        fresh_replay_available=bool(
-            request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text is not None
-        ),
+        fresh_replay_available=fresh_body_available or _http_cached_history_replay_available(request_state),
         owner_lookup_source=request_state.previous_response_owner_lookup_source,
         owner_lookup_outcome=request_state.previous_response_owner_lookup_outcome,
         previous_response_age_seconds=_websocket_previous_response_age_seconds(request_state),

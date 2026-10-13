@@ -306,6 +306,22 @@ class ConversationHistoryCache:
             self._vacuum_locked()
             self._enforce_file_cap_locked()
 
+    def holds_replayable_history(self, previous_response_id: str | None) -> bool:
+        """True when a complete cached chain can rebuild this anchor.
+
+        This does not count a hit or a replay. Callers that only need the
+        operator diagnostic use it so a cache miss stays distinguishable from
+        a chain that was present but not resent.
+        """
+
+        if not previous_response_id:
+            return False
+        with self._lock:
+            if not self._runtime_enabled_locked():
+                return False
+            self._flush_locked()
+            return bool(self._history_items_locked(previous_response_id))
+
     def plan_replay(
         self,
         *,
@@ -831,6 +847,18 @@ def _settings_int(settings: object, name: str, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return default
     return value if value > 0 or name.endswith("min_free_disk_bytes") else default
+
+
+def cached_history_replay_available(previous_response_id: str | None) -> bool:
+    """True when the process cache can rebuild ``previous_response_id``."""
+
+    if not previous_response_id:
+        return False
+    try:
+        return get_conversation_history_cache().holds_replayable_history(previous_response_id)
+    except Exception:
+        logger.warning("Conversation history availability check failed", exc_info=True)
+        return False
 
 
 def try_plan_history_replay(

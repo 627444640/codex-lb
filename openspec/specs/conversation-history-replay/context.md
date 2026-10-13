@@ -12,6 +12,8 @@ A turn is written once, when it completes. Token deltas are not written. New byt
 
 The replay drops `previous_response_id`. It stays on the same account for `previous_response_not_found` and pre-output `stream_incomplete` while that account can still take the turn. It moves when the reason is `owner_unavailable` or the admission breaker blocks the owner. A file id, or a file pin, refuses the move. The strict account-neutral body check is not the gate: Codex requests carry extra fields, and that check would refuse almost every move.
 
+On the HTTP responses bridge, `previous_response_not_found` before any model output is planned before the fail-closed rewrite. A staged resend is logged as `history_replay_reason=previous_response_not_found` and is not also logged as `continuity_fail_closed`. The HTTP stale-anchor diagnostic `fresh_replay_available` is true when this cache holds the chain. Direct WebSocket diagnostics still mean only a retry-safe fresh body. A hard session stays on its owner; an unavailable sticky account is not reassigned by this resend.
+
 The close still counts toward the admission breaker. `previous_response_not_found` is not an admission code.
 
 Defaults are on: 1 GiB file cap, 32 MiB per conversation, 30 minute idle TTL, 512 MiB free-disk floor. Those knobs stay configurable because conversation size and disk headroom differ by host. They are not listed in `.env.example`. The journal is in memory, so a crash can drop turns that were not flushed.
