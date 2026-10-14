@@ -281,6 +281,7 @@ from app.modules.proxy._service.streaming.helpers import (
     _mark_downstream_stream_cancelled,
     _mark_upstream_stream_incomplete,
     _note_terminal_response,
+    _note_upstream_stream_error,
     _raw_stream_error_code_or_upstream,
     _replay_http_history,
     _rewrite_malformed_stream_error_event,
@@ -683,6 +684,28 @@ class _StreamingMixin(_StreamingRetryMixin):
                     settlement.error = _upstream_error_from_openai(error)
                 upstream_error: UpstreamError = settlement.error or cast(UpstreamError, {"message": "Upstream error"})
                 settlement.record_success = False
+                failure_metadata, retry_response_protection = _note_upstream_stream_error(
+                    code=code,
+                    message=raw_error_message,
+                    error_type=raw_error_type,
+                    param=raw_error_param,
+                    request_id=request_id,
+                    account_id=account_id_value,
+                    allow_transient_retry=allow_transient_retry,
+                    downstream_visible=settlement.downstream_visible,
+                    upstream_model_output_seen=settlement.upstream_model_output_seen,
+                    eligible=rewritten_error is None,
+                )
+                if retry_response_protection:
+                    error_code = code
+                    error_message = raw_error_message
+                    settlement.account_health_error = False
+                    await _close_upstream_before_switch()
+                    raise _TransientStreamError(
+                        code or "internal_error",
+                        upstream_error,
+                        preserve_on_selection_exhausted=True,
+                    )
                 if rewritten_error is not None:
                     rewritten_code, rewritten_message, upstream_error_code = rewritten_error
                     if upstream_error_code is not None:
@@ -709,7 +732,9 @@ class _StreamingMixin(_StreamingRetryMixin):
                     error_message = raw_error_message
                     if error_code == "stream_incomplete":
                         failure_metadata = _RequestLogFailureMetadata(
-                            failure_phase="upstream", failure_detail="upstream_eof_before_terminal_event"
+                            failure_phase="upstream",
+                            failure_detail="upstream_eof_before_terminal_event",
+                            upstream_error_code=error_code,
                         )
                     settlement.account_health_error = _facade()._should_penalize_stream_error(code)
                     if allow_retry and code == "stream_idle_timeout":
@@ -726,13 +751,6 @@ class _StreamingMixin(_StreamingRetryMixin):
                     error_code or code,
                     upstream_error,
                 )
-                if allow_retry:
-                    _facade().logger.info(
-                        "Not retrying non-recoverable stream failure request_id=%s account_id=%s code=%s",
-                        request_id,
-                        account_id_value,
-                        error_code or code,
-                    )
             elif preserve_raw_sse_line:
                 _, error_message, _, code = _raw_error_fields(event_type, first_payload)
                 status = "error"
@@ -855,14 +873,21 @@ class _StreamingMixin(_StreamingRetryMixin):
                         else:
                             error = event.error
                         if preserve_raw_sse_line and error is None:
-                            _, raw_error_message, _, raw_error_code = _raw_error_fields(event_type, event_payload)
+                            (
+                                raw_error_type,
+                                raw_error_message,
+                                raw_error_param,
+                                raw_error_code,
+                            ) = _raw_error_fields(event_type, event_payload)
                             upstream_error = cast(UpstreamError, {"message": raw_error_message or "Upstream error"})
                         else:
+                            raw_error_type = error.type if error else None
+                            raw_error_message = error.message if error else None
+                            raw_error_param = error.param if error else None
                             raw_error_code = _normalize_error_code(
                                 error.code if error else None,
-                                error.type if error else None,
+                                raw_error_type,
                             )
-                            raw_error_message = error.message if error else None
                             upstream_error = _upstream_error_from_openai(error)
                         raw_error_code = _raw_stream_error_code_or_upstream(
                             event_type,
@@ -873,10 +898,34 @@ class _StreamingMixin(_StreamingRetryMixin):
                             previous_response_id=payload.previous_response_id,
                             preferred_account_id=preferred_account_id,
                             error_code=raw_error_code,
-                            error_type=error.type if error else None,
-                            error_message=error.message if error else None,
-                            error_param=error.param if error else None,
+                            error_type=raw_error_type,
+                            error_message=raw_error_message,
+                            error_param=raw_error_param,
                         )
+                        failure_metadata, retry_response_protection = _note_upstream_stream_error(
+                            code=raw_error_code,
+                            message=raw_error_message,
+                            error_type=raw_error_type,
+                            param=raw_error_param,
+                            request_id=request_id,
+                            account_id=account_id_value,
+                            allow_transient_retry=allow_transient_retry,
+                            downstream_visible=settlement.downstream_visible,
+                            upstream_model_output_seen=settlement.upstream_model_output_seen,
+                            eligible=rewritten_error is None,
+                        )
+                        if retry_response_protection:
+                            error_code = raw_error_code
+                            error_message = raw_error_message
+                            settlement.error = upstream_error
+                            settlement.record_success = False
+                            settlement.account_health_error = False
+                            await _close_upstream_before_switch()
+                            raise _TransientStreamError(
+                                raw_error_code or "internal_error",
+                                upstream_error,
+                                preserve_on_selection_exhausted=True,
+                            )
                         if rewritten_error is not None:
                             response_id = (
                                 event.response.id
@@ -918,6 +967,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                                 failure_metadata = _RequestLogFailureMetadata(
                                     failure_phase="upstream",
                                     failure_detail="upstream_eof_before_terminal_event",
+                                    upstream_error_code=error_code,
                                 )
                             if preserve_raw_sse_line and error is None:
                                 settlement.account_health_error = not saw_text_delta
@@ -926,15 +976,40 @@ class _StreamingMixin(_StreamingRetryMixin):
                                     _facade()._should_penalize_stream_error(error_code) and not saw_text_delta
                                 )
                 elif preserve_raw_sse_line:
-                    _, raw_error_message, _, raw_error_code = _raw_error_fields(
+                    raw_error_type, raw_error_message, raw_error_param, raw_error_code = _raw_error_fields(
                         event_type,
                         event_payload,
+                    )
+                    raw_error_code = _raw_stream_error_code_or_upstream(
+                        event_type,
+                        event_payload,
+                        raw_error_code,
                     )
                     status = "error"
                     error_code = raw_error_code
                     error_message = raw_error_message
-                    settlement.error = {"message": raw_error_message or "Upstream error"}
+                    upstream_error = cast(UpstreamError, {"message": raw_error_message or "Upstream error"})
+                    settlement.error = upstream_error
                     settlement.record_success = False
+                    failure_metadata, retry_response_protection = _note_upstream_stream_error(
+                        code=raw_error_code,
+                        message=raw_error_message,
+                        error_type=raw_error_type,
+                        param=raw_error_param,
+                        request_id=request_id,
+                        account_id=account_id_value,
+                        allow_transient_retry=allow_transient_retry,
+                        downstream_visible=settlement.downstream_visible,
+                        upstream_model_output_seen=settlement.upstream_model_output_seen,
+                    )
+                    if retry_response_protection:
+                        settlement.account_health_error = False
+                        await _close_upstream_before_switch()
+                        raise _TransientStreamError(
+                            raw_error_code or "internal_error",
+                            upstream_error,
+                            preserve_on_selection_exhausted=True,
+                        )
                     settlement.account_health_error = not saw_text_delta
                 response_id, status = _note_terminal_response(
                     event, response_id, status, payload, conversation_id, settlement, event_type
@@ -1084,6 +1159,9 @@ class _StreamingMixin(_StreamingRetryMixin):
             finish_response_timing(timings, ended_at=time.monotonic())
             raise
         except _RetryableStreamError:
+            finish_response_timing(timings, ended_at=time.monotonic())
+            raise
+        except _TransientStreamError:
             finish_response_timing(timings, ended_at=time.monotonic())
             raise
         except (asyncio.CancelledError, GeneratorExit):

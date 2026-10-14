@@ -1750,6 +1750,7 @@ class RequestLogsRepository:
                 RequestLog.account_id.ilike(search_pattern),
                 Account.email.ilike(search_pattern),
                 RequestLog.request_id.ilike(search_pattern),
+                RequestLog.archive_request_id.ilike(search_pattern),
                 RequestLog.model.ilike(search_pattern),
                 RequestLog.reasoning_effort.ilike(search_pattern),
                 RequestLog.source.ilike(search_pattern),

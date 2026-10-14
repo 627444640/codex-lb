@@ -588,3 +588,27 @@ async def test_conversation_count_cache_evicts_oldest_entry_at_256_entries(monke
 
     assert result.total == 7
     assert len(count_queries) == 258
+
+
+@pytest.mark.asyncio
+async def test_list_recent_search_matches_archive_request_id(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repo = RequestLogsRepository(session)
+        await repo.add_log(
+            account_id=None,
+            request_id="resp_image_bypass",
+            archive_request_id="req_image_bypass_lookup",
+            model="gpt-5.6-sol",
+            input_tokens=1,
+            output_tokens=2,
+            latency_ms=10,
+            status="success",
+            error_code=None,
+        )
+        found = await repo.list_recent(search="req_image_bypass_lookup", limit=10)
+        still_found = await repo.list_recent(search="resp_image_bypass", limit=10)
+
+    assert [log.request_id for log in found.logs] == ["resp_image_bypass"]
+    assert found.logs[0].archive_request_id == "req_image_bypass_lookup"
+    assert [log.request_id for log in still_found.logs] == ["resp_image_bypass"]

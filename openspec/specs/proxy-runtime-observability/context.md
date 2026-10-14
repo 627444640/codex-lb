@@ -22,7 +22,9 @@ See `openspec/specs/proxy-runtime-observability/spec.md` for normative requireme
 
 ## Operational Notes
 
-- Use request ids to correlate inbound proxy logs, outbound upstream traces, and client-visible failures.
+- Use request ids to correlate inbound proxy logs, outbound upstream traces, and client-visible failures. A successful HTTP stream stores the upstream response id in `request_id` and the inbound id in `archive_request_id`. Dashboard search matches both, so the id printed on an image-bypass log line still finds the row.
+- An upstream SSE `error` or `response.failed` writes `upstream_error_code`, `failure_phase=upstream`, and a single-line `failure_detail` (message, type, param). The console gets one `upstream stream error` line with those fields and no request body or credentials.
+- FastAPI's HTTP 400 `There was an error parsing the body` is raised while reading the body, before the route and API key run. OpenAI-format paths record that 400 on `request_logs` with `failure_phase=validation` and the cause type only.
 - Prefer summary tracing in normal debugging sessions; enable payload tracing only when the exact normalized outbound request matters.
 - For direct compact `5xx` failures, look for `proxy_compact_failure` alongside `upstream_request_complete`; together they show the compact failure phase, failure detail, exception type, retry metadata, and affinity source.
 - After the Grafana sidecar imports the TTFT dashboard, select the ordinary
