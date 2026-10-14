@@ -2925,9 +2925,18 @@ class _HTTPBridgeUpstreamEventsMixin:
             )
             if status_request_state is not None:
                 setattr(status_request_state, "account_health_error_handled", True)
-            if status_request_state is not None and (
-                status_request_state.previous_response_id is None
-                or _http_bridge_accepted_anchored_replay_candidate(status_request_state)
+            # Soft-preferred history replay already spent the one shared retry.
+            # A pre-output failure on the fallback account is the client's error.
+            shared_retry_spent = status_request_state is not None and (
+                status_request_state.history_replay_used or transparent_retry_used(status_request_state.request_id)
+            )
+            if (
+                status_request_state is not None
+                and not shared_retry_spent
+                and (
+                    status_request_state.previous_response_id is None
+                    or _http_bridge_accepted_anchored_replay_candidate(status_request_state)
+                )
             ):
                 async with session.pending_lock:
                     if status_request_state not in session.pending_requests:

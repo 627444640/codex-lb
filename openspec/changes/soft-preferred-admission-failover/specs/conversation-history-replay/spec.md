@@ -22,3 +22,16 @@ A soft-preferred follow-up with `previous_response_id` SHALL move to another acc
 - **WHEN** the HTTP bridge selects an account
 - **THEN** the response is HTTP 503 `account_admission_breaker_open`
 - **AND** the turn is not sent to the other account
+
+### Requirement: Soft preferred replay spends the one shared retry
+
+A soft-preferred history replay SHALL consume the request's one transparent retry, shared with later account switching and resend. After that replay is sent, a pre-output upstream failure on the fallback account SHALL be forwarded to the client. The proxy SHALL NOT select another account or replay the turn again, and SHALL keep only that one failover and one history replay.
+
+#### Scenario: Pre-output failure on the fallback account is not replayed
+
+- **GIVEN** a soft-preferred follow-up was replayed from cache onto a fallback account because the preferred account's admission breaker is open
+- **AND** a third healthy account is eligible
+- **WHEN** the fallback account's upstream fails before the first output byte
+- **THEN** the client receives that upstream error
+- **AND** no further account is selected and the turn is not replayed
+- **AND** exactly one admission failover and one history replay are recorded

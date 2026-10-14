@@ -8,7 +8,7 @@ Soft versus hard is decided before selection. Soft means the preferred account i
 
 The breaker check is `account_admission_blocks`: phase `open`, or `half_open` with the probe already in flight. A half-open account with a free probe stays the preferred account so it can take that probe. A disabled breaker reports not blocked, so selection is unchanged.
 
-A follow-up uses the same history planner as the 1.24.7 HTTP `previous_response_not_found` replay (`plan_replay`): drop `previous_response_id`, prepend the cached chain, refuse the move when the chain or the turn contains a file id. The reason is `owner_unavailable`, the same reason the bridge already uses when the breaker blocks the owner before an upstream admission error code. The failover also calls `note_admission_failover`, which spends the one shared retry.
+A follow-up uses the same history planner as the 1.24.7 HTTP `previous_response_not_found` replay (`plan_replay`): drop `previous_response_id`, prepend the cached chain, refuse the move when the chain or the turn contains a file id. The reason is `owner_unavailable`, the same reason the bridge already uses when the breaker blocks the owner before an upstream admission error code. The failover also calls `note_admission_failover`, which spends the one shared retry. That same budget covers a later account switch or resend, so a pre-output failure on the fallback account is forwarded and is not replayed.
 
 A cache miss returns the existing 503 `account_admission_breaker_open` / "No available accounts" before `_get_or_create_http_bridge_session`. The original id is not sent.
 
@@ -20,8 +20,8 @@ No new `CODEX_LB_*` setting. The replay and the failover share one retry. Re-pre
 
 ## Failure modes
 
-Cache miss, or a chain that contains a file id: HTTP 503, no second account, anchor not forwarded. No other healthy account: the same 503. Breaker disabled, or half-open with a free probe: the preferred account is still selected. Hard ownership pin: still that account. Hard Codex owner without an ownership pin: still 503, not the sibling.
+Cache miss, or a chain that contains a file id: HTTP 503, no second account, anchor not forwarded. No other healthy account: the same 503. Breaker disabled, or half-open with a free probe: the preferred account is still selected. Hard ownership pin: still that account. Hard Codex owner without an ownership pin: still 503, not the sibling. After the cached replay is on the fallback account, a pre-output upstream failure there is returned to the client; a third account is not selected and the turn is not replayed.
 
 ## Example
 
-Account A is the soft preferred owner of `resp-1` and its breaker is open. Account B is healthy. A follow-up `previous_response_id=resp-1` with input "more" is resent to B with the cached turn "kept" plus "more", and no `previous_response_id`. The request log stores `history_replay_reason=owner_unavailable` and the failover from A. The same follow-up with an empty cache returns HTTP 503 and does not call account B.
+Account A is the soft preferred owner of `resp-1` and its breaker is open. Account B is healthy. A follow-up `previous_response_id=resp-1` with input "more" is resent to B with the cached turn "kept" plus "more", and no `previous_response_id`. The request log stores `history_replay_reason=owner_unavailable` and the failover from A. If B then fails before the first output byte, the client receives that error, account C is not used, and the log still has that one failover and one replay. The same follow-up with an empty cache returns HTTP 503 and does not call account B.

@@ -548,3 +548,88 @@ async def test_disabled_breaker_follow_up_keeps_anchor(
     assert body["previous_response_id"] == "resp-1"
     assert current_history_replay() is None
     assert current_admission_failover() is None
+
+
+def _queued_payloads(request_state: proxy_service._WebSocketRequestState) -> list[dict[str, Any]]:
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    payloads: list[dict[str, Any]] = []
+    while not event_queue.empty():
+        block = event_queue.get_nowait()
+        if block is None:
+            continue
+        parsed = proxy_service.parse_sse_data_json(block)
+        assert isinstance(parsed, dict)
+        payloads.append(cast(dict[str, Any], parsed))
+    return payloads
+
+
+def _pre_output_upstream_error() -> str:
+    return json.dumps(
+        {
+            "type": "error",
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "message": "upstream failed before output",
+            },
+        },
+        separators=(",", ":"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_replay_does_not_switch_again_when_upstream_fails_before_output(
+    monkeypatch: pytest.MonkeyPatch,
+    history_cache: ConversationHistoryCache,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    _block_account(service._load_balancer, _SICK)
+    _seed_history(history_cache)
+    get_or_create, captured = _patch_bridge(monkeypatch, service, breaker_enabled=True)
+
+    with pytest.raises(_StopAfterCapture):
+        await _drive_bridge(service)
+
+    request_state = captured["request_state"]
+    request_state.event_queue = asyncio.Queue()
+    request_state.skip_request_log = True
+    send_text = AsyncMock()
+    session = _bridge_session()
+    session.upstream = cast(UpstreamWebSocket, SimpleNamespace(send_text=send_text, close=AsyncMock()))
+    session.pending_requests = deque([request_state])
+    session.queued_request_count = 1
+    reconnect = AsyncMock()
+    monkeypatch.setattr(service, "_reconnect_http_bridge_session", reconnect)
+    monkeypatch.setattr(
+        service,
+        "_acquire_account_response_create_lease_or_overload",
+        AsyncMock(return_value=SimpleNamespace(id="lease-fallback")),
+    )
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    monkeypatch.setattr(service, "_maybe_release_idle_http_bridge_session_lease", AsyncMock())
+    monkeypatch.setattr(
+        "app.modules.proxy._service.http_bridge.upstream_events.admission_retry_jitter_seconds",
+        lambda: 0.0,
+    )
+
+    await service._process_http_bridge_upstream_text(session, _pre_output_upstream_error())
+
+    reconnect.assert_not_awaited()
+    send_text.assert_not_awaited()
+    assert get_or_create.await_count == 1
+    assert request_state.replay_count == 0
+    assert request_state.history_replay_used is True
+    assert request_state.excluded_account_ids == {_SICK}
+    failover = current_admission_failover()
+    assert failover is not None
+    assert failover.from_account_id == _SICK
+    replay = current_history_replay()
+    assert replay is not None
+    assert replay.reason == "owner_unavailable"
+    delivered = _queued_payloads(request_state)
+    assert delivered
+    rendered = json.dumps(delivered)
+    assert "server_error" in rendered
+    assert "upstream failed before output" in rendered
+    assert "response.create" not in rendered
