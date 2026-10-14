@@ -60,6 +60,14 @@ such as `123Mac.local`. The Codex LB Settings connector continues to use
 Caddy internal CA root certificate. Do not bind the monitor directly to a
 non-loopback cleartext address.
 
+If the existing HTTPS site is published through a trusted tunnel, it may also
+mount the read-only monitor at `/status/`. Add a `/status` trailing-slash
+redirect, a `/status/internal/*` `404` handler, and a prefix-stripping proxy to
+`127.0.0.1:2466` before the dashboard catch-all. Keep the upstream Host value
+within the monitor `origin`/`allowed_hosts` set. This public mount uses the
+site's normal HTTPS certificate; it does not publish port `2467` or the private
+control connector.
+
 Back up the private monitor configuration and Caddyfile before changing this
 listener. Validate the adapted Caddyfile, the loopback health endpoint, the
 LAN HTTPS overview and FAQ, the proxy-level `/internal/*` denial, and an

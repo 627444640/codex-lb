@@ -20,13 +20,38 @@ class FAQTests(unittest.TestCase):
         self.assertIn("<title>Codex LB · 常见问题</title>", response.text)
         self.assertIn("<h1>常见问题</h1>", response.text)
         self.assertIn('id="error-websocket-payload-too-large"', response.text)
-        self.assertIn('src="/static/faq.js"', response.text)
+        self.assertIn('src="../static/faq.js"', response.text)
         self.assertNotIn("assistant-", response.text)
         self.assertNotIn("<textarea", response.text)
         self.assertNotIn("错误排查", response.text)
         overview = self.client.get("/").text
-        self.assertIn('href="/static/faq.html">常见问题</a>', overview)
+        self.assertIn('href="static/faq.html">常见问题</a>', overview)
+        self.assertIn('>问题上报</a>', response.text)
+        self.assertIn('target="_blank"', response.text)
         self.assertNotIn("错误排查", overview)
+
+    def test_published_error_guides_have_safe_anchors_and_recovery_boundaries(self):
+        page = self.client.get("/static/faq.html")
+        self.assertEqual(page.status_code, 200)
+        for slug in (
+            "error-upstream-processing",
+            "error-upstream-overload",
+            "error-stream-incomplete",
+            "error-continuation",
+            "error-upstream-timeout",
+            "error-context-limit",
+            "error-client-request",
+            "error-network-access",
+        ):
+            with self.subTest(slug=slug):
+                self.assertIn(f'id="{slug}"', page.text)
+        self.assertIn("server_error", page.text)
+        self.assertIn("server_is_overloaded", page.text)
+        self.assertIn("新建聊天", page.text)
+        self.assertIn("不要自动扩大网段", page.text)
+        self.assertNotIn("192.168.", page.text)
+        self.assertNotIn("api_key", page.text.lower())
+        self.assertNotIn("previous_response_id 只", page.text)
 
     def test_old_address_redirects_and_retains_published_anchor_targets(self):
         old = self.client.get("/static/troubleshooting.html", follow_redirects=False)

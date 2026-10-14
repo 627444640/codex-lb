@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .official_status import unknown as unknown_official_status
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -246,6 +247,28 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def incident_summary(self, now, window_seconds=86400):
+        cutoff = now - window_seconds
+        with self.db() as conn:
+            request_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id,component,title,severity,opened_at,closed_at FROM incidents "
+                    "WHERE component='requests' AND (opened_at>=? OR closed_at IS NULL) ORDER BY opened_at DESC",
+                    (cutoff,),
+                )
+            ]
+        recent_rows = [incident for incident in request_rows if incident["opened_at"] >= cutoff]
+        latest = request_rows[0] if request_rows else None
+        return {
+            "window_seconds": window_seconds,
+            "count": len(recent_rows),
+            "open_count": sum(incident["closed_at"] is None for incident in request_rows),
+            "latest_opened_at": latest["opened_at"] if latest else None,
+            "latest_closed_at": latest["closed_at"] if latest else None,
+            "latest_status": "active" if latest and latest["closed_at"] is None else "recovered" if latest else "quiet",
+        }
+
     def events(self):
         with self.db() as conn:
             return [dict(r) for r in conn.execute("SELECT * FROM events ORDER BY created_at DESC,id DESC LIMIT 100")]
@@ -291,13 +314,40 @@ class Store:
         s = self.latest()
         stale = not s or now - s["collected_at"] > max(3 * self.settings.poll_seconds, 120)
         if s is None:
-            s = {"collected_at": None, "status": "unknown", "components": [], "pool": None, "requests": None}
+            s = {
+                "collected_at": None,
+                "status": "unknown",
+                "components": [],
+                "pool": None,
+                "requests": None,
+                "official_status": None,
+            }
         if stale:
             s["status"] = "unknown"
-            s["pool"] = s["requests"] = None
+            s["pool"] = s["requests"] = s["request_quality"] = None
+            s["official_status"] = (
+                unknown_official_status(self.settings.official_status, None, "监控采样已过期，官方状态暂不可确认")
+                if self.settings.official_status.enabled
+                else None
+            )
             s["components"] = [
                 {"id": c["id"], "name": c["name"], "status": "unknown", "detail": "采样已过期"} for c in s["components"]
             ]
+        official = s.get("official_status")
+        if self.settings.official_status.enabled and official is None:
+            official = unknown_official_status(self.settings.official_status, None, "等待官方状态首次采样")
+        if official and official.get("fetched_at") is not None:
+            official_age = now - official["fetched_at"]
+            if official_age > self.settings.official_status.stale_seconds:
+                official = {
+                    **official,
+                    "status": "unknown",
+                    "indicator": None,
+                    "description": "官方状态采样已过期",
+                    "stale": True,
+                    "components": [],
+                    "incidents": [],
+                }
         weekly_remaining_percent, weekly_next_reset_at = weekly_capacity_details(s["pool"])
         # Explicit output contract: never serialize Settings, auth, or SMTP objects.
         return {
@@ -307,13 +357,16 @@ class Store:
             "stale": stale,
             "poll_seconds": self.settings.poll_seconds,
             "components": s["components"],
+            "official_status": official,
             "capacity": {
                 "weekly_remaining_percent": weekly_remaining_percent,
                 "weekly_next_reset_at": weekly_next_reset_at,
             },
             "requests": s["requests"],
+            "request_quality": s.get("request_quality"),
             "history": self.history(now),
             "incidents": self.incidents(),
+            "incident_summary": self.incident_summary(now),
             "notices": self.notices(True, now),
             "timezone": "Asia/Taipei",
         }

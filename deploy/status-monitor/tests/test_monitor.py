@@ -15,7 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from monitor.collector import collect, read_source, sql_time
-from monitor.config import Settings, load_settings
+from monitor.config import OfficialStatusSettings, Settings, load_settings
 from monitor.mailer import deliver_pending
 from monitor.server import create_app
 from monitor.store import Store
@@ -46,7 +46,7 @@ class Fixture(unittest.TestCase):
                     " TEXT,\n                requested_at TEXT,requ"
                     "est_kind TEXT,model_source_id TEXT,latency_ms"
                     " REAL,\n                latency_first_output_m"
-                    "s REAL,client_ip TEXT DEFAULT 'private-ip-mar"
+                    "s REAL,error_code TEXT,deleted_at TEXT,client_ip TEXT DEFAULT 'private-ip-mar"
                     "ker',error_message TEXT DEFAULT 'private-erro"
                     "r-marker');\n            INSERT INTO accounts("
                     "id,plan_type,status) VALUES ('private-account"
@@ -84,17 +84,34 @@ class Fixture(unittest.TestCase):
             )
 
     def request(
-        self, status="success", kind="normal", model="test-model", source=None, at=None, account="private-account-id"
+        self,
+        status="success",
+        kind="normal",
+        model="test-model",
+        source=None,
+        at=None,
+        account="private-account-id",
+        error_code=None,
     ):
         with self.source_connection() as c:
             c.execute(
                 (
                     "INSERT INTO request_logs(account_id,model,sta"
                     "tus,requested_at,request_kind,model_source_id"
-                    ",latency_ms,latency_first_output_ms) VALUES ("
-                    "?,?,?,?,?,?,?,?)"
+                    ",latency_ms,latency_first_output_ms,error_code) VALUES ("
+                    "?,?,?,?,?,?,?,?,?)"
                 ),
-                (account, model, status, sql_time(self.now - 1 if at is None else at), kind, source, 1234, 123),
+                (
+                    account,
+                    model,
+                    status,
+                    sql_time(self.now - 1 if at is None else at),
+                    kind,
+                    source,
+                    1234,
+                    123,
+                    error_code,
+                ),
             )
 
     def snapshot(self, status="operational", ts=None, component="gateway"):
@@ -213,6 +230,36 @@ class CollectorTests(Fixture):
         self.assertEqual(store.incidents(), [])
         self.assertEqual(store.events(), [])
 
+    def test_request_quality_groups_recent_errors_and_excludes_luna(self):
+        self.request(status="error", model="gpt-6-astra", error_code="server_error")
+        self.request(status="error", model="gpt-6-astra", error_code="stream_incomplete")
+        self.request(status="error", model="gpt-6-astra", error_code="previous_response_not_found")
+        self.request(status="error", model="gpt-6-luna", error_code="server_error")
+        self.request(status="success", model="gpt-6-astra")
+
+        quality = read_source(self.settings, self.now)["request_quality"]
+
+        self.assertEqual((quality["total"], quality["successes"], quality["errors"]), (4, 1, 3))
+        self.assertEqual(quality["error_percent"], 75)
+        self.assertEqual(
+            [(category["key"], category["count"]) for category in quality["categories"]],
+            [("continuation", 1), ("stream_incomplete", 1), ("upstream_processing", 1)],
+        )
+        self.assertNotIn("gpt-6-luna", json.dumps(quality))
+        self.assertNotIn("private-error-marker", json.dumps(quality))
+
+    def test_request_quality_filters_deleted_rows_and_hides_unknown_codes(self):
+        self.request(status="error", model="gpt-6-astra", error_code="private-error-marker")
+        with self.source_connection() as c:
+            c.execute("UPDATE request_logs SET deleted_at=?", (sql_time(self.now),))
+        quality = read_source(self.settings, self.now)["request_quality"]
+        self.assertEqual(quality["total"], 0)
+
+        self.request(status="error", model="gpt-6-astra", error_code="private-error-marker")
+        quality = read_source(self.settings, self.now)["request_quality"]
+        self.assertEqual(quality["categories"][0]["key"], "other")
+        self.assertNotIn("private-error-marker", json.dumps(quality))
+
     def test_no_samples_cannot_assert_business_available(self):
         s = collect(self.settings, self.now)
         c = next(c for c in s["components"] if c["id"] == "requests")
@@ -220,6 +267,29 @@ class CollectorTests(Fixture):
         self.assertEqual(c["status"], "unknown")
         self.assertEqual(c["detail"], "暂无真实模型请求样本，业务质量待调用后确认")
         self.assertIsNone(s["requests"]["error_percent"])
+
+    def test_official_provider_status_does_not_change_local_health(self):
+        def provider_status(settings, now):
+            return {
+                "provider": "OpenAI",
+                "status": "outage",
+                "description": "Provider incident",
+                "fetched_at": now,
+                "stale": False,
+                "components": [],
+                "incidents": [],
+            }
+
+        snapshot = collect(self.settings, self.now, official_status_fn=provider_status)
+        self.assertEqual(snapshot["status"], "operational")
+        self.assertEqual(snapshot["official_status"]["status"], "outage")
+        self.assertNotIn("official", {component["id"] for component in snapshot["components"]})
+
+        store = Store(self.settings)
+        store.record(snapshot)
+        self.assertIsNone(store.history(self.now)["readiness_percent"])
+        self.assertEqual(store.history(self.now)["samples"], 1)
+        self.assertEqual(store.incidents(), [])
 
     def test_idle_requests_do_not_hide_unhealthy_gateway(self):
         settings = replace(
@@ -302,11 +372,45 @@ class StateTests(Fixture):
         self.assertIsNone(result["capacity"]["weekly_next_reset_at"])
         self.assertIsNone(result["requests"])
 
+    def test_enabled_official_status_stays_unknown_when_monitor_snapshot_is_stale(self):
+        settings = replace(self.settings, official_status=OfficialStatusSettings(enabled=True))
+        store = Store(settings)
+        first = store.public(self.now)
+        self.assertEqual(first["official_status"]["status"], "unknown")
+        self.assertNotIn("未启用", first["official_status"]["description"])
+
+        snapshot = self.snapshot()
+        snapshot["official_status"] = {
+            "provider": "OpenAI",
+            "status": "operational",
+            "description": "All systems operational",
+            "fetched_at": self.now,
+            "stale": False,
+            "components": [],
+            "incidents": [],
+        }
+        store.record(snapshot)
+        result = store.public(self.now + 181)
+        self.assertEqual(result["official_status"]["status"], "unknown")
+        self.assertTrue(result["official_status"]["stale"])
+        self.assertNotIn("未启用", result["official_status"]["description"])
+
     def test_history_has_no_invented_samples(self):
         self.store.record(self.snapshot())
         history = self.store.history(self.now)
         self.assertEqual(sum(b["samples"] for b in history["days"]), 1)
         self.assertEqual(sum(b["percent"] is None for b in history["days"]), 90)
+
+    def test_incident_summary_keeps_old_open_incident_visible(self):
+        with self.store.db() as conn:
+            conn.execute(
+                "INSERT INTO incidents(component,title,severity,opened_at,closed_at) VALUES (?,?,?,?,NULL)",
+                ("requests", "旧请求事件", "warning", self.now - 3 * 86400),
+            )
+        summary = self.store.public(self.now)["incident_summary"]
+        self.assertEqual(summary["count"], 0)
+        self.assertEqual(summary["open_count"], 1)
+        self.assertEqual(summary["latest_status"], "active")
 
     def test_notice_scheduling_draft_expiry_and_withdrawal(self):
         base = {
@@ -359,9 +463,12 @@ class ControlTests(Fixture):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "operational")
         self.assertEqual(response.json()["requests"]["total"], 0)
+        self.assertIsNone(response.json()["official_status"])
         capacity = response.json()["capacity"]
         self.assertEqual(capacity["weekly_remaining_percent"], 80)
         self.assertAlmostEqual(capacity["weekly_next_reset_at"], self.now + 7200)
+        self.assertIn("request_quality", response.json())
+        self.assertIn("incident_summary", response.json())
         for key in ("pool", "quota_ready", "active", "private-account-id", "smtp", "token_file"):
             self.assertNotIn(key, response.text)
         for path in ("/admin", "/api/admin/overview", "/static/admin.html", "/static/admin.js"):
