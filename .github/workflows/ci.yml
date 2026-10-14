@@ -91,7 +91,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" --force
+        run: git fetch origin "refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" --force
 
       - name: Require validated canonical beta release PRs
         env:
@@ -118,7 +118,7 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" --force
+        run: git fetch origin "refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" --force
 
       - name: Require complete release-please stable promotions
         env:
