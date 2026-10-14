@@ -2,7 +2,7 @@
 
 ### Requirement: Soft preferred follow-ups replay cached history before changing accounts
 
-When a soft-preferred HTTP responses bridge follow-up carries `previous_response_id` and the preferred account's admission breaker blocks a new assignment, the proxy SHALL resend that turn on another healthy account only from cached conversation history. The resend SHALL omit `previous_response_id`, SHALL include the cached history, and SHALL record `history_replay_reason=owner_unavailable` on the request log. The resend SHALL consume the one shared retry with admission failover. When the cache does not hold a replayable chain for that `previous_response_id`, the proxy SHALL return HTTP 503 `account_admission_breaker_open` and SHALL NOT send the turn to another account. A history that contains a file id SHALL NOT be forwarded to another account. A hard session affinity SHALL NOT take this resend.
+A soft-preferred follow-up with `previous_response_id` SHALL move to another account only by replaying cached history. The resend SHALL omit `previous_response_id`, SHALL include that history, and SHALL record `history_replay_reason=owner_unavailable`. If the cache has no replayable chain, or the chain contains a file id, the proxy SHALL return HTTP 503 `account_admission_breaker_open` and SHALL NOT forward the turn. A hard session SHALL NOT take this resend.
 
 #### Scenario: Cached follow-up falls back without the anchor
 

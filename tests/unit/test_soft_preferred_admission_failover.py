@@ -336,6 +336,26 @@ async def test_soft_preferred_half_open_probe_taken_selects_other_account(
 
 
 @pytest.mark.asyncio
+async def test_half_open_free_probe_keeps_soft_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    service, balancer, _sticky = _install_selection(
+        monkeypatch,
+        [_account(_SICK), _account(_HEALTHY)],
+        breaker_enabled=True,
+    )
+    balancer._runtime[_SICK] = RuntimeState(
+        admission_open_until=time.time() - 1,
+        admission_probe_in_flight=False,
+        admission_half_open_logged=True,
+    )
+
+    selection = await _select_preferred(service, _SICK, request_id="req-half-open-free")
+
+    assert selection.account is not None
+    assert selection.account.id == _SICK
+    assert current_admission_failover() is None
+
+
+@pytest.mark.asyncio
 async def test_soft_preferred_open_breaker_without_sibling_returns_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
