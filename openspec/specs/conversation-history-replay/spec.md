@@ -43,6 +43,27 @@ The proxy SHALL cache completed turns of an in-flight conversation and, before a
 - **WHEN** upstream closes with code 1000 before any output and a history replay is staged
 - **THEN** that close still counts toward the owning account's admission breaker
 
+### Requirement: Soft preferred follow-ups replay cached history before changing accounts
+
+When a soft-preferred HTTP responses bridge follow-up carries `previous_response_id` and the preferred account's admission breaker blocks a new assignment, the proxy SHALL resend that turn on another healthy account only from cached conversation history. The resend SHALL omit `previous_response_id`, SHALL include the cached history, and SHALL record `history_replay_reason=owner_unavailable` on the request log. The resend SHALL consume the one shared retry with admission failover. When the cache does not hold a replayable chain for that `previous_response_id`, the proxy SHALL return HTTP 503 `account_admission_breaker_open` and SHALL NOT send the turn to another account. A history that contains a file id SHALL NOT be forwarded to another account. A hard session affinity SHALL NOT take this resend.
+
+#### Scenario: Cached follow-up falls back without the anchor
+- **GIVEN** the cache holds the completed turns behind a soft-preferred follow-up's `previous_response_id`
+- **AND** the preferred account's admission breaker is open
+- **AND** another healthy account is eligible
+- **WHEN** the HTTP bridge selects an account
+- **THEN** the turn is sent to the other account
+- **AND** the sent body contains the cached history and no `previous_response_id`
+- **AND** the request log stores `history_replay_reason=owner_unavailable`
+
+#### Scenario: Follow-up without cached history is not forwarded
+- **GIVEN** the cache holds no history for a soft-preferred follow-up's `previous_response_id`
+- **AND** the preferred account's admission breaker is open
+- **AND** another healthy account is eligible
+- **WHEN** the HTTP bridge selects an account
+- **THEN** the response is HTTP 503 `account_admission_breaker_open`
+- **AND** the turn is not sent to the other account
+
 ### Requirement: The cache is a bounded separate file
 
 The cache SHALL use a SQLite file other than `store.db`. Memory SHALL hold an index and a batch of compressed deltas, not the conversation text. The proxy SHALL compress each completed turn before writing, SHALL append only the new input suffix, and SHALL NOT write once per token. The default total cap SHALL be 1 GiB and the default per-conversation cap SHALL be 32 MiB. A conversation over its cap SHALL NOT be cached, and later requests for it SHALL follow the behavior used when the cache is absent. Idle entries SHALL expire after 30 minutes by default. Eviction SHALL be least-recently-used. Evicted conversations SHALL be deleted, and the proxy SHALL reclaim their pages with incremental vacuum. The on-disk size, including sidecars, SHALL NOT exceed the total cap. The file mode SHALL be `0600`. The database SHALL use WAL and `secure_delete`, and sidecar files SHALL use mode `0600`. When free disk is below the configured floor, the default of which is 512 MiB, the proxy SHALL disable the cache, log a warning, and continue serving requests.

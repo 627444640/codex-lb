@@ -176,6 +176,25 @@ def note_admission_failover(from_account_id: str, request_id: str | None = None)
         _failover_mark.set(AdmissionFailoverMark(from_account_id=from_account_id))
 
 
+def note_soft_preferred_admission_failover(
+    from_account_id: str,
+    request_id: str | None = None,
+    *,
+    logged_account_id: str | None = None,
+    history_replay_reason: str | None = None,
+) -> None:
+    """Record one soft-preferred move off an admission-blocked account."""
+
+    note_admission_failover(from_account_id, request_id=request_id)
+    logger.warning(
+        "admission_failover reason=account_admission_breaker_open from_account_id=%s "
+        "request_id=%s history_replay_reason=%s",
+        logged_account_id if logged_account_id is not None else from_account_id,
+        request_id,
+        history_replay_reason or "-",
+    )
+
+
 def current_admission_failover() -> AdmissionFailoverMark | None:
     return _failover_mark.get()
 
