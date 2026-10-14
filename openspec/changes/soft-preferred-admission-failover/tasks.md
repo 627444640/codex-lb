@@ -14,4 +14,4 @@
 ## 3. Tests and release
 
 - [x] 3.1 Cover soft fallback, no-other-account 503, hard unchanged, breaker disabled, cached follow-up replay, and cache-miss 503.
-- [x] 3.2 Bump the package version to 1.24.8.
+- [x] 3.2 Leave the package version at 1.24.7. A stable bump on this branch fails the release guards; release-please owns the next version.

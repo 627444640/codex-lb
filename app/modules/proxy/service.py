@@ -119,6 +119,7 @@ from app.modules.api_keys.service import (
 from app.modules.api_keys.service import (
     ApiKeysService as ApiKeysService,
 )
+from app.modules.proxy._load_balancer import admission_breaker
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -1731,6 +1732,7 @@ class ProxyService(
         redact_sensitive_details: bool = False,
     ) -> AccountSelection:
         remaining_budget = _remaining_budget_seconds(deadline)
+        admission_breaker.reset_soft_preferred_admission_exclusion()
         if remaining_budget <= 0:
             logger.warning(
                 "%s request budget exhausted before account selection request_id=%s", kind.title(), request_id
@@ -1852,30 +1854,7 @@ class ProxyService(
                             error_message="Preferred account is not available",
                             error_code="preferred_account_unavailable",
                         )
-                soft_preferred_admission_excluded = False
-                if (
-                    preferred_eligible
-                    and preferred_account_id is not None
-                    and not required_preferred_account
-                    and routing_strategy != "single_account"
-                    and _account_admission_blocks(self._load_balancer, preferred_account_id)
-                ):
-                    # A soft preference is not an ownership pin. The open
-                    # breaker must not keep the turn on that account, and the
-                    # replacement selection must not see it either.
-                    excluded_account_ids_set.add(preferred_account_id)
-                    from app.modules.proxy._load_balancer.admission_breaker import (
-                        note_soft_preferred_admission_failover,
-                    )
-
-                    note_soft_preferred_admission_failover(
-                        preferred_account_id,
-                        request_id=request_id,
-                        logged_account_id=log_account_id(preferred_account_id),
-                    )
-                    preferred_eligible = False
-                    soft_preferred_admission_excluded = True
-                if preferred_eligible:
+                if preferred_eligible and not admission_breaker.drop_soft_preferred(locals()):
                     preferred_sticky_inputs = _AffinityPolicy.preferred_owner_sticky_inputs(
                         sticky_key,
                         sticky_kind,
@@ -1988,35 +1967,9 @@ class ProxyService(
                     api_key_id=api_key_id,
                     api_key_stream_fair_share_threshold_pct=api_key_fair_share_threshold_pct,
                 )
-                if soft_preferred_admission_excluded and (
-                    selection.account is None or selection.account.id in excluded_account_ids_set
-                ):
-                    if selection.lease is not None:
-                        await self._load_balancer.release_account_lease(selection.lease)
-                    logger.warning(
-                        "Admission breaker blocked new assignment account_id=%s",
-                        log_account_id(preferred_account_id),
-                    )
-                    return AccountSelection(
-                        account=None,
-                        error_message="No available accounts",
-                        error_code="account_admission_breaker_open",
-                    )
-                if selection.account is not None and selection.account.id in excluded_account_ids_set:
-                    logger.warning(
-                        "Proxy account selection returned excluded account request_id=%s kind=%s request_stage=%s "
-                        "account_id=%s excluded_count=%s",
-                        request_id,
-                        kind,
-                        request_stage,
-                        log_account_id(selection.account.id),
-                        len(excluded_account_ids_set),
-                    )
-                    return AccountSelection(
-                        account=None,
-                        error_message="No active accounts available",
-                        error_code="no_accounts",
-                    )
+                rejected = await admission_breaker.reject_excluded_or_admission(locals(), logger)
+                if rejected is not None:
+                    return rejected
                 logger.info(
                     "Proxy account selection result request_id=%s kind=%s request_stage=%s model=%s "
                     "selected_account_id=%s error_code=%s error=%s scoped_count=%s excluded_count=%s",
@@ -2348,12 +2301,6 @@ def _partial_output_proxy_error_event_block(
     )
     _apply_error_metadata(event["response"]["error"], error)
     return format_sse_event(event)
-
-
-def _account_admission_blocks(balancer: object, account_id: str | None) -> bool:
-    from app.modules.proxy.conversation_history import account_admission_blocks
-
-    return account_admission_blocks(balancer, account_id)
 
 
 def _routing_strategy(settings: DashboardSettings) -> RoutingStrategy:

@@ -18,6 +18,7 @@ import logging
 import random
 import re
 import time
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -197,6 +198,102 @@ def note_soft_preferred_admission_failover(
 
 def current_admission_failover() -> AdmissionFailoverMark | None:
     return _failover_mark.get()
+
+
+# Set only for the selection that dropped a soft-preferred account. Cleared at
+# the start of each budgeted selection so a later request on the same task
+# does not inherit the exclusion.
+_soft_preferred_excluded: ContextVar[bool] = ContextVar("soft_preferred_admission_excluded", default=False)
+
+
+def reset_soft_preferred_admission_exclusion() -> None:
+    """Forget a soft-preferred exclusion from an earlier selection on this task."""
+
+    _soft_preferred_excluded.set(False)
+
+
+def drop_soft_preferred(scope: Mapping[str, Any]) -> bool:
+    """Exclude a soft-preferred account whose admission breaker blocks assignment.
+
+    ``scope`` is the selecting method's ``locals()``. Returns True when that
+    account must not receive the turn. Ownership pins and ``single_account``
+    stay on the preferred path.
+    """
+
+    preferred_account_id = scope["preferred_account_id"]
+    if (
+        not isinstance(preferred_account_id, str)
+        or scope["required_preferred_account"] is True
+        or scope["routing_strategy"] == "single_account"
+    ):
+        return False
+    excluded = scope["excluded_account_ids_set"]
+    log_account_id = scope["log_account_id"]
+    balancer = scope["self"]._load_balancer
+    if not _account_admission_blocks(balancer, preferred_account_id):
+        return False
+    excluded.add(preferred_account_id)
+    logged_account_id = log_account_id(preferred_account_id)
+    note_soft_preferred_admission_failover(
+        preferred_account_id,
+        request_id=scope["request_id"],
+        logged_account_id=logged_account_id if isinstance(logged_account_id, str) else None,
+    )
+    _soft_preferred_excluded.set(True)
+    return True
+
+
+async def reject_excluded_or_admission(scope: Mapping[str, Any], log: logging.Logger) -> Any:
+    """Return a terminal selection when the chosen account cannot be used.
+
+    A soft-preferred admission exclusion reports ``account_admission_breaker_open``
+    and releases a lease. Any other excluded account keeps the historical
+    ``no_accounts`` result and its lease.
+    """
+
+    from app.modules.proxy.load_balancer import AccountSelection
+
+    selection = scope["selection"]
+    excluded = scope["excluded_account_ids_set"]
+    log_account_id = scope["log_account_id"]
+    account = selection.account
+    account_excluded = account is not None and account.id in excluded
+    if _soft_preferred_excluded.get() and (account is None or account_excluded):
+        if selection.lease is not None:
+            await scope["self"]._load_balancer.release_account_lease(selection.lease)
+        preferred_account_id = scope["preferred_account_id"]
+        logged_account_id = log_account_id(preferred_account_id if isinstance(preferred_account_id, str) else None)
+        log.warning(
+            "Admission breaker blocked new assignment account_id=%s",
+            logged_account_id,
+        )
+        return AccountSelection(
+            account=None,
+            error_message="No available accounts",
+            error_code="account_admission_breaker_open",
+        )
+    if account_excluded:
+        log.warning(
+            "Proxy account selection returned excluded account request_id=%s kind=%s request_stage=%s "
+            "account_id=%s excluded_count=%s",
+            scope["request_id"],
+            scope["kind"],
+            scope["request_stage"],
+            log_account_id(account.id),
+            len(excluded),
+        )
+        return AccountSelection(
+            account=None,
+            error_message="No active accounts available",
+            error_code="no_accounts",
+        )
+    return None
+
+
+def _account_admission_blocks(balancer: object, account_id: str) -> bool:
+    from app.modules.proxy.conversation_history import account_admission_blocks
+
+    return account_admission_blocks(balancer, account_id)
 
 
 def admission_retry_jitter_seconds() -> float:

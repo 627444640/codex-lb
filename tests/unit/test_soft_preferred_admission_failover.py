@@ -19,6 +19,7 @@ import app.modules.proxy.load_balancer as load_balancer_module
 from app.core.clients.proxy import ProxyResponseError
 from app.core.clients.proxy_websocket import UpstreamWebSocket
 from app.core.config.settings import Settings
+from app.core.types import JsonValue
 from app.db.models import Account, AccountStatus, StickySessionKind
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._load_balancer.admission_breaker import current_admission_failover
@@ -154,7 +155,7 @@ async def _select_preferred(
 
 
 def _seed_history(cache: ConversationHistoryCache, *, file_id: str | None = None) -> None:
-    content: list[dict[str, str]] = [{"type": "input_text", "text": "kept"}]
+    content: list[JsonValue] = [{"type": "input_text", "text": "kept"}]
     if file_id is not None:
         content.append({"type": "input_file", "file_id": file_id})
     cache.record_completed_turn(
