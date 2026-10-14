@@ -119,6 +119,7 @@ from app.modules.api_keys.service import (
 from app.modules.api_keys.service import (
     ApiKeysService as ApiKeysService,
 )
+from app.modules.proxy._load_balancer import admission_breaker
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -1731,6 +1732,7 @@ class ProxyService(
         redact_sensitive_details: bool = False,
     ) -> AccountSelection:
         remaining_budget = _remaining_budget_seconds(deadline)
+        admission_breaker.reset_soft_preferred_admission_exclusion()
         if remaining_budget <= 0:
             logger.warning(
                 "%s request budget exhausted before account selection request_id=%s", kind.title(), request_id
@@ -1852,7 +1854,7 @@ class ProxyService(
                             error_message="Preferred account is not available",
                             error_code="preferred_account_unavailable",
                         )
-                if preferred_eligible:
+                if preferred_eligible and not admission_breaker.drop_soft_preferred(locals()):
                     preferred_sticky_inputs = _AffinityPolicy.preferred_owner_sticky_inputs(
                         sticky_key,
                         sticky_kind,
@@ -1965,21 +1967,9 @@ class ProxyService(
                     api_key_id=api_key_id,
                     api_key_stream_fair_share_threshold_pct=api_key_fair_share_threshold_pct,
                 )
-                if selection.account is not None and selection.account.id in excluded_account_ids_set:
-                    logger.warning(
-                        "Proxy account selection returned excluded account request_id=%s kind=%s request_stage=%s "
-                        "account_id=%s excluded_count=%s",
-                        request_id,
-                        kind,
-                        request_stage,
-                        log_account_id(selection.account.id),
-                        len(excluded_account_ids_set),
-                    )
-                    return AccountSelection(
-                        account=None,
-                        error_message="No active accounts available",
-                        error_code="no_accounts",
-                    )
+                rejected = await admission_breaker.reject_excluded_or_admission(locals(), logger)
+                if rejected is not None:
+                    return rejected
                 logger.info(
                     "Proxy account selection result request_id=%s kind=%s request_stage=%s model=%s "
                     "selected_account_id=%s error_code=%s error=%s scoped_count=%s excluded_count=%s",

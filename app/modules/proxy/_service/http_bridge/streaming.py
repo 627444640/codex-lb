@@ -71,6 +71,9 @@ from app.modules.proxy._service.compact import (
 from app.modules.proxy._service.compact import (
     _sticky_key_from_compact_payload as _sticky_key_from_compact_payload,
 )
+from app.modules.proxy._service.http_bridge.admission_failover import (
+    apply_soft_preferred_admission_failover,
+)
 from app.modules.proxy._service.http_bridge.helpers import (
     _effective_http_bridge_idle_ttl_seconds,
     _http_bridge_durable_lease_ttl_seconds,
@@ -79,6 +82,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_is_explicit_previous_response_rejection,
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_models_compatible,
+    _http_bridge_owner_check_required,
     _http_bridge_owner_lookup_unavailable_error_envelope,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
@@ -225,7 +229,10 @@ from app.modules.proxy.continuity import (
     resolve_required_account_id,
     without_http_bridge_session_affinity_headers,
 )
-from app.modules.proxy.conversation_history import reset_history_replay_context
+from app.modules.proxy.conversation_history import (
+    account_admission_blocks,
+    reset_history_replay_context,
+)
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
 from app.modules.proxy.durable_bridge_repository import durable_bridge_hash
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
@@ -2022,6 +2029,42 @@ class _HTTPBridgeStreamingMixin:
                 upstream_error_code="owner_lookup_miss",
             )
             raise owner_unavailable
+
+        admission_decision = apply_soft_preferred_admission_failover(
+            request_state,
+            key_strength=bridge_session_key.strength or "soft",
+            owner_check_applied=_http_bridge_owner_check_required(
+                bridge_session_key,
+                gateway_safe_mode=runtime_config.gateway_safe_mode,
+            ),
+            file_pinned=file_required_preferred_account,
+            single_account_routing=getattr(dashboard_settings, "routing_strategy", None) == "single_account",
+            admission_blocked=account_admission_blocks(
+                self._load_balancer,
+                request_state.preferred_account_id,
+            ),
+        )
+        if admission_decision.action == "unavailable":
+            raise ProxyResponseError(
+                503,
+                openai_error("account_admission_breaker_open", "No available accounts"),
+            )
+        if admission_decision.action in {"fallback", "replay"} and admission_decision.excluded_account_id is not None:
+            fresh_replay_excluded_account_ids.add(admission_decision.excluded_account_id)
+            preferred_account_has_continuity_provenance = False
+        if admission_decision.action == "replay":
+            text_data = request_state.request_text or text_data
+            replayed_body = json.loads(text_data)
+            effective_payload = effective_payload.model_copy(
+                update={
+                    "previous_response_id": None,
+                    "conversation": None,
+                    "input": replayed_body.get("input", effective_payload.input),
+                }
+            )
+            untrimmed_effective_payload = effective_payload
+            if _sticky_key_from_turn_state_header(headers) is None:
+                request_state.hard_continuity_anchor = False
 
         while True:
             try:

@@ -390,6 +390,10 @@ async def _send_http_bridge_request_text_with_archive_id(
         attempt = _HTTPBridgeResponseCreateAttempt(ordinal=request_state.response_create_attempt_count)
         request_state.response_create_attempt = attempt
         request_state.response_create_sent_at = _service_time().monotonic()
+        # A history replay is the request's one transparent resend. Count it
+        # before the frame is sent so a pre-output close cannot start another.
+        if request_state.history_replay_used and request_state.replay_count < 1:
+            request_state.replay_count = 1
         session.upstream_reader_wakeup.set()
         try:
             await session.upstream.send_text(text_data)
@@ -3292,6 +3296,7 @@ class _HTTPBridgeRequestSubmitMixin:
             additional_clean_close_retry = (
                 clean_close_retry_for_current_close
                 and request_state.replay_count == 1
+                and not request_state.history_replay_used
                 and request_state.response_event_count == 0
                 and request_state.clean_close_replay_count < clean_close_retry_max_count
             )
