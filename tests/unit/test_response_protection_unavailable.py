@@ -70,7 +70,12 @@ def _text_delta(text: str = "hi") -> str:
 
 
 def _events(chunks: list[str]) -> list[dict[str, Any]]:
-    return [json.loads(chunk.split("data: ", 1)[1]) for chunk in chunks if chunk.startswith("data: ")]
+    events: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if "data: " not in chunk:
+            continue
+        events.append(json.loads(chunk.split("data: ", 1)[1].strip()))
+    return events
 
 
 def _upstream_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
