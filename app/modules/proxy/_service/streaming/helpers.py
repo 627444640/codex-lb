@@ -1194,6 +1194,12 @@ async def _replay_http_history(
         # anchor and resending the cached history. The original id stays put.
         reason = "admission_failure"
         owner_blocked = True
+    elif error_fields is not None and _is_response_protection_unavailable(error_fields[0], error_fields[2]):
+        # The owner is still up. Moving this anchored HTTP SSE turn is the
+        # same full-history resend as an admission failure: drop the id, or
+        # stay on the owner when the cache cannot rebuild it.
+        reason = "response_protection_unavailable"
+        owner_blocked = True
     elif error_fields is not None and is_previous_response_not_found_error(
         code=error_fields[0],
         param=error_fields[1],

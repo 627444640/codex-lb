@@ -10,7 +10,9 @@ The upstream event was `code=internal_error`, `message=response protection is un
 
 ## Retry decision
 
-The existing transient loop retries the same account up to three times, then excludes it and selects another account, up to three accounts, and only while nothing has been sent downstream. This change raises `_TransientStreamError` for this one message before the error or any held `response.created` / `response.in_progress` prelude is forwarded. `preserve_on_selection_exhausted` keeps the upstream code and message when no account remains. `allow_transient_retry` is the budget flag the loop already passes in.
+The existing transient loop retries the same account up to three times. For this message, the account switch after that budget is the same one transparent resend already used by admission failover and cached-history replay (`mark_transparent_retry`). A second account that also fails is returned to the client. Other transient codes still use the three-account loop. This change raises `_TransientStreamError` for this one message before the error or any held `response.created` / `response.in_progress` prelude is forwarded. `preserve_on_selection_exhausted` keeps the upstream code and message when no account remains. `allow_transient_retry` is the budget flag the loop already passes in.
+
+An HTTP SSE turn that still carries `previous_response_id` cannot be moved by excluding the owner. The one allowed switch drops `previous_response_id` and resends the cached history, the same rule as an anchored admission failure. A cache miss, or a history that contains a file id, stays on the original account. Image requests take this path because they bypass the HTTP bridge.
 
 The match is the whole message after whitespace collapse and casefold. A longer sentence, or any other `internal_error`, stays terminal. Adding `internal_error` to the global admission set would trip the admission breaker and one-shot failover for unrelated internal errors.
 
@@ -37,11 +39,14 @@ event: error
 data: {"type":"error","error":{"code":"internal_error","type":"server_error","param":null,"message":"response protection is unavailable"}}
 ```
 
-The proxy retries the same POST on the same account, then another account if those retries fail. The client sees only the later success, or one copy of this error if the budget is exhausted. The failed attempt's request log stores `upstream_error_code=internal_error`, `failure_phase=upstream`, and `failure_detail` containing the message, `type=server_error`, and `param` when present. The console line is `upstream stream error` with those fields.
+The proxy retries the same POST on the same account, then one other account if those retries fail and the request has not already switched. The client sees only the later success, or one copy of this error if the second account fails or the shared switch was already used. The failed attempt's request log stores `upstream_error_code=internal_error`, `failure_phase=upstream`, and `failure_detail` containing the message, `type=server_error`, and `param` when present. The console line is `upstream stream error` with those fields.
 
 ## Failure modes
 
 - Output already forwarded: no retry, no second account, the error event is sent once.
 - Message is only a prefix or a different `internal_error`: no retry.
+- The second account also fails before output: the client receives `internal_error` and the upstream message. A third account is not tried.
+- Admission failover or a history replay already consumed the one switch: this error stays on the current account.
+- An anchored turn has no cached history: the original account is retried, and `previous_response_id` is not sent to another account.
 - Every account fails before output: the client receives `internal_error` and the upstream message, not a generic `no_accounts` event.
 - Body-parse logging fails: the HTTP 400 is still returned; the write failure is one warning.

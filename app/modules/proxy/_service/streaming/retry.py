@@ -40,6 +40,7 @@ from app.modules.proxy._load_balancer.admission_breaker import (
     authored_pre_output_close,
     counts_as_admission_failure,
     current_admission_failover,
+    mark_transparent_retry,
     note_admission_failover,
     plan_admission_failover,
     reset_admission_failure_dedupe,
@@ -2632,6 +2633,48 @@ class _StreamingRetryMixin:
                                     exclude_account=True,
                                 )
                                 attempt_logged_retryable_stream_error = last_retryable_stream_error
+                            # This message shares the one transparent resend
+                            # with admission failover and history replay.
+                            # Same-account retries above are unchanged. A
+                            # second account move, or an anchored move the
+                            # cache cannot rebuild, is returned here.
+                            from app.modules.proxy._service.streaming.helpers import (
+                                _is_response_protection_unavailable,
+                                _replay_http_history,
+                            )
+
+                            response_protection_move = (
+                                isinstance(tex, _TransientStreamError)
+                                and _is_response_protection_unavailable(error_code, error_message)
+                                and not settlement.downstream_visible
+                            )
+                            if response_protection_move and (
+                                transparent_retry_used(request_id) or payload.previous_response_id is not None
+                            ):
+                                if payload.previous_response_id is not None and not transparent_retry_used(request_id):
+                                    await _replay_http_history(
+                                        proxy,
+                                        payload,
+                                        account,
+                                        settlement,
+                                        request_id,
+                                        attempt < max_attempts - 1,
+                                        error_code,
+                                        (error_code, None, error_message),
+                                    )
+                                await _release_tracked_stream_lease(current_account_lease)
+                                current_account_lease = None
+                                yield format_sse_event(
+                                    response_failed_event(
+                                        error_code or "internal_error",
+                                        error_message or "Upstream error",
+                                        response_id=settlement.response_id or request_id,
+                                    )
+                                )
+                                return
+                            if response_protection_move:
+                                mark_transparent_retry(request_id)
+                                admission_failover_used = True
                             await _release_tracked_stream_lease(current_account_lease)
                             current_account_lease = None
                             excluded_account_ids.add(account.id)

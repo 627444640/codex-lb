@@ -14,3 +14,8 @@
 - [x] 3.1 Unit tests cover pre-output retry, post-output refusal, unrelated `internal_error`, request-log fields, image-bypass archive lookup, and the body-parse 400.
 - [x] 3.2 `uv run ruff check` on the changed Python files passes. `uv run ty check` reports no diagnostics in the changed files. The full-project check still reports two existing diagnostics in `tests/unit/test_http_bridge_anchor_loss_history_replay.py`.
 - [x] 3.3 Bump every release-managed version field to 1.24.9, including Chart.yaml version and appVersion.
+
+## 4. Shared switch budget
+
+- [ ] 4.1 A response-protection account switch consumes the same one-resend budget as admission failover and cached-history replay. The second account's failure is returned, and a request that already switched does not switch again.
+- [ ] 4.2 An image HTTP SSE request with `previous_response_id` drops that id and resends cached history when it switches. A cache miss retries only the original account.

@@ -4,7 +4,7 @@ From 2026-10-13 20:04 through 2026-10-14 20:35 (Taipei), about 560 Responses str
 
 ## What Changes
 
-- Before any output is forwarded, an upstream SSE `internal_error` whose message is `response protection is unavailable` uses the existing same-account transient retries and then the existing account switch, still inside the per-request retry budget. After output has started, the error is forwarded once and the account does not change.
+- Before any output is forwarded, an upstream SSE `internal_error` whose message is `response protection is unavailable` uses the existing same-account transient retries and then at most one account switch. That switch shares the one-resend budget with admission failover and cached-history replay. An anchored HTTP SSE turn drops `previous_response_id` and resends cached history, or stays on the original account when the cache misses. After output has started, the error is forwarded once and the account does not change.
 - Every upstream SSE stream error writes `upstream_error_code`, `failure_phase`, and `failure_detail` (message, type, and param) and emits one log line without credentials or request content.
 - Request-log search matches `archive_request_id`, so the id printed when an image request bypasses the bridge finds the success row.
 - OpenAI-format HTTP 400 responses with `There was an error parsing the body` are written to `request_logs`.
@@ -13,7 +13,8 @@ From 2026-10-13 20:04 through 2026-10-14 20:35 (Taipei), about 560 Responses str
 
 ### Modified Capabilities
 
-- `responses-api-compat`: pre-output retry for this upstream `internal_error` message.
+- `responses-api-compat`: pre-output retry for this upstream `internal_error` message, capped at one shared account switch.
+- `conversation-history-replay`: an anchored response-protection failure resends cached history or stays on the owner.
 - `proxy-runtime-observability`: stream-error request-log fields, one log line, archive-id search, and body-parse request logs.
 
 ## Impact
