@@ -500,6 +500,139 @@ def _should_retry_transient_stream_error(
     return any(marker in normalized_message for marker in _facade()._UPSTREAM_UNAVAILABLE_TRANSIENT_MESSAGE_MARKERS)
 
 
+_RESPONSE_PROTECTION_UNAVAILABLE_MESSAGE = "response protection is unavailable"
+_UPSTREAM_STREAM_ERROR_MESSAGE_LIMIT = 300
+_UPSTREAM_STREAM_ERROR_FIELD_LIMIT = 80
+
+
+def _collapse_stream_error_text(value: str | None, *, limit: int) -> str | None:
+    """One log-safe line: collapsed whitespace, capped, no surrounding blanks."""
+    if not isinstance(value, str):
+        return None
+    collapsed = " ".join(value.split())
+    if not collapsed:
+        return None
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 3] + "..."
+
+
+def _is_response_protection_unavailable(code: str | None, message: str | None) -> bool:
+    """Match the intermittent upstream SSE failure exactly, not every internal_error."""
+    if code != "internal_error":
+        return False
+    collapsed = _collapse_stream_error_text(message, limit=_UPSTREAM_STREAM_ERROR_MESSAGE_LIMIT)
+    if collapsed is None:
+        return False
+    return collapsed.casefold() == _RESPONSE_PROTECTION_UNAVAILABLE_MESSAGE
+
+
+def _should_retry_response_protection_unavailable(
+    code: str | None,
+    message: str | None,
+    *,
+    allow_transient_retry: bool,
+    downstream_visible: bool,
+    upstream_model_output_seen: bool,
+) -> bool:
+    """Retry only before any client output, inside the existing transient budget."""
+    if not allow_transient_retry or downstream_visible or upstream_model_output_seen:
+        return False
+    return _is_response_protection_unavailable(code, message)
+
+
+def _upstream_stream_error_metadata(
+    *,
+    code: str | None,
+    message: str | None,
+    error_type: str | None,
+    param: str | None,
+) -> _RequestLogFailureMetadata:
+    if code == "stream_incomplete":
+        return _RequestLogFailureMetadata(
+            failure_phase="upstream",
+            failure_detail="upstream_eof_before_terminal_event",
+            upstream_error_code=code,
+        )
+    collapsed_message = _collapse_stream_error_text(message, limit=_UPSTREAM_STREAM_ERROR_MESSAGE_LIMIT)
+    collapsed_type = _collapse_stream_error_text(error_type, limit=_UPSTREAM_STREAM_ERROR_FIELD_LIMIT)
+    collapsed_param = _collapse_stream_error_text(param, limit=_UPSTREAM_STREAM_ERROR_FIELD_LIMIT)
+    parts: list[str] = []
+    if collapsed_message is not None:
+        parts.append(collapsed_message)
+    if collapsed_type is not None:
+        parts.append(f"type={collapsed_type}")
+    if collapsed_param is not None:
+        parts.append(f"param={collapsed_param}")
+    return _RequestLogFailureMetadata(
+        failure_phase="upstream",
+        failure_detail=" ".join(parts) or None,
+        upstream_error_code=code,
+    )
+
+
+def _log_upstream_stream_error(
+    *,
+    code: str | None,
+    message: str | None,
+    error_type: str | None,
+    param: str | None,
+    request_id: str,
+    account_id: str | None,
+    transient_retry: bool,
+) -> None:
+    """One line. Message, type, and param only — never the request body or credentials."""
+    _facade().logger.warning(
+        "upstream stream error request_id=%s account_id=%s code=%s type=%s param=%s "
+        "message=%s phase=upstream transient_retry=%s",
+        request_id,
+        account_id,
+        code,
+        _collapse_stream_error_text(error_type, limit=_UPSTREAM_STREAM_ERROR_FIELD_LIMIT) or "-",
+        _collapse_stream_error_text(param, limit=_UPSTREAM_STREAM_ERROR_FIELD_LIMIT) or "-",
+        _collapse_stream_error_text(message, limit=_UPSTREAM_STREAM_ERROR_MESSAGE_LIMIT) or "-",
+        transient_retry,
+    )
+
+
+def _note_upstream_stream_error(
+    *,
+    code: str | None,
+    message: str | None,
+    error_type: str | None,
+    param: str | None,
+    request_id: str,
+    account_id: str | None,
+    allow_transient_retry: bool,
+    downstream_visible: bool,
+    upstream_model_output_seen: bool,
+    eligible: bool = True,
+) -> tuple[_RequestLogFailureMetadata, bool]:
+    retry = eligible and _should_retry_response_protection_unavailable(
+        code,
+        message,
+        allow_transient_retry=allow_transient_retry,
+        downstream_visible=downstream_visible,
+        upstream_model_output_seen=upstream_model_output_seen,
+    )
+    metadata = _upstream_stream_error_metadata(
+        code=code,
+        message=message,
+        error_type=error_type,
+        param=param,
+    )
+    _log_upstream_stream_error(
+        code=code,
+        message=message,
+        error_type=error_type,
+        param=param,
+        request_id=request_id,
+        account_id=account_id,
+        transient_retry=retry,
+    )
+    return metadata, retry
+
+
 def _classify_upstream_close(
     close_code: int | None,
     *,
@@ -1060,6 +1193,12 @@ async def _replay_http_history(
         # A 500 or overload on an anchored turn can move only by dropping the
         # anchor and resending the cached history. The original id stays put.
         reason = "admission_failure"
+        owner_blocked = True
+    elif error_fields is not None and _is_response_protection_unavailable(error_fields[0], error_fields[2]):
+        # The owner is still up. Moving this anchored HTTP SSE turn is the
+        # same full-history resend as an admission failure: drop the id, or
+        # stay on the owner when the cache cannot rebuild it.
+        reason = "response_protection_unavailable"
         owner_blocked = True
     elif error_fields is not None and is_previous_response_not_found_error(
         code=error_fields[0],

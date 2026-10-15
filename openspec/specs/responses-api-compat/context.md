@@ -9,6 +9,7 @@ See `openspec/specs/responses-api-compat/spec.md` for normative requirements.
 ## Rationale and Decisions
 
 - **Responses as canonical wire format:** Internally we treat Responses as the source of truth to avoid divergent streaming semantics.
+- **Response-protection failures are transient only before output:** an upstream SSE `internal_error` whose message is exactly `response protection is unavailable` is retried on the same account, then switched at most once. That switch shares the one-resend budget with admission failover and cached-history replay. An anchored HTTP SSE turn drops `previous_response_id` and resends cached history, or stays on the owner when the cache misses. After any model output has been forwarded, the error is returned once and the account does not change. Other `internal_error` messages stay terminal.
 - **Strict validation:** Required fields and mutually exclusive fields are enforced up front to match official client expectations.
 - **Cursor alias compatibility:** Cursor UI model labels may append reasoning or speed suffixes to GPT-5 slugs; those are normalized to canonical upstream fields before forwarding.
 - **No truncation support:** Requests that include `truncation` are rejected because upstream does not support it.

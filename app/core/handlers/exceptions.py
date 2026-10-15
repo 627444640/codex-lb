@@ -77,6 +77,9 @@ _DASHBOARD_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
 )
 
 
+_BODY_PARSE_ERROR_DETAIL = "There was an error parsing the body"
+
+
 def _error_format(request: Request) -> str | None:
     fmt = getattr(request.state, "error_format", None)
     if fmt is not None:
@@ -169,6 +172,49 @@ async def _record_image_route_exception_observability(
         outcome=outcome,
         started_at=started_at,
     )
+
+
+async def _record_openai_body_parse_request_log(request: Request, exc: StarletteHTTPException) -> None:
+    """Persist the FastAPI body-read 400 that never reaches the route handler.
+
+    The framework raises this while reading the body, before API-key dependencies
+    run, so the row has no account or key. The original exception type is kept
+    and the body bytes are not.
+    """
+    cause = exc.__cause__
+    cause_name = type(cause).__name__ if cause is not None else type(exc).__name__
+    try:
+        from app.core.request_locality import resolve_request_client_host
+        from app.core.utils.request_id import ensure_request_id
+        from app.db.session import get_background_session
+        from app.modules.proxy._service.support import _request_log_client_fields
+        from app.modules.request_logs.repository import RequestLogsRepository
+
+        useragent, useragent_group, conversation_id = _request_log_client_fields(request.headers)
+        async with get_background_session() as session:
+            await RequestLogsRepository(session).add_log(
+                account_id=None,
+                api_key_id=None,
+                request_id=ensure_request_id(),
+                model="",
+                input_tokens=None,
+                output_tokens=None,
+                latency_ms=None,
+                status="error",
+                error_code="invalid_request_error",
+                error_message=_BODY_PARSE_ERROR_DETAIL,
+                failure_phase="validation",
+                failure_detail=cause_name,
+                failure_exception_type=cause_name,
+                transport="http",
+                upstream_status_code=None,
+                useragent=useragent,
+                useragent_group=useragent_group,
+                conversation_id=conversation_id,
+                client_ip=resolve_request_client_host(request),
+            )
+    except Exception:
+        logger.warning("failed to write body-parse request log", exc_info=True)
 
 
 def add_exception_handlers(app: FastAPI) -> None:
@@ -383,6 +429,8 @@ def add_exception_handlers(app: FastAPI) -> None:
                 detail,
                 category="openai_error_response",
             )
+            if exc.status_code == 400 and detail == _BODY_PARSE_ERROR_DETAIL:
+                await _record_openai_body_parse_request_log(request, exc)
             return JSONResponse(status_code=exc.status_code, content=openai_error(code, detail, error_type=error_type))
         return await http_exception_handler(request, exc)
 

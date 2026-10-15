@@ -36,6 +36,7 @@ HistoryReplayReason = Literal[
     "stream_incomplete",
     "owner_unavailable",
     "admission_failure",
+    "response_protection_unavailable",
 ]
 
 
@@ -355,7 +356,11 @@ class ConversationHistoryCache:
             body = dict(request_body)
             body["input"] = full
             body.pop("previous_response_id", None)
-            switch = owner_blocked or reason in {"owner_unavailable", "admission_failure"}
+            switch = owner_blocked or reason in {
+                "owner_unavailable",
+                "admission_failure",
+                "response_protection_unavailable",
+            }
             if switch and (file_pinned or extract_input_file_ids(full)):
                 return None
             if switch and _optional_str(body.get("conversation")):
