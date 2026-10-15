@@ -17,5 +17,5 @@
 
 ## 4. Shared switch budget
 
-- [ ] 4.1 A response-protection account switch consumes the same one-resend budget as admission failover and cached-history replay. The second account's failure is returned, and a request that already switched does not switch again.
-- [ ] 4.2 An image HTTP SSE request with `previous_response_id` drops that id and resends cached history when it switches. A cache miss retries only the original account.
+- [x] 4.1 A response-protection account switch consumes the same one-resend budget as admission failover and cached-history replay. The second account's failure is returned, and a request that already switched does not switch again.
+- [x] 4.2 An image HTTP SSE request with `previous_response_id` drops that id and resends cached history when it switches. A cache miss retries only the original account.
