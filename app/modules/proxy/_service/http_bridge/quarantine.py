@@ -117,7 +117,8 @@ def _quarantine_http_bridge_session(service: Any, session: _HTTPBridgeSession, *
     """Quarantine a bridge session that has proven silent/wedged.
 
     Session-scoped only: no account-health writes happen here, and the entry
-    is bounded by TTL, a registry size cap, and the healthy-completion clear.
+    is bounded by a TTL or terminal marker, a registry size cap, and the
+    healthy-completion clear.
     """
     now = time.monotonic()
     registry = _http_bridge_quarantine_registry(service)
@@ -137,12 +138,17 @@ def _quarantine_http_bridge_session(service: Any, session: _HTTPBridgeSession, *
     session.quarantined = True
     if already_quarantined:
         return
+    ttl_label = (
+        "terminal"
+        if reason == _HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON
+        else f"{_HTTP_BRIDGE_QUARANTINE_TTL_SECONDS:.0f}"
+    )
     _log_http_bridge_event(
         "session_quarantined",
         session.key,
         account_id=session.account.id,
         model=session.request_model,
-        detail=f"reason={reason}, ttl_seconds={_HTTP_BRIDGE_QUARANTINE_TTL_SECONDS:.0f}",
+        detail=f"reason={reason}, ttl_seconds={ttl_label}",
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
