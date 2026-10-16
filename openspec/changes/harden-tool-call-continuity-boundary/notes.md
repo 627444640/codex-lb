@@ -9,11 +9,9 @@
 - `tests/unit/test_conversation_history_cache.py` (13),
   `tests/unit/test_http_bridge_anchor_loss_history_replay.py` (7), and the
   relevant bridge gate/recovery tests (5) pass. The full
-  `tests/unit/test_proxy_http_bridge.py` run reaches 742 passing tests; one
-  unrelated fixture mismatch remains in
-  `test_finalize_waits_for_settlement_when_keyed_health_penalties_are_queued`:
-  its minimal `Settings` fixture lacks `prefer_earlier_reset_accounts`, and the
-  resulting retry failure adds an unrelated `server_error` health entry.
+  `tests/unit/test_proxy_http_bridge.py` run now passes all 743 tests after the
+  settlement fixture supplies `prefer_earlier_reset_accounts=False` and the
+  request-local health-handled guard prevents a duplicate penalty.
 - Ruff check, Ruff format check, and `git diff --check` pass.
 - No service restart, runtime configuration write, database write, or manual
   cleanup was performed.

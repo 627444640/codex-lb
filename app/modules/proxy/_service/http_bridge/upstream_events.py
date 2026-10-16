@@ -1843,6 +1843,8 @@ class _HTTPBridgeUpstreamEventsMixin:
         ``account_health_error_handled`` is set either way so terminal
         finalization does not apply a duplicate penalty.
         """
+        if request_state is not None and getattr(request_state, "account_health_error_handled", False):
+            return
         if request_state is not None and request_state.api_key_reservation is not None:
             request_state.deferred_keyed_stream_health.append(
                 _DeferredKeyedStreamHealthPenalty(account=account, error=error, code=code)

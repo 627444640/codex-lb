@@ -62,6 +62,13 @@ marking transparent retry state, emit only redacted low-cardinality telemetry,
 and continue through the existing fail-closed path. It MUST NOT silently slim
 or dispatch an over-budget replay.
 
+## Requirement: precreated health handling is idempotent
+
+When a precreated bridge request already records that its account-health error
+was handled, a later terminal bookkeeping pass MUST NOT enqueue or write a
+second health penalty for the same request. Existing deferred penalties MUST
+still wait for reservation settlement and drain exactly once.
+
 ### Scenario: orphan custom tool output is sanitized once
 
 - **GIVEN** an anchored HTTP bridge request injects a synthetic custom tool output
@@ -102,4 +109,12 @@ or dispatch an over-budget replay.
 - **THEN** no replay is staged or counted
 - **AND** the request follows the existing fail-closed error path
 - **AND** no raw request body or identifiers are emitted in telemetry
+
+### Scenario: terminal bookkeeping does not duplicate health penalties
+
+- **GIVEN** a request already has `account_health_error_handled` set and a
+  deferred penalty waiting for settlement
+- **WHEN** a later precreated error reaches terminal bookkeeping
+- **THEN** the existing deferred penalty drains after settlement
+- **AND** no second penalty is enqueued for that request
 
