@@ -23291,6 +23291,7 @@ async def test_prepare_websocket_response_create_request_fills_interrupted_pendi
         ("No tool output found for custom tool call call_abc.", True),
         ("No tool output found for apply patch call call_abc.", True),
         ("No tool output found for tool search call call_abc.", True),
+        ("No tool call found for custom tool call output with call_id call_abc.", True),
         ("No tool output found for web search call ws_abc.", False),
         ("Previous response with id 'resp_abc' not found.", False),
     ],
