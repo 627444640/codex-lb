@@ -738,6 +738,10 @@ def _http_bridge_interrupted_tool_outputs_input(
     guard, the stored input context, and the usage budget all observe the
     upstream-shaped input. Returns ``None`` when no injection is needed.
     """
+    # An orphan-output rejection quarantines the session before reconnect. Do
+    # not inject the same synthetic output into the next retry.
+    if session.quarantined:
+        return None
     if not session.last_pending_tool_calls or session.last_completed_response_id is None:
         return None
     if payload.previous_response_id != session.last_completed_response_id:

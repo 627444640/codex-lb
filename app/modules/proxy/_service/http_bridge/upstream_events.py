@@ -85,6 +85,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.quarantine import (
     _clear_http_bridge_quarantine,
+    _quarantine_http_bridge_session,
     _record_http_bridge_quarantine_eventless_timeout,
     _record_http_bridge_quarantine_wedged_pending,
 )
@@ -2473,6 +2474,17 @@ class _HTTPBridgeUpstreamEventsMixin:
             and status_request_state.previous_response_id is not None
             and is_missing_tool_output_event
         ):
+            session.last_pending_tool_calls.clear()
+            _quarantine_http_bridge_session(self, session, reason="tool_call_context_mismatch")
+            _log_http_bridge_event(
+                "tool_call_context_mismatch",
+                session.key,
+                account_id=session.account.id,
+                model=session.request_model,
+                detail="outcome=upstream_orphan_tool_output",
+                cache_key_family=session.key.affinity_kind,
+                model_class=_extract_model_class(session.request_model) if session.request_model else None,
+            )
             status_request_state.error_http_status_override = 502
             event, payload, event_type, rewritten_text = _rewrite_websocket_continuity_corruption_event(
                 request_state=status_request_state,

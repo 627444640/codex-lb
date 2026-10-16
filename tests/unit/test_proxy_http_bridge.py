@@ -34176,3 +34176,93 @@ async def test_concurrent_drains_apply_each_deferred_penalty_exactly_once(
 
     assert sorted(applied) == ["server_is_overloaded", "usage_limit_reached"]
     assert request_state.deferred_keyed_stream_health == []
+
+
+def test_http_bridge_quarantined_session_does_not_inject_interrupted_tool_outputs() -> None:
+    session = _make_bridge_session(key_value="quarantined-tool-context")
+    session.quarantined = True
+    session.last_completed_response_id = "resp-stale-tool-context"
+    session.last_pending_tool_calls = {"call_orphan": "custom_tool_call"}
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "previous_response_id": "resp-stale-tool-context",
+            "input": [{"role": "user", "content": "continue"}],
+        }
+    )
+
+    assert (
+        http_bridge_streaming_module._http_bridge_interrupted_tool_outputs_input(
+            session,
+            payload=payload,
+            request_id="req-quarantined-tool-context",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_http_bridge_orphan_custom_tool_output_quarantines_session(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    finalize_request_state = AsyncMock()
+    monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-orphan-custom-tool",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        previous_response_id="resp-orphan-custom-tool",
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(
+        key_value="orphan-custom-tool",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    session.last_pending_tool_calls = {"call_orphan": "custom_tool_call"}
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_request_error",
+                    "message": "No tool call found for custom tool call output with call_id call_orphan.",
+                    "param": "input",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    event_block = await event_queue.get()
+    assert event_block is not None
+    payload = proxy_service.parse_sse_data_json(event_block)
+    assert isinstance(payload, dict)
+    response = payload.get("response")
+    assert isinstance(response, dict)
+    error = response.get("error")
+    assert isinstance(error, dict)
+    assert payload["type"] == "response.failed"
+    assert error["code"] == "stream_incomplete"
+    assert "call_orphan" not in json.dumps(payload)
+    assert session.quarantined is True
+    assert session.last_pending_tool_calls == {}
+    assert session.upstream_control.reconnect_requested is True
+    assert finalize_request_state.await_count == 1
+    assert "event=tool_call_context_mismatch" in caplog.text
