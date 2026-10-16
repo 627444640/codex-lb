@@ -14,6 +14,7 @@
 - [x] 2.7 Retire and quarantine the current session when an existing durable operation has no upstream status proof, preserving the durable fence and client-owned anchor.
 - [x] 2.8 Write request-log metadata for retry-circuit-suppressed and operation-status-unknown 503 gate outcomes.
 - [x] 2.9 Add bounded token and serialized-byte admission checks before history replay.
+- [x] 2.10 Make precreated account-health handling idempotent when terminal bookkeeping revisits a handled request.
 
 ## 3. Tests
 
@@ -26,6 +27,7 @@
 - [x] 3.7 Test the operation-status-unknown terminal state and redacted gate request log.
 - [x] 3.8 Test request-log metadata for retry-circuit suppression.
 - [x] 3.9 Test token and serialized-byte replay budget rejection without replay accounting.
+- [x] 3.10 Keep the settlement-ordering regression green with a handled request and one deferred health penalty.
 
 ## 4. Verification and release preparation
 

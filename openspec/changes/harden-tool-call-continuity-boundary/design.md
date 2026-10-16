@@ -64,6 +64,13 @@ that repeatedly preceded the 502/503 loop. A rejected replay is left
 unmarked, so the caller takes its existing fail-closed path rather than
 silently shrinking or re-dispatching the payload.
 
+## Decision: settlement health writes are idempotent
+
+The bridge uses `account_health_error_handled` as the request-local ownership
+marker for precreated health handling. A later terminal pass returns without
+adding another penalty when that marker is already set; the existing deferred
+queue remains responsible for one post-settlement drain.
+
 ## Failure modes
 
 - Matching tool-call context: request continues through the existing path.

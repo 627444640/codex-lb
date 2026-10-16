@@ -34161,14 +34161,22 @@ async def test_finalize_waits_for_settlement_when_keyed_health_penalties_are_que
     """A queued pre-created penalty makes the terminal settle ordering-sensitive:
     the finalizer must wait for settlement before the drain can write health,
     even when account_health_error_handled suppressed the terminal health flags."""
+    app_settings = _make_app_settings()
+    bridge_settings = SimpleNamespace(
+        **app_settings.model_dump(),
+        prefer_earlier_reset_accounts=False,
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: bridge_settings)
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    started_at = time.monotonic()
     request_state = proxy_service._WebSocketRequestState(
         request_id="req-wait-for-queued-penalty",
         model="gpt-5.5",
         service_tier=None,
         reasoning_effort=None,
         api_key_reservation=cast(Any, object()),
-        started_at=1.0,
+        started_at=started_at,
+        bridge_request_deadline=started_at + 60.0,
         awaiting_response_created=False,
         response_id="resp-wait-for-queued-penalty",
         response_event_count=1,
