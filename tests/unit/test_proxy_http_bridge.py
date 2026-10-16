@@ -5,6 +5,7 @@ import copy
 import inspect
 import json
 import logging
+import math
 import pickle
 import subprocess
 import time
@@ -1021,6 +1022,99 @@ def _make_bridge_session(
         last_used_at=1.0,
         idle_ttl_seconds=120.0,
     )
+
+
+def test_unknown_operation_terminal_quarantines_session_without_raw_operation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService.__new__(proxy_service.ProxyService)
+    session = _make_bridge_session(key_value="unknown-operation-terminal")
+    events: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        http_bridge_request_submit_module,
+        "_log_http_bridge_event",
+        lambda event, _key, **fields: events.append((event, fields)),
+    )
+    operation_id = "operation-secret-123"
+
+    service._terminate_http_bridge_unknown_operation(
+        session,
+        operation_id=operation_id,
+        retry_after_seconds=17,
+    )
+
+    assert session.closed is True
+    assert session.quarantined is True
+    assert session.upstream_control.reconnect_requested is True
+    assert session.upstream_control.retire_after_drain is True
+    entry = cast(Any, service)._http_bridge_quarantined_keys[session.key]
+    assert entry.reason == "operation_status_unknown"
+    assert math.isinf(entry.quarantined_until)
+    terminal = next(fields for event, fields in events if event == "operation_status_unknown_terminal")
+    assert operation_id not in str(terminal)
+    assert "operation_id_hash=" in terminal["detail"]
+    assert "retry_after_seconds=17" in terminal["detail"]
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_gate_request_log_records_operation_status_unknown_metadata() -> None:
+    service = proxy_service.ProxyService.__new__(proxy_service.ProxyService)
+    service._write_request_log = AsyncMock()
+    session = _make_bridge_session(key_value="gate-log")
+    request_state = _accepted_bridge_request_state(
+        request_id="req-operation-status-unknown",
+        session_id="session-gate-log",
+        connection_request_kind="normal",
+        useragent="codex-test/1.0",
+        useragent_group="codex-test",
+        client_ip="192.0.2.10",
+    )
+
+    await service._write_http_bridge_gate_request_log(
+        session,
+        request_state,
+        error_code="upstream_operation_status_unknown",
+        error_message="The previous response operation may still be running; retry after the cooldown.",
+        failure_phase="continuity",
+        failure_detail="operation_already_recorded_no_status_proof retry_after_seconds=17",
+        bridge_stage="operation_fence",
+    )
+
+    service._write_request_log.assert_awaited_once()
+    fields = service._write_request_log.await_args.kwargs
+    assert fields["request_id"] == "req-operation-status-unknown"
+    assert fields["error_code"] == "upstream_operation_status_unknown"
+    assert fields["upstream_status_code"] == 503
+    assert fields["upstream_error_code"] == "upstream_operation_status_unknown"
+    assert fields["failure_phase"] == "continuity"
+    assert fields["bridge_stage"] == "operation_fence"
+    assert fields["failure_detail"].endswith("retry_after_seconds=17")
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_gate_request_log_records_retry_circuit_metadata() -> None:
+    service = proxy_service.ProxyService.__new__(proxy_service.ProxyService)
+    service._write_request_log = AsyncMock()
+    session = _make_bridge_session(key_value="retry-circuit-gate-log")
+    request_state = _accepted_bridge_request_state(request_id="req-retry-circuit-gate")
+
+    await service._write_http_bridge_gate_request_log(
+        session,
+        request_state,
+        error_code="upstream_request_timeout",
+        error_message="HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly.",
+        failure_phase="bridge_admission",
+        failure_detail="hard_key_cooldown retry_after_seconds=23",
+        bridge_stage="retry_circuit",
+    )
+
+    fields = service._write_request_log.await_args.kwargs
+    assert fields["error_code"] == "upstream_request_timeout"
+    assert fields["upstream_status_code"] == 503
+    assert fields["failure_phase"] == "bridge_admission"
+    assert fields["bridge_stage"] == "retry_circuit"
+    assert fields["upstream_error_code"] == "upstream_request_timeout"
+    assert fields["failure_detail"].endswith("retry_after_seconds=23")
 
 
 def test_http_bridge_account_neutral_replay_rejects_namespaced_tool_call_history() -> None:
@@ -17593,6 +17687,7 @@ async def test_stream_via_http_bridge_owner_forward_recovery_injects_outputs_fro
     recovery_session = _make_owner_forward_recovery_session()
     recovery_session.last_completed_response_id = "resp_prev_1"
     recovery_session.last_pending_tool_calls = {"call_custom_shell": "custom_tool_call"}
+    recovery_session.last_pending_tool_calls_response_id = "resp_prev_1"
     input_items = [{"role": "user", "content": "continue"}]
 
     prepared_inputs = await _run_owner_forward_recovery_with_session(
@@ -17637,6 +17732,7 @@ async def test_stream_via_http_bridge_local_recovery_retry_keeps_injected_interr
     failing_session = _make_owner_forward_recovery_session()
     failing_session.last_completed_response_id = "resp_prev_1"
     failing_session.last_pending_tool_calls = {"call_custom_shell": "custom_tool_call"}
+    failing_session.last_pending_tool_calls_response_id = "resp_prev_1"
     retry_session = _make_owner_forward_recovery_session()
 
     prepared_inputs: list[Any] = []

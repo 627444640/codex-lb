@@ -41,6 +41,29 @@ hash, bridge-key hash, owner-proof outcome, and quarantine decision. Request log
 use `failure_phase=continuity` and an internal orphan-tool error code while
 redacting raw call ids and payloads.
 
+## Decision: operation status unknown is terminal for the current session
+
+An existing durable operation without upstream status proof is treated as an
+ambiguous dispatch. The bridge keeps its SQLite fence and client-owned anchor,
+then quarantines and retires only the current in-memory session before
+returning `503 upstream_operation_status_unknown`. This prevents the
+half-open/reconnect loop without pretending that the upstream operation failed.
+The same branch writes a request-log row with low-cardinality phase, stage, and
+retry-after detail. Its in-memory quarantine marker is terminal for that key
+instead of sharing the ordinary 600-second wedge TTL, so the same unknown
+operation cannot reappear on the next half-open interval; the bounded registry
+still provides an eviction limit.
+
+## Decision: replay budget uses existing payload policy
+
+History replay is admitted only when the added history is at most 128,000
+estimated tokens and the serialized request body is within the existing
+`upstream_response_create_max_bytes` limit (15 MiB by default). These limits
+allow the observed ~64k-token recovery while rejecting the ~315k-token replay
+that repeatedly preceded the 502/503 loop. A rejected replay is left
+unmarked, so the caller takes its existing fail-closed path rather than
+silently shrinking or re-dispatching the payload.
+
 ## Failure modes
 
 - Matching tool-call context: request continues through the existing path.

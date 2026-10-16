@@ -97,6 +97,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _release_http_bridge_unanchored_handoff,
 )
 from app.modules.proxy._service.http_bridge.quarantine import (
+    _quarantine_http_bridge_session,
     _record_http_bridge_quarantine_wedged_pending,
 )
 from app.modules.proxy._service.http_bridge.retry_circuit import (
@@ -555,6 +556,70 @@ def _request_kind_from_headers(headers: Mapping[str, str] | None) -> str:
 
 
 class _HTTPBridgeRequestSubmitMixin:
+    async def _write_http_bridge_gate_request_log(
+        self: Any,
+        session: _HTTPBridgeSession,
+        request_state: _WebSocketRequestState,
+        *,
+        error_code: str,
+        error_message: str,
+        failure_phase: str,
+        failure_detail: str,
+        bridge_stage: str,
+    ) -> None:
+        """Persist a pre-submit bridge gate failure for request-log visibility."""
+        request_id = request_state.request_log_id or request_state.request_id
+        await self._write_request_log(
+            account_id=session.account.id,
+            api_key=request_state.api_key,
+            request_id=request_id,
+            model=request_state.model,
+            latency_ms=max(0, int((_service_time().monotonic() - request_state.started_at) * 1000)),
+            status="error",
+            error_code=error_code,
+            error_message=error_message,
+            transport=_REQUEST_TRANSPORT_HTTP,
+            upstream_transport="websocket",
+            session_id=request_state.session_id,
+            failure_phase=failure_phase,
+            failure_detail=failure_detail,
+            upstream_status_code=503,
+            upstream_error_code=error_code,
+            bridge_stage=bridge_stage,
+            request_kind=request_state.connection_request_kind or "normal",
+            useragent=request_state.useragent,
+            useragent_group=request_state.useragent_group,
+            client_ip=request_state.client_ip,
+        )
+
+    def _terminate_http_bridge_unknown_operation(
+        self: Any,
+        session: _HTTPBridgeSession,
+        *,
+        operation_id: str,
+        retry_after_seconds: int,
+    ) -> None:
+        """Retire a session when an existing operation has no status proof.
+
+        The durable operation remains fenced in SQLite.  Only the in-memory
+        bridge session is quarantined and retired, so a later client request
+        cannot keep re-entering the same half-open operation through a new
+        socket.  The operation id is hashed in the low-cardinality event.
+        """
+        _quarantine_http_bridge_session(self, session, reason="operation_status_unknown")
+        session.closed = True
+        session.upstream_control.reconnect_requested = True
+        session.upstream_control.retire_after_drain = True
+        _log_http_bridge_event(
+            "operation_status_unknown_terminal",
+            session.key,
+            account_id=session.account.id,
+            model=session.request_model,
+            detail=(f"operation_id_hash={_hash_identifier(operation_id)} retry_after_seconds={retry_after_seconds}"),
+            cache_key_family=session.key.affinity_kind,
+            model_class=_extract_model_class(session.request_model) if session.request_model else None,
+        )
+
     @staticmethod
     def _http_bridge_clean_close_retry_max_count() -> int:
         configured = _HTTP_BRIDGE_CLEAN_CLOSE_RETRY_MAX_COUNT
@@ -970,6 +1035,17 @@ class _HTTPBridgeRequestSubmitMixin:
                 detail="hard_key_cooldown",
                 cache_key_family=session.key.affinity_kind,
                 model_class=_extract_model_class(session.request_model) if session.request_model else None,
+            )
+            await self._write_http_bridge_gate_request_log(
+                session,
+                request_state,
+                error_code="upstream_request_timeout",
+                error_message=(
+                    "HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly."
+                ),
+                failure_phase="bridge_admission",
+                failure_detail=f"hard_key_cooldown retry_after_seconds={retry_after_seconds}",
+                bridge_stage="retry_circuit",
             )
             raise ProxyResponseError(
                 503,
@@ -1412,6 +1488,22 @@ class _HTTPBridgeRequestSubmitMixin:
                     retry_after_seconds = max(
                         1,
                         math.ceil(await self._http_bridge_precreated_retry_cooldown_seconds(session)),
+                    )
+                    self._terminate_http_bridge_unknown_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        retry_after_seconds=retry_after_seconds,
+                    )
+                    await self._write_http_bridge_gate_request_log(
+                        session,
+                        request_state,
+                        error_code="upstream_operation_status_unknown",
+                        error_message="The previous response operation may still be running; retry after the cooldown.",
+                        failure_phase="continuity",
+                        failure_detail=(
+                            f"operation_already_recorded_no_status_proof retry_after_seconds={retry_after_seconds}"
+                        ),
+                        bridge_stage="operation_fence",
                     )
                     raise ProxyResponseError(
                         503,

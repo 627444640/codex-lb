@@ -36,6 +36,10 @@ continuity handling.
   internal bridge-forwarding headers out of upstream requests.
 - Add request/bridge telemetry and regression tests for matching, mismatch, and
   no-repeat behavior.
+- Retire sessions that reach the durable-operation status-unknown terminal and
+  make circuit-suppressed and operation-fenced 503s visible in request logs.
+- Bound full-history replay by extra tokens and the existing upstream payload
+  byte limit so a stale anchor cannot create an unbounded replay loop.
 
 ## Non-goals
 

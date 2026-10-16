@@ -11,6 +11,9 @@
 - [x] 2.4 Verify and enforce the upstream protocol-header allowlist at the HTTP bridge boundary; existing forwarding filters and tests cover internal metadata removal.
 - [x] 2.5 Emit redacted continuity decision telemetry for the orphan-tool terminal path.
 - [x] 2.6 Bind the in-memory pending-tool manifest to the response ID that produced it and reject injection when the manifest and current anchor differ.
+- [x] 2.7 Retire and quarantine the current session when an existing durable operation has no upstream status proof, preserving the durable fence and client-owned anchor.
+- [x] 2.8 Write request-log metadata for retry-circuit-suppressed and operation-status-unknown 503 gate outcomes.
+- [x] 2.9 Add bounded token and serialized-byte admission checks before history replay.
 
 ## 3. Tests
 
@@ -20,6 +23,9 @@
 - [x] 3.4 Use existing outbound-header tests proving internal forwarding headers are absent and required protocol/auth fields remain present.
 - [x] 3.5 Run focused unit tests and Ruff checks available in this environment.
 - [x] 3.6 Add a regression proving a pending-tool manifest from an older response cannot be injected into a newer anchor.
+- [x] 3.7 Test the operation-status-unknown terminal state and redacted gate request log.
+- [x] 3.8 Test request-log metadata for retry-circuit suppression.
+- [x] 3.9 Test token and serialized-byte replay budget rejection without replay accounting.
 
 ## 4. Verification and release preparation
 
