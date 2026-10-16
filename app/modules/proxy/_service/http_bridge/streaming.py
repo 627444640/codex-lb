@@ -742,7 +742,11 @@ def _http_bridge_interrupted_tool_outputs_input(
     # not inject the same synthetic output into the next retry.
     if session.quarantined:
         return None
-    if not session.last_pending_tool_calls or session.last_completed_response_id is None:
+    if (
+        not session.last_pending_tool_calls
+        or session.last_completed_response_id is None
+        or session.last_pending_tool_calls_response_id != session.last_completed_response_id
+    ):
         return None
     if payload.previous_response_id != session.last_completed_response_id:
         return None
@@ -2503,6 +2507,7 @@ class _HTTPBridgeStreamingMixin:
                         )
                         if durable_lookup.latest_response_id != session.last_completed_response_id:
                             session.last_pending_tool_calls = {}
+                            session.last_pending_tool_calls_response_id = None
                         session.last_completed_response_id = durable_lookup.latest_response_id
                         session.last_completed_response_account_id = durable_lookup.account_id
                         session.last_completed_input_count = durable_full_resend_anchor_count
@@ -2631,6 +2636,7 @@ class _HTTPBridgeStreamingMixin:
                 # last completed response; a durable anchor pointing elsewhere
                 # must not trigger interrupted-output injection.
                 session.last_pending_tool_calls = {}
+                session.last_pending_tool_calls_response_id = None
             session.last_completed_response_id = durable_lookup.latest_response_id
             # The durable anchor is owned by the durable session's account, which
             # may differ from this session's account after a failover. Record the

@@ -10,6 +10,7 @@
 - [x] 2.3 Preserve the existing fenced durable-anchor rules: never clear a client-supplied anchor or cross accounts.
 - [x] 2.4 Verify and enforce the upstream protocol-header allowlist at the HTTP bridge boundary; existing forwarding filters and tests cover internal metadata removal.
 - [x] 2.5 Emit redacted continuity decision telemetry for the orphan-tool terminal path.
+- [x] 2.6 Bind the in-memory pending-tool manifest to the response ID that produced it and reject injection when the manifest and current anchor differ.
 
 ## 3. Tests
 
@@ -18,6 +19,7 @@
 - [x] 3.3 Add tests for client-owned anchors, proxy-injected anchors, owner mismatch, and no account switch (existing continuity tests retained; new quarantine path is session-local).
 - [x] 3.4 Use existing outbound-header tests proving internal forwarding headers are absent and required protocol/auth fields remain present.
 - [x] 3.5 Run focused unit tests and Ruff checks available in this environment.
+- [x] 3.6 Add a regression proving a pending-tool manifest from an older response cannot be injected into a newer anchor.
 
 ## 4. Verification and release preparation
 

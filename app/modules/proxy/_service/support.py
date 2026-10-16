@@ -1333,6 +1333,7 @@ class _HTTPBridgeSession:
     last_completed_response_account_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
     last_pending_tool_calls: dict[str, str] = field(default_factory=dict)
+    last_pending_tool_calls_response_id: str | None = None
     durable_session_id: str | None = None
     durable_owner_epoch: int | None = None
     upstream_reader: asyncio.Task[None] | None = None
