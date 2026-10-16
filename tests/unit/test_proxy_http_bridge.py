@@ -34202,6 +34202,30 @@ def test_http_bridge_quarantined_session_does_not_inject_interrupted_tool_output
     )
 
 
+def test_http_bridge_pending_tool_manifest_must_match_anchor_response() -> None:
+    session = _make_bridge_session(key_value="mismatched-tool-context")
+    session.last_completed_response_id = "resp-current"
+    session.last_pending_tool_calls = {"call_orphan": "custom_tool_call"}
+    session.last_pending_tool_calls_response_id = "resp-old"
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "",
+            "previous_response_id": "resp-current",
+            "input": [{"role": "user", "content": "continue"}],
+        }
+    )
+
+    assert (
+        http_bridge_streaming_module._http_bridge_interrupted_tool_outputs_input(
+            session,
+            payload=payload,
+            request_id="req-mismatched-tool-context",
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_process_http_bridge_orphan_custom_tool_output_quarantines_session(
     monkeypatch: pytest.MonkeyPatch,

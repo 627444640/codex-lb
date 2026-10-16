@@ -2475,6 +2475,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             and is_missing_tool_output_event
         ):
             session.last_pending_tool_calls.clear()
+            session.last_pending_tool_calls_response_id = None
             _quarantine_http_bridge_session(self, session, reason="tool_call_context_mismatch")
             _log_http_bridge_event(
                 "tool_call_context_mismatch",
@@ -3161,6 +3162,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 # (interrupted turn) can receive synthetic interrupted
                 # outputs instead of an upstream missing-tool-output 400.
                 session.last_pending_tool_calls = dict(terminal_request_state.pending_tool_call_types)
+                session.last_pending_tool_calls_response_id = response_id
             # Prefix trimming is only meaningful for list-shaped inputs, so
             # keep the input-count / fingerprint update scoped to that path.
             if terminal_request_state.input_item_count > 0:
