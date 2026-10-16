@@ -30,6 +30,7 @@ from app.modules.proxy._service.support import (
 from app.modules.proxy._service.websocket.helpers import _history_replay_owner_after_exclusion
 from app.modules.proxy.conversation_history import (
     ConversationHistoryCache,
+    current_history_replay,
     maybe_apply_model_history_replay,
     reset_history_replay_context,
 )
@@ -118,6 +119,68 @@ def test_replay_rebuilds_history_once_on_the_same_account(tmp_path: Path) -> Non
         file_pinned=False,
     )
     assert visible is None
+    cache.close()
+
+
+def test_replay_budget_rejects_excess_extra_tokens_before_recording(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache = _cache(tmp_path, batch_limit=1, replay_max_extra_tokens=1, replay_max_bytes=1024**3)
+    cache.record_completed_turn(
+        request_body=_turn("cached-history"),
+        response_id="resp-budget-token",
+        output_items=_output("cached-output"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        replay = cache.plan_replay(
+            request_body=_turn("next-turn", previous="resp-budget-token"),
+            reason="previous_response_not_found",
+            downstream_visible=False,
+            already_replayed=False,
+            owner_blocked=False,
+            file_pinned=False,
+            request_id="req-budget-token",
+        )
+
+    assert replay is None
+    assert cache.stats().hits == 0
+    assert cache.stats().replays == 0
+    assert current_history_replay() is None
+    assert "Conversation history replay skipped reason=budget" in caplog.text
+    assert "extra_token_limit=1" in caplog.text
+    cache.close()
+
+
+def test_replay_budget_rejects_serialized_body_bytes_before_recording(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cache = _cache(tmp_path, batch_limit=1, replay_max_extra_tokens=128_000, replay_max_bytes=1)
+    cache.record_completed_turn(
+        request_body=_turn("cached-history"),
+        response_id="resp-budget-bytes",
+        output_items=_output("cached-output"),
+    )
+
+    with caplog.at_level(logging.INFO):
+        replay = cache.plan_replay(
+            request_body=_turn("next-turn", previous="resp-budget-bytes"),
+            reason="stream_incomplete",
+            downstream_visible=False,
+            already_replayed=False,
+            owner_blocked=False,
+            file_pinned=False,
+            request_id="req-budget-bytes",
+        )
+
+    assert replay is None
+    assert cache.stats().hits == 0
+    assert cache.stats().replays == 0
+    assert current_history_replay() is None
+    assert "Conversation history replay skipped reason=budget" in caplog.text
+    assert "serialized_byte_limit=1" in caplog.text
     cache.close()
 
 

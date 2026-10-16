@@ -35,6 +35,7 @@ _HTTP_BRIDGE_QUARANTINE_MAX_ENTRIES = 1024
 
 _HTTP_BRIDGE_QUARANTINE_WEDGED_REATTACH_REASON = "reattach_missing_response_created"
 _HTTP_BRIDGE_QUARANTINE_REPEATED_EVENTLESS_REASON = "repeated_eventless_timeout"
+_HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON = "operation_status_unknown"
 
 
 @dataclass(slots=True)
@@ -123,7 +124,13 @@ def _quarantine_http_bridge_session(service: Any, session: _HTTPBridgeSession, *
     entry = registry.setdefault(session.key, _HTTPBridgeQuarantineEntry())
     already_quarantined = entry.quarantined_until > now
     entry.generation += 1
-    entry.quarantined_until = max(entry.quarantined_until, now + _HTTP_BRIDGE_QUARANTINE_TTL_SECONDS)
+    if reason == _HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON:
+        # An unknown durable operation is an ambiguous dispatch, not a
+        # transient socket wedge. Letting this marker expire with the retry
+        # circuit would recreate the same operation every cooldown interval.
+        entry.quarantined_until = float("inf")
+    else:
+        entry.quarantined_until = max(entry.quarantined_until, now + _HTTP_BRIDGE_QUARANTINE_TTL_SECONDS)
     entry.last_touched_monotonic = now
     entry.reason = reason
     _prune_http_bridge_quarantine_registry(registry, now)

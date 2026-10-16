@@ -50,6 +50,11 @@ _BATCH_LIMIT = 32
 _MAINTENANCE_INTERVAL_SECONDS = 30.0
 _PAGE_BYTES = 4096
 _TOKEN_CHARS = 4
+# A history replay is a recovery aid, not an unbounded way to resend a
+# conversation. Keep this guard fixed so a continuity failure cannot turn into
+# a very large repeated request without an explicit code change.
+_HISTORY_REPLAY_MAX_EXTRA_TOKENS = 128_000
+_HISTORY_REPLAY_DEFAULT_MAX_BYTES = 15 * 1024 * 1024
 _STORE_DB_NAME = "store.db"
 _CACHE_DB_NAME = "conversation_history.db"
 
@@ -178,6 +183,8 @@ class ConversationHistoryCache:
         batch_limit: int = _BATCH_LIMIT,
         start_maintenance: bool = False,
         disk_free: int | None = None,
+        replay_max_extra_tokens: int = _HISTORY_REPLAY_MAX_EXTRA_TOKENS,
+        replay_max_bytes: int = _HISTORY_REPLAY_DEFAULT_MAX_BYTES,
     ) -> None:
         if path.name == _STORE_DB_NAME:
             raise ValueError("conversation history cache must not use store.db")
@@ -187,6 +194,8 @@ class ConversationHistoryCache:
         self.idle_ttl_seconds = max(1.0, float(idle_ttl_seconds))
         self.min_free_disk_bytes = max(0, int(min_free_disk_bytes))
         self._batch_limit = max(1, int(batch_limit))
+        self.replay_max_extra_tokens = max(1, int(replay_max_extra_tokens))
+        self.replay_max_bytes = max(1, int(replay_max_bytes))
         self._settings_enabled = bool(enabled)
         self._disabled_reason: str | None = None if enabled else "disabled"
         self._disk_free_override = disk_free
@@ -349,13 +358,23 @@ class ConversationHistoryCache:
             history = self._history_items_locked(previous)
             if not history:
                 return None
-            self._hits += 1
-            self._touch_locked(self._response_index.get(previous))
             full = current if _starts_with(current, history) else [*history, *current]
             extra = max(0, _estimate_tokens(full) - _estimate_tokens(current))
             body = dict(request_body)
             body["input"] = full
             body.pop("previous_response_id", None)
+            serialized_bytes = len(json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
+            if extra > self.replay_max_extra_tokens or serialized_bytes > self.replay_max_bytes:
+                logger.info(
+                    "Conversation history replay skipped reason=budget reason_code=%s "
+                    "extra_tokens=%s extra_token_limit=%s serialized_bytes=%s serialized_byte_limit=%s",
+                    reason,
+                    extra,
+                    self.replay_max_extra_tokens,
+                    serialized_bytes,
+                    self.replay_max_bytes,
+                )
+                return None
             switch = owner_blocked or reason in {
                 "owner_unavailable",
                 "admission_failure",
@@ -365,6 +384,8 @@ class ConversationHistoryCache:
                 return None
             if switch and _optional_str(body.get("conversation")):
                 body["conversation"] = None
+            self._hits += 1
+            self._touch_locked(self._response_index.get(previous))
             self._replays += 1
             replay = HistoryReplay(request_body=body, reason=reason, extra_tokens=extra, switch_account=switch)
         logger.info(
@@ -825,6 +846,11 @@ def get_conversation_history_cache() -> ConversationHistoryCache:
             )
             idle = _settings_int(settings, "conversation_history_cache_idle_ttl_seconds", 1800)
             free = _settings_int(settings, "conversation_history_cache_min_free_disk_bytes", 512 * 1024 * 1024)
+            replay_max_bytes = _settings_int(
+                settings,
+                "upstream_response_create_max_bytes",
+                _HISTORY_REPLAY_DEFAULT_MAX_BYTES,
+            )
             data_dir = getattr(settings, "data_dir", None)
             path = Path(data_dir) / _CACHE_DB_NAME if isinstance(data_dir, Path) else Path(_CACHE_DB_NAME)
             _CACHE = ConversationHistoryCache(
@@ -834,6 +860,7 @@ def get_conversation_history_cache() -> ConversationHistoryCache:
                 conversation_max_bytes=conversation_max,
                 idle_ttl_seconds=idle,
                 min_free_disk_bytes=free,
+                replay_max_bytes=replay_max_bytes,
                 start_maintenance=enabled,
             )
         return _CACHE
