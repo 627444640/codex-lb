@@ -22,6 +22,32 @@ Validation completed on 2026-10-19 (Asia/Taipei) on
   spec/context sync, requirement headings, task checkboxes and source/spec
   paths were checked manually; strict CLI validation remains unverified.
 
-No runtime deployment or restart was performed. Installed runtime parity,
-live LAN page readback and authenticated real-model generation remain outside
-this source-only change.
+## Deployment and live readback
+
+Deployment completed on 2026-10-19 (Asia/Taipei) from source merge commit
+`b84dea8c` into the independent runtime `/Users/a123/codex-lb-monitor`.
+
+- The five changed monitor files were backed up under the private rollout
+  snapshot `runtime/rollouts/status-quota-semantics-20261019T123112+0800/before`
+  before replacement. Runtime/source SHA-1 hashes matched for collector,
+  store, control, overview HTML and status JavaScript.
+- Only `com.local.codex-lb-monitor` was restarted. LaunchAgent state returned
+  `running` with a new process; the core LB and existing Caddy service were not
+  restarted.
+- Loopback `/health`, loopback `/api/status`, LAN HTTPS `/`, and LAN HTTPS
+  `/api/status` all returned HTTP 200. Loopback and LAN selected API fields
+  matched, and the LAN-served `static/status.js` hash matched source.
+- The live public API returned `status=operational`, `stale=false`, weighted
+  capacity `32.0%`, quota `operational` with detail `仍有可路由额度`, and a
+  separate `quota_warning=degraded` with detail `部分账号余量低于安全线` and
+  `advisory=true`. The quota component did not return `额度不足`.
+- The authenticated loopback Settings response returned HTTP 200 with a
+  sanitized summary: current capacity about `31.5%`, lowest remaining `0.0%`,
+  `active_accounts=2`, `quota_ready=1`, `quota_exhausted=1`, routability
+  `operational`, and low-quota status `degraded`. The public response still
+  omitted `pool`, account counts and account identifiers.
+
+The live account pool was at 32% during this readback rather than the earlier
+41% snapshot; the deployment verified the same semantic path without changing
+or fabricating quota data. Authenticated real-model generation remains outside
+this deployment check.
