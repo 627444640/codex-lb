@@ -1465,6 +1465,25 @@
   "statusPage": {
     "title": "邮件提醒与公告",
     "description": "在此统一管理通知；独立状态页只展示已发布的信息。",
+    "quota": {
+      "title": "账号池额度详情",
+      "description": "分别查看池级容量、可路由状态和低余量预警。",
+      "stale": "最新额度采样已过期，已隐藏派生数值。",
+      "capacity": "加权 7 日容量",
+      "routability": "可路由状态",
+      "lowest": "最低剩余",
+      "accounts": "额度就绪账号",
+      "ready": "可用",
+      "exhausted": "已耗尽：{{value}}",
+      "threshold": "预警阈值：{{value}}",
+      "warning": "低余量预警：{{value}}",
+      "states": {
+        "operational": "可用",
+        "degraded": "余量偏低",
+        "outage": "无可用额度",
+        "unknown": "待核对"
+      }
+    },
     "emailEnabled": "启用邮件提醒",
     "emailHelp": "异常确认及恢复时发送；相同故障持续时不重复通知。",
     "host": "SMTP 服务器",

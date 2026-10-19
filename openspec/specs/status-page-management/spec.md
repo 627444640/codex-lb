@@ -30,7 +30,7 @@ The Settings backend SHALL use a private configuration file under the LB data di
 - **AND** reads report only whether a password is configured
 
 ### Requirement: Public status uses reduced capacity and daily availability
-The independent public response and display SHALL expose only the capacity-weighted remaining seven-day percentage, never account counts or per-account capacity-readiness counters. The display SHALL render daily probe availability as a calendar heatmap with Asia/Taipei dates, distinguish days without valid samples, center announcements in a full-width top row, and place incident history in a full-width bottom section.
+The independent public response and display SHALL expose the capacity-weighted remaining seven-day percentage plus privacy-safe aggregate component states, never account counts, account identifiers, or per-account capacity-readiness counters. The quota component SHALL describe routability, while a separate advisory MAY describe low reserve without changing page-level service health. The display SHALL render daily probe availability as a calendar heatmap with Asia/Taipei dates, distinguish days without valid samples, center announcements in a full-width top row, and place incident history in a full-width bottom section.
 
 #### Scenario: Capacity data is incomplete
 - **WHEN** an eligible account's seven-day sample is missing or stale, or its plan weight is unknown
@@ -39,6 +39,21 @@ The independent public response and display SHALL expose only the capacity-weigh
 #### Scenario: A day has no observations
 - **WHEN** no valid readiness probes exist for a calendar day
 - **THEN** the heatmap marks the day as unknown and does not invent a normal rate
+
+### Requirement: Operator quota detail is private and sanitized
+The loopback-authenticated monitor control response and the dashboard Settings
+view SHALL expose sanitized aggregate quota detail including routability,
+active, ready, unknown and exhausted counts, the lowest remaining value,
+warning threshold, collected time and stale state. They MUST NOT expose account
+identifiers, plan rows, raw source records or credentials. Stale data SHALL
+clear derived numeric values.
+
+#### Scenario: Administrator reviews a low-reserve pool
+- **WHEN** the weighted pool capacity is 41%, the lowest known account value is
+  13%, and two accounts remain ready
+- **THEN** Settings shows those aggregate values as separate capacity,
+  routability and low-reserve signals
+- **AND** the public response remains free of account counts and identifiers
 
 ### Requirement: Administrators manage troubleshooting content
 The system SHALL allow existing dashboard administrators to list, search, create, edit, order, publish, withdraw, delete and restore structured troubleshooting guides in Settings. Reads and mutations MUST use the existing administrator-only service control channel. Structured content SHALL contain error code, title, signature, scope, cause, ordered solutions, limitations and an optional HTTP(S) address. No raw HTML SHALL be interpreted. Mutations of existing guides MUST require the current revision and return a conflict when it is stale.

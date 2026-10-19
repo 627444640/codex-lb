@@ -22,9 +22,25 @@ export const AnnouncementSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+export const StatusQuotaSchema = z.object({
+  stale: z.boolean(),
+  collectedAt: z.string().nullable(),
+  routability: z.enum(["operational", "outage", "unknown"]),
+  routabilityDetail: z.string(),
+  lowQuotaStatus: z.enum(["operational", "degraded", "unknown"]),
+  lowQuotaThreshold: z.number(),
+  lowestRemainingPercent: z.number().nullable(),
+  activeAccounts: z.number().nullable(),
+  quotaReady: z.number().nullable(),
+  quotaUnknown: z.number().nullable(),
+  quotaExhausted: z.number().nullable(),
+  weeklyRemainingPercent: z.number().nullable(),
+  weeklyNextResetAt: z.string().nullable(),
+});
 export const StatusPageSettingsSchema = z.object({
   available: z.boolean(),
   email: StatusEmailSchema.nullable(),
+  quota: StatusQuotaSchema.nullable(),
   notices: z.array(AnnouncementSchema),
   events: z.array(
     z.object({
@@ -49,6 +65,7 @@ export type StatusEmailUpdate = Omit<StatusEmail, "passwordConfigured"> & {
   password?: string;
 };
 export type Announcement = z.infer<typeof AnnouncementSchema>;
+export type StatusQuota = z.infer<typeof StatusQuotaSchema>;
 export type AnnouncementUpdate = Omit<
   Announcement,
   "id" | "createdAt" | "updatedAt"
