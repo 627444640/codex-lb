@@ -1459,5 +1459,26 @@
   "dashboard.generationTpsStatus.invalid_sample": "TPS 없음: 시간 또는 사용량 값이 일치하지 않습니다.",
   "dashboard.generationTpsStatus.incomplete": "TPS 없음: 요청이 성공적으로 완료되지 않았습니다.",
   "reports.charts.tpsSamples": "유효 표본 {{count}}개 · 관측된 출력 속도 추정치",
-  "reports.charts.noQualifiedSpeedSamples": "유효한 출력 속도 표본이 없습니다. 기존 방식 추정치, 미완료 및 부족한 표본은 제외됩니다."
+  "reports.charts.noQualifiedSpeedSamples": "유효한 출력 속도 표본이 없습니다. 기존 방식 추정치, 미완료 및 부족한 표본은 제외됩니다.",
+  "statusPage": {
+    "quota": {
+      "title": "계정 풀 할당량 상세",
+      "description": "용량, 라우팅 가능 여부와 낮은 잔여량 경고를 분리해 표시합니다.",
+      "stale": "최신 할당량 표본이 오래되어 파생 값을 숨겼습니다.",
+      "capacity": "가중 7일 용량",
+      "routability": "라우팅 가능 여부",
+      "lowest": "최저 잔여량",
+      "accounts": "준비된 계정",
+      "ready": "사용 가능",
+      "exhausted": "소진됨: {{value}}",
+      "threshold": "경고 임계값: {{value}}",
+      "warning": "낮은 잔여량 경고: {{value}}",
+      "states": {
+        "operational": "정상",
+        "degraded": "잔여량 낮음",
+        "outage": "사용 가능한 할당량 없음",
+        "unknown": "알 수 없음"
+      }
+    }
+  }
 }

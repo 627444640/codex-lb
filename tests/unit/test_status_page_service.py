@@ -81,6 +81,45 @@ async def test_private_bridge_serialization_and_redacted_errors(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_get_settings_parses_sanitized_quota_summary(tmp_path, monkeypatch):
+    config = connection(tmp_path)
+    real_client = httpx.AsyncClient
+    payload = {
+        "available": True,
+        "email": None,
+        "quota": {
+            "stale": False,
+            "collected_at": "2026-10-19T04:00:00+00:00",
+            "routability": "operational",
+            "routability_detail": "仍有可路由额度",
+            "low_quota_status": "degraded",
+            "low_quota_threshold": 20,
+            "lowest_remaining_percent": 13,
+            "active_accounts": 2,
+            "quota_ready": 2,
+            "quota_unknown": 0,
+            "quota_exhausted": 0,
+            "weekly_remaining_percent": 41,
+            "weekly_next_reset_at": "2026-10-21T04:00:00+00:00",
+        },
+        "notices": [],
+        "events": [],
+    }
+
+    def handler(request):
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(
+        "app.modules.status_page.service.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    result = await StatusPageService(config).get_settings()
+    assert result.quota is not None
+    assert result.quota.lowest_remaining_percent == 13
+    assert result.quota.quota_ready == 2
+
+
+@pytest.mark.asyncio
 async def test_redirects_do_not_forward_control_credential(tmp_path, monkeypatch):
     real_client = httpx.AsyncClient
     calls = []

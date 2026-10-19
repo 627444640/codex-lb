@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Megaphone } from "lucide-react";
+import { Bell, Gauge, Megaphone } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -27,6 +27,7 @@ import type {
   AnnouncementUpdate,
   StatusEmail,
   StatusEmailUpdate,
+  StatusQuota,
 } from "@/features/settings/status-page-api";
 
 const QUERY_KEY = ["settings", "status-page"];
@@ -42,6 +43,67 @@ const displayTime = (iso: string) =>
     minute: "2-digit",
     hour12: false,
   }).format(new Date(iso));
+const displayPercent = (value: number | null) =>
+  value === null ? "—" : `${Number(value.toFixed(2))}%`;
+
+function QuotaSummary({ quota }: { quota: StatusQuota }) {
+  const { t } = useTranslation();
+  const value = (number: number | null) =>
+    number === null ? "—" : number.toLocaleString();
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+      <div className="flex items-center gap-2">
+        <Gauge className="h-4 w-4" />
+        <h3 className="text-sm font-semibold">{t("statusPage.quota.title")}</h3>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {quota.stale
+          ? t("statusPage.quota.stale")
+          : t("statusPage.quota.description")}
+      </p>
+      <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <p className="text-muted-foreground">{t("statusPage.quota.capacity")}</p>
+          <p className="mt-1 font-medium">
+            {displayPercent(quota.weeklyRemainingPercent)}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">{t("statusPage.quota.routability")}</p>
+          <p className="mt-1 font-medium">
+            {t(`statusPage.quota.states.${quota.routability}`)}
+          </p>
+          <p className="mt-1 text-muted-foreground">{quota.routabilityDetail}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">{t("statusPage.quota.lowest")}</p>
+          <p className="mt-1 font-medium">
+            {displayPercent(quota.lowestRemainingPercent)}
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            {t("statusPage.quota.threshold", {
+              value: displayPercent(quota.lowQuotaThreshold),
+            })}
+          </p>
+        </div>
+        <div>
+          <p className="text-muted-foreground">{t("statusPage.quota.accounts")}</p>
+          <p className="mt-1 font-medium">
+            {value(quota.quotaReady)} / {value(quota.activeAccounts)} {t("statusPage.quota.ready")}
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            {t("statusPage.quota.exhausted", { value: value(quota.quotaExhausted) })}
+          </p>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {t("statusPage.quota.warning", {
+          value: t(`statusPage.quota.states.${quota.lowQuotaStatus}`),
+        })}
+      </p>
+    </div>
+  );
+}
 
 function EmailForm({
   email,
@@ -425,6 +487,7 @@ export function StatusPageSettings() {
       ) : null}
       {data?.available && data.email ? (
         <>
+          {data.quota ? <QuotaSummary quota={data.quota} /> : null}
           <EmailForm
             key={JSON.stringify(data.email)}
             email={data.email}

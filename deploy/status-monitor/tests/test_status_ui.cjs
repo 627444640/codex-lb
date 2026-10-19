@@ -14,7 +14,8 @@ function payload() {
     components: [
       { id: 'gateway', name: '网关', status: 'operational', detail: '就绪检查通过' },
       { id: 'source', name: '监控数据', status: 'operational', detail: '只读采集正常' },
-      { id: 'quota', name: '号池额度', status: 'operational', detail: '近期额度样本正常' },
+      { id: 'quota', name: '可路由状态', status: 'operational', detail: '仍有可路由额度' },
+      { id: 'quota_warning', name: '低余量预警', status: 'degraded', detail: '部分账号余量低于安全线', advisory: true },
       { id: 'requests', name: '真实模型请求', status: 'unknown', detail: '暂无真实模型请求样本，业务质量待调用后确认' },
     ],
     requests: { total: 0, errors: 0, successes: 0, cancelled: 0, error_percent: null, models: [] },
@@ -44,6 +45,8 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   assert.equal(meter.getAttribute('role'), 'progressbar');
   assert.equal(meter.getAttribute('aria-valuenow'), '95.5');
   assert.equal(dom.window.document.querySelector('#status-title').textContent, '基础服务运行正常');
+  assert.equal(dom.window.document.querySelector('.component-status.degraded').textContent, '低余量预警');
+  assert.match(dom.window.document.querySelector('#components').textContent, /部分账号余量低于安全线/);
   assert.match(dom.window.document.querySelector('#request-note').textContent, /暂无真实模型请求样本/);
 
   current = { ...payload(), capacity: { weekly_remaining_percent: 45, weekly_next_reset_at: 1791046713 } };
@@ -56,4 +59,20 @@ test('capacity renders as accessible energy blocks and idle copy', async t => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(meter.classList.contains('critical'), true);
   assert.equal(dom.window.document.querySelector('#weekly-percent').classList.contains('critical'), true);
+
+  current = {
+    ...payload(),
+    status: 'outage',
+    components: payload().components.map(component =>
+      component.id === 'quota'
+        ? { ...component, status: 'outage', detail: '额度不足' }
+        : component.id === 'quota_warning'
+          ? { ...component, status: 'degraded', detail: '部分账号额度已耗尽或余量偏低' }
+          : component,
+    ),
+  };
+  dom.window.document.querySelector('#refresh').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(dom.window.document.querySelector('#status-title').textContent, '检测到服务异常');
+  assert.match(dom.window.document.querySelector('#components').textContent, /额度不足/);
 });

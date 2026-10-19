@@ -216,6 +216,49 @@ def read_source(settings: Settings, now: float):
         conn.close()
 
 
+def quota_components(pool, settings):
+    """Classify routability separately from a low-reserve advisory."""
+    if not pool["active"] or (pool["quota_exhausted"] and not pool["quota_ready"] and not pool["quota_unknown"]):
+        routability = "outage"
+        routability_detail = "额度不足"
+    elif pool["quota_ready"]:
+        routability = "operational"
+        routability_detail = "仍有可路由额度"
+    else:
+        routability = "unknown"
+        routability_detail = "可路由状态待核对"
+
+    low_reserve = pool["quota_exhausted"] > 0 or (
+        pool["lowest_remaining_percent"] is not None and pool["lowest_remaining_percent"] < settings.low_quota_percent
+    )
+    warning_status = "degraded" if low_reserve else "operational"
+    if pool["quota_unknown"] and not low_reserve:
+        warning_status = "unknown"
+    if low_reserve and pool["quota_exhausted"]:
+        warning_detail = "部分账号额度已耗尽或余量偏低" if pool["quota_ready"] else "账号额度已耗尽或余量偏低"
+    elif low_reserve:
+        warning_detail = "部分账号余量低于安全线"
+    elif warning_status == "unknown":
+        warning_detail = "部分账号余量未知或过期"
+    else:
+        warning_detail = "未发现低余量账号"
+    return (
+        {
+            "id": "quota",
+            "name": "可路由状态",
+            "status": routability,
+            "detail": routability_detail,
+        },
+        {
+            "id": "quota_warning",
+            "name": "低余量预警",
+            "status": warning_status,
+            "detail": warning_detail,
+            "advisory": True,
+        },
+    )
+
+
 def probe(check):
     start = time.monotonic()
     try:
@@ -253,33 +296,7 @@ def collect(settings: Settings, now=None, probe_fn=probe):
         result.update(read_source(settings, now))
         components.append({"id": "source", "name": "监控数据", "status": "operational", "detail": "只读采集正常"})
         pool, requests = result["pool"], result["requests"]
-        quota_status = (
-            "outage"
-            if not pool["active"] or (pool["quota_exhausted"] and not pool["quota_ready"] and not pool["quota_unknown"])
-            else (
-                "unknown"
-                if pool["quota_unknown"]
-                else "degraded"
-                if pool["quota_exhausted"]
-                or (
-                    pool["lowest_remaining_percent"] is not None
-                    and pool["lowest_remaining_percent"] < settings.low_quota_percent
-                )
-                else "operational"
-            )
-        )
-        components.append(
-            {
-                "id": "quota",
-                "name": "号池额度",
-                "status": quota_status,
-                "detail": "额度未知或过期"
-                if quota_status == "unknown"
-                else "额度不足"
-                if quota_status in {"degraded", "outage"}
-                else "近期额度样本正常",
-            }
-        )
+        components.extend(quota_components(pool, settings))
         req_status = (
             "unknown"
             if not requests["total"] or (not requests["successes"] and not requests["errors"])
@@ -311,7 +328,14 @@ def collect(settings: Settings, now=None, probe_fn=probe):
         components.extend(
             [
                 {"id": "source", "name": "监控数据", "status": "unknown", "detail": "采集暂不可用"},
-                {"id": "quota", "name": "号池额度", "status": "unknown", "detail": "等待采集恢复"},
+                {"id": "quota", "name": "可路由状态", "status": "unknown", "detail": "等待采集恢复"},
+                {
+                    "id": "quota_warning",
+                    "name": "低余量预警",
+                    "status": "unknown",
+                    "detail": "等待采集恢复",
+                    "advisory": True,
+                },
                 {"id": "requests", "name": "真实模型请求", "status": "unknown", "detail": "等待采集恢复"},
             ]
         )
@@ -319,7 +343,7 @@ def collect(settings: Settings, now=None, probe_fn=probe):
     statuses = [
         c["status"]
         for c in components
-        if not (idle_request_unknown and c["id"] == "requests" and c["status"] == "unknown")
+        if not c.get("advisory") and not (idle_request_unknown and c["id"] == "requests" and c["status"] == "unknown")
     ]
     result["status"] = next((s for s in ("outage", "degraded", "unknown") if s in statuses), "operational")
     return result

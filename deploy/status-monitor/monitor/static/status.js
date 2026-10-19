@@ -32,7 +32,7 @@ function render(s){
   const weeklyReset=s.capacity?.weekly_next_reset_at;
   $("weekly-reset").textContent=weeklyReset==null?"下一次重置：—":`下一次重置：${date(weeklyReset)}`;
   $("components").replaceChildren();
-  for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`),componentLabel=c.id==="requests"&&c.status==="unknown"&&idle?"无样本":labels[c.status];main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(componentLabel));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
+  for(const c of s.components||[]){const row=el("div","component-row"),main=el("div","component-main"),state=el("span",`component-status ${c.status}`),componentLabel=c.id==="requests"&&c.status==="unknown"&&idle?"无样本":c.id==="quota_warning"&&c.status==="degraded"?"低余量预警":labels[c.status];main.append(el("div","component-name",c.name),el("div","component-detail",`${c.detail}${c.latency_ms!=null?` · ${Math.round(c.latency_ms)} ms`:""}`));state.append(el("i","status-dot"),document.createTextNode(componentLabel));row.append(el("span","component-symbol",{gateway:"⇄",source:"▤",quota:"◴",quota_warning:"△",requests:"↗"}[c.id]||"◎"),main,state);$("components").append(row);}
   if(!s.components?.length)$("components").append(el("p","empty-copy","等待健康检查"));
   const h=s.history||{days:[],samples:0};
   $("readiness-percent").textContent=percent(h.readiness_percent);

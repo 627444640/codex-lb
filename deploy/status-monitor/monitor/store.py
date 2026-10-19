@@ -134,7 +134,11 @@ class Store:
     def _record_daily(conn, snapshot):
         at = snapshot["collected_at"]
         day = datetime.fromtimestamp(at, TAIPEI).date().isoformat()
-        checks = [c for c in snapshot["components"] if c["id"] not in {"source", "quota", "requests"}]
+        checks = [
+            c
+            for c in snapshot["components"]
+            if c["id"] not in {"source", "quota", "requests"} and not c.get("advisory")
+        ]
         observed = int(bool(checks) and all(c["status"] != "unknown" for c in checks))
         healthy = int(bool(observed) and all(c["status"] == "operational" for c in checks))
         conn.execute(
@@ -149,6 +153,9 @@ class Store:
         now = snapshot["collected_at"]
         for component in snapshot["components"]:
             key, status = component["id"], component["status"]
+            if component.get("advisory"):
+                conn.execute("UPDATE alert_state SET failures=0,recoveries=0 WHERE component=?", (key,))
+                continue
             if key in {"quota", "requests"} and not source_ok:
                 conn.execute("UPDATE alert_state SET failures=0,recoveries=0 WHERE component=?", (key,))
                 continue
@@ -206,6 +213,64 @@ class Store:
         with self.db() as conn:
             row = conn.execute("SELECT payload FROM snapshots ORDER BY collected_at DESC,id DESC LIMIT 1").fetchone()
         return json.loads(row["payload"]) if row else None
+
+    def operator_quota(self, now=None):
+        now = time.time() if now is None else now
+        snapshot = self.latest()
+        stale = not snapshot or now - snapshot["collected_at"] > max(3 * self.settings.poll_seconds, 120)
+        threshold = self.settings.low_quota_percent
+        if stale:
+            return {
+                "stale": True,
+                "collected_at": snapshot["collected_at"] if snapshot else None,
+                "routability": "unknown",
+                "routability_detail": "采样已过期" if snapshot else "等待首次采样",
+                "low_quota_status": "unknown",
+                "low_quota_threshold": threshold,
+                "lowest_remaining_percent": None,
+                "active_accounts": None,
+                "quota_ready": None,
+                "quota_unknown": None,
+                "quota_exhausted": None,
+                "weekly_remaining_percent": None,
+                "weekly_next_reset_at": None,
+            }
+        pool = snapshot.get("pool")
+        components = snapshot.get("components") or []
+        quota = next((c for c in components if c.get("id") == "quota"), None)
+        warning = next((c for c in components if c.get("id") == "quota_warning"), None)
+        if not isinstance(pool, dict) or quota is None or warning is None:
+            return {
+                "stale": False,
+                "collected_at": snapshot["collected_at"],
+                "routability": "unknown",
+                "routability_detail": "可路由状态待核对",
+                "low_quota_status": "unknown",
+                "low_quota_threshold": threshold,
+                "lowest_remaining_percent": None,
+                "active_accounts": None,
+                "quota_ready": None,
+                "quota_unknown": None,
+                "quota_exhausted": None,
+                "weekly_remaining_percent": None,
+                "weekly_next_reset_at": None,
+            }
+        weekly, reset = weekly_capacity_details(pool)
+        return {
+            "stale": False,
+            "collected_at": snapshot["collected_at"],
+            "routability": quota["status"],
+            "routability_detail": quota["detail"],
+            "low_quota_status": warning["status"],
+            "low_quota_threshold": threshold,
+            "lowest_remaining_percent": pool["lowest_remaining_percent"],
+            "active_accounts": pool["active"],
+            "quota_ready": pool["quota_ready"],
+            "quota_unknown": pool["quota_unknown"],
+            "quota_exhausted": pool["quota_exhausted"],
+            "weekly_remaining_percent": weekly,
+            "weekly_next_reset_at": reset,
+        }
 
     def notices(self, public=False, now=None):
         now = time.time() if now is None else now
@@ -296,7 +361,14 @@ class Store:
             s["status"] = "unknown"
             s["pool"] = s["requests"] = None
             s["components"] = [
-                {"id": c["id"], "name": c["name"], "status": "unknown", "detail": "采样已过期"} for c in s["components"]
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "status": "unknown",
+                    "detail": "采样已过期",
+                    **({"advisory": True} if c.get("advisory") else {}),
+                }
+                for c in s["components"]
             ]
         weekly_remaining_percent, weekly_next_reset_at = weekly_capacity_details(s["pool"])
         # Explicit output contract: never serialize Settings, auth, or SMTP objects.

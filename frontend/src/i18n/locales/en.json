@@ -1465,6 +1465,25 @@
   "statusPage": {
     "title": "Email alerts and announcements",
     "description": "Manage notifications here. The separate status page only displays published information.",
+    "quota": {
+      "title": "Account-pool quota detail",
+      "description": "Capacity, routability and low-reserve signals are shown separately.",
+      "stale": "The latest quota sample is stale; derived values are withheld.",
+      "capacity": "Weighted 7-day capacity",
+      "routability": "Routability",
+      "lowest": "Lowest remaining",
+      "accounts": "Quota-ready accounts",
+      "ready": "ready",
+      "exhausted": "Exhausted: {{value}}",
+      "threshold": "Warning threshold: {{value}}",
+      "warning": "Low-reserve advisory: {{value}}",
+      "states": {
+        "operational": "Operational",
+        "degraded": "Low reserve",
+        "outage": "No quota available",
+        "unknown": "Unknown"
+      }
+    },
     "emailEnabled": "Enable email alerts",
     "emailHelp": "Send on confirmed incidents and recovery. Unchanged incidents stay quiet.",
     "host": "SMTP server",

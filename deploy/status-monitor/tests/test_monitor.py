@@ -221,6 +221,37 @@ class CollectorTests(Fixture):
         self.assertEqual(c["detail"], "暂无真实模型请求样本，业务质量待调用后确认")
         self.assertIsNone(s["requests"]["error_percent"])
 
+    def test_low_reserve_is_advisory_when_another_account_is_ready(self):
+        with self.source_connection() as c:
+            c.execute("INSERT INTO accounts(id,plan_type,status) VALUES ('low-id','pro','active')")
+        self.usage("primary", 87, minutes=10080, account="low-id")
+        snapshot = collect(self.settings, self.now)
+        quota = next(c for c in snapshot["components"] if c["id"] == "quota")
+        warning = next(c for c in snapshot["components"] if c["id"] == "quota_warning")
+        self.assertEqual(quota["status"], "operational")
+        self.assertEqual(quota["detail"], "仍有可路由额度")
+        self.assertEqual(warning["status"], "degraded")
+        self.assertTrue(warning["advisory"])
+        self.assertNotIn("额度不足", warning["detail"])
+        self.assertEqual(snapshot["status"], "operational")
+
+    def test_exhausted_account_keeps_routability_with_ready_fallback(self):
+        with self.source_connection() as c:
+            c.execute("INSERT INTO accounts(id,plan_type,status) VALUES ('exhausted-id','pro','active')")
+        self.usage("primary", 100, minutes=10080, account="exhausted-id")
+        snapshot = collect(self.settings, self.now)
+        quota = next(c for c in snapshot["components"] if c["id"] == "quota")
+        self.assertEqual(quota["status"], "operational")
+        self.assertEqual(snapshot["status"], "operational")
+
+    def test_no_ready_account_is_the_only_quota_outage(self):
+        self.usage("primary", 100, minutes=10080)
+        snapshot = collect(self.settings, self.now)
+        quota = next(c for c in snapshot["components"] if c["id"] == "quota")
+        self.assertEqual(quota["status"], "outage")
+        self.assertEqual(quota["detail"], "额度不足")
+        self.assertEqual(snapshot["status"], "outage")
+
     def test_idle_requests_do_not_hide_unhealthy_gateway(self):
         settings = replace(
             self.settings,
@@ -293,7 +324,7 @@ class StateTests(Fixture):
         self.assertIsNone(self.store.incidents()[0]["closed_at"])
 
     def test_stale_snapshot_hides_old_green_values(self):
-        self.store.record(self.snapshot())
+        self.store.record(collect(self.settings, self.now))
         result = self.store.public(self.now + 181)
         self.assertTrue(result["stale"])
         self.assertEqual(result["status"], "unknown")
@@ -301,6 +332,30 @@ class StateTests(Fixture):
         self.assertIsNone(result["capacity"]["weekly_remaining_percent"])
         self.assertIsNone(result["capacity"]["weekly_next_reset_at"])
         self.assertIsNone(result["requests"])
+        warning = next(component for component in result["components"] if component["id"] == "quota_warning")
+        self.assertEqual(warning["status"], "unknown")
+        self.assertTrue(warning["advisory"])
+
+    def test_low_reserve_advisory_does_not_create_incident(self):
+        with self.source_connection() as c:
+            c.execute("INSERT INTO accounts(id,plan_type,status) VALUES ('low-id','pro','active')")
+        self.usage("primary", 87, minutes=10080, account="low-id")
+        for i in range(5):
+            self.store.record(collect(self.settings, self.now + i))
+        self.assertFalse(any(i["component"] == "quota_warning" for i in self.store.incidents()))
+        self.assertFalse(any("低余量预警" in e["title"] for e in self.store.events()))
+
+    def test_operator_quota_summary_is_sanitized_and_stale_safe(self):
+        self.store.record(collect(self.settings, self.now))
+        summary = self.store.operator_quota(self.now)
+        self.assertEqual(summary["routability"], "operational")
+        self.assertEqual(summary["active_accounts"], 1)
+        self.assertEqual(summary["quota_ready"], 1)
+        self.assertNotIn("pool", summary)
+        stale = self.store.operator_quota(self.now + 181)
+        self.assertTrue(stale["stale"])
+        self.assertIsNone(stale["active_accounts"])
+        self.assertIsNone(stale["lowest_remaining_percent"])
 
     def test_history_has_no_invented_samples(self):
         self.store.record(self.snapshot())
@@ -362,10 +417,23 @@ class ControlTests(Fixture):
         capacity = response.json()["capacity"]
         self.assertEqual(capacity["weekly_remaining_percent"], 80)
         self.assertAlmostEqual(capacity["weekly_next_reset_at"], self.now + 7200)
+        components = {component["id"]: component for component in response.json()["components"]}
+        self.assertEqual(components["quota"]["status"], "operational")
+        self.assertEqual(components["quota_warning"]["status"], "operational")
         for key in ("pool", "quota_ready", "active", "private-account-id", "smtp", "token_file"):
             self.assertNotIn(key, response.text)
         for path in ("/admin", "/api/admin/overview", "/static/admin.html", "/static/admin.js"):
             self.assertEqual(self.client.get(path).status_code, 404)
+
+    def test_private_settings_include_sanitized_quota_summary(self):
+        self.store.record(collect(self.settings, self.now))
+        response = self.client.get("/internal/settings", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        quota = response.json()["quota"]
+        self.assertEqual(quota["routability"], "operational")
+        self.assertEqual(quota["active_accounts"], 1)
+        self.assertNotIn("private-account-id", response.text)
+        self.assertNotIn("pool", quota)
 
     def test_trusted_host_accepts_configured_lan_aliases_only(self):
         settings = Settings(
