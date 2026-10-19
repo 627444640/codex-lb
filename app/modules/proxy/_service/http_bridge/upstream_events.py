@@ -959,31 +959,42 @@ async def _cancel_http_bridge_reader_child(
 async def _clear_durable_http_bridge_response_anchor(
     service: Any,
     session: "_HTTPBridgeSession",
-) -> None:
-    """Invalidate a durable proxy-injected anchor that proved eventless.
+    *,
+    expected_response_id: str | None = None,
+) -> bool:
+    """Invalidate a durable proxy-injected anchor that proved unusable.
 
     Runs while ``session`` still owns the durable row (before retirement
     releases the lease), so the fenced write lands under the session's own
     owner epoch instead of silently losing the fence to a released owner.
+    ``expected_response_id`` prevents an older failure from clearing a newer
+    response that was registered while the failure was being settled.
     """
     if session.durable_session_id is None or session.durable_owner_epoch is None:
-        return
+        return True
     try:
-        lookup = await service._durable_bridge.clear_live_session_response_anchor(
-            session_id=session.durable_session_id,
-            instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
-            owner_epoch=session.durable_owner_epoch,
-        )
+        clear_kwargs = {
+            "session_id": session.durable_session_id,
+            "instance_id": _service_get_settings().http_responses_session_bridge_instance_id,
+            "owner_epoch": session.durable_owner_epoch,
+        }
+        if expected_response_id is not None:
+            clear_kwargs["expected_response_id"] = expected_response_id
+        lookup = await service._durable_bridge.clear_live_session_response_anchor(**clear_kwargs)
     except Exception:
-        logger.warning("Failed to clear durable HTTP bridge response anchor after stuck timeout", exc_info=True)
-        return
-    if lookup is None or lookup.owner_epoch != session.durable_owner_epoch or lookup.latest_response_id is not None:
+        logger.warning("Failed to clear durable HTTP bridge response anchor", exc_info=True)
+        return False
+    if lookup is None:
+        # The row is already gone, so no durable anchor can be injected by this
+        # session on a later retry.
+        return True
+    if lookup.owner_epoch != session.durable_owner_epoch or lookup.latest_response_id is not None:
         # None means the durable row is gone entirely (e.g. purged); an
         # epoch or anchor mismatch means a newer owner already claimed the
         # session before this fenced write executed. Either way, the anchor
         # was never actually cleared, so do not report an invalidation that
         # did not happen.
-        return
+        return False
     _log_http_bridge_event(
         "durable_anchor_invalidated",
         session.key,
@@ -993,6 +1004,32 @@ async def _clear_durable_http_bridge_response_anchor(
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
+    return True
+
+
+def _clear_local_http_bridge_response_anchor(
+    session: "_HTTPBridgeSession",
+    *,
+    expected_response_id: str | None,
+) -> bool:
+    """Stop a live bridge from reinjecting an anchor just proven stale.
+
+    Durable state is authoritative across replicas, but an already-live bridge
+    also keeps the latest response in memory. Clear both views together so the
+    next client retry takes the unanchored/full-history path even when it is
+    admitted to this same process before a reconnect.
+    """
+    if expected_response_id is None or session.last_completed_response_id != expected_response_id:
+        return False
+    session.last_completed_response_id = None
+    session.last_completed_response_account_id = None
+    session.last_completed_input_count = 0
+    session.last_completed_input_prefix_fingerprint = None
+    session.last_pending_tool_calls.clear()
+    session.last_pending_tool_calls_response_id = None
+    session.previous_response_ids.discard(expected_response_id)
+    session.previous_response_alias_registration_generations.pop(expected_response_id, None)
+    return True
 
 
 async def _abandon_durable_http_bridge_continuity(
@@ -1884,6 +1921,23 @@ class _HTTPBridgeUpstreamEventsMixin:
         from app.modules.proxy.conversation_history import account_admission_blocks
 
         anchor_id = request_state.previous_response_id
+        if request_state.proxy_injected_previous_response_id:
+            # The upstream rejection is proof that this proxy-managed durable
+            # anchor is stale. Invalidate it before planning the resend, even
+            # when the history budget later refuses the replay. Otherwise a
+            # client retry can reattach the same live bridge and receive the
+            # same expired ``previous_response_id`` forever.
+            durable_anchor_cleared = await _clear_durable_http_bridge_response_anchor(
+                self,
+                session,
+                expected_response_id=anchor_id,
+            )
+            _clear_local_http_bridge_response_anchor(session, expected_response_id=anchor_id)
+            if not durable_anchor_cleared:
+                # A fenced-out owner may already have advanced the anchor. Do
+                # not overwrite that newer continuity state or send a replay
+                # whose ownership proof is no longer current.
+                return False
         if not _stage_websocket_history_replay(
             request_state,
             account_id=session.account.id,

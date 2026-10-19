@@ -22429,6 +22429,302 @@ async def test_process_http_bridge_upstream_text_masks_previous_response_not_fou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario_date", "anchor_id"),
+    [
+        ("2026-10-18", "resp-loop-1018"),
+        ("2026-10-19", "resp-loop-1019"),
+    ],
+)
+async def test_http_bridge_prnf_loop_regression_clears_proxy_anchor_before_replay(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario_date: str,
+    anchor_id: str,
+) -> None:
+    """The observed 10/18 and 10/19 loops stop after one full-history resend."""
+    del scenario_date  # The date is the production regression fixture label.
+    from app.modules.proxy import conversation_history as history_module
+    from app.modules.proxy.conversation_history import ConversationHistoryCache
+
+    cache = ConversationHistoryCache(
+        tmp_path / f"conversation-history-{anchor_id}.db",
+        batch_limit=1,
+        min_free_disk_bytes=0,
+    )
+    history_module.set_conversation_history_cache(cache)
+    history_input = [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "earlier context"}],
+        }
+    ]
+    cache.record_completed_turn(
+        request_body={"model": "gpt-5.4", "input": history_input},
+        response_id=anchor_id,
+        output_items=[
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "earlier answer"}],
+            }
+        ],
+    )
+    request_text = json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-5.4",
+            "previous_response_id": anchor_id,
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "follow up"}],
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id=f"req-{anchor_id}",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text=request_text,
+        previous_response_id=anchor_id,
+        proxy_injected_previous_response_id=True,
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(
+        key_value=f"loop-{anchor_id}",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    session.durable_session_id = f"durable-{anchor_id}"
+    session.durable_owner_epoch = 3
+    session.last_completed_response_id = anchor_id
+    session.last_completed_response_account_id = session.account.id
+    session.last_completed_input_count = len(history_input)
+    session.last_completed_input_prefix_fingerprint = "f" * 64
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    cleared_lookup = DurableBridgeLookup(
+        session_id=session.durable_session_id,
+        canonical_kind=session.key.affinity_kind,
+        canonical_key=session.key.affinity_key,
+        api_key_scope="__anonymous__",
+        account_id=session.account.id,
+        owner_instance_id=proxy_service.get_settings().http_responses_session_bridge_instance_id,
+        owner_epoch=session.durable_owner_epoch,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state=None,
+        latest_response_id=None,
+    )
+    clear_anchor = AsyncMock(return_value=cleared_lookup)
+    retry = AsyncMock(side_effect=lambda _session, *, request_state: setattr(request_state, "replay_count", 1) or True)
+    service._durable_bridge = SimpleNamespace(clear_live_session_response_anchor=clear_anchor)
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", retry)
+
+    try:
+        replayed = await service._replay_http_bridge_anchor_loss_from_history(
+            session,
+            request_state,
+            event_type="error",
+            payload={"type": "error"},
+            has_other_pending_requests=False,
+        )
+        assert replayed is True
+        clear_anchor.assert_awaited_once_with(
+            session_id=session.durable_session_id,
+            instance_id=proxy_service.get_settings().http_responses_session_bridge_instance_id,
+            owner_epoch=session.durable_owner_epoch,
+            expected_response_id=anchor_id,
+        )
+        retry.assert_awaited_once()
+        assert request_state.previous_response_id is None
+        assert request_state.history_replay_used is True
+        assert request_state.replay_count == 1
+        assert session.last_completed_response_id is None
+        assert session.last_completed_response_account_id is None
+        assert anchor_id not in json.dumps(json.loads(request_state.request_text or "{}"))
+        # A client retry admitted to this still-live bridge cannot reuse the
+        # cleared session anchor and therefore cannot recreate the PRNF loop.
+        assert session.last_completed_response_id is None
+    finally:
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_prnf_history_replay_budget_stays_fail_closed_without_truncation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.proxy import conversation_history as history_module
+    from app.modules.proxy.conversation_history import ConversationHistoryCache
+
+    anchor_id = "resp-over-budget"
+    cache = ConversationHistoryCache(
+        tmp_path / "conversation-history-over-budget.db",
+        batch_limit=1,
+        min_free_disk_bytes=0,
+        replay_max_extra_tokens=1,
+        replay_max_bytes=15 * 1024 * 1024,
+    )
+    history_module.set_conversation_history_cache(cache)
+    cache.record_completed_turn(
+        request_body={
+            "model": "gpt-5.4",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "large cached context"}],
+                }
+            ],
+        },
+        response_id=anchor_id,
+        output_items=[],
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-over-budget",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        awaiting_response_created=True,
+        event_queue=asyncio.Queue(),
+        request_text=json.dumps(
+            {
+                "type": "response.create",
+                "model": "gpt-5.4",
+                "previous_response_id": anchor_id,
+                "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]}],
+            },
+            separators=(",", ":"),
+        ),
+        previous_response_id=anchor_id,
+        proxy_injected_previous_response_id=True,
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(
+        key_value="over-budget-prnf",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    session.durable_session_id = "durable-over-budget"
+    session.durable_owner_epoch = 3
+    session.last_completed_response_id = anchor_id
+    session.last_completed_response_account_id = session.account.id
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    service._durable_bridge = SimpleNamespace(clear_live_session_response_anchor=AsyncMock(return_value=None))
+    retry = AsyncMock(return_value=True)
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", retry)
+
+    try:
+        await service._process_http_bridge_upstream_text(
+            session,
+            json.dumps(
+                {
+                    "type": "error",
+                    "status": 400,
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "previous_response_not_found",
+                        "message": f"Previous response with id '{anchor_id}' not found.",
+                        "param": "previous_response_id",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        )
+        event_queue = request_state.event_queue
+        assert event_queue is not None
+        terminal = proxy_service.parse_sse_data_json(await event_queue.get())
+        assert isinstance(terminal, dict)
+        assert cast(dict[str, Any], cast(dict[str, Any], terminal["response"])["error"])["code"] == "stream_incomplete"
+        assert await event_queue.get() is None
+        retry.assert_not_awaited()
+        assert request_state.replay_count == 0
+        assert request_state.previous_response_not_found_rewritten is True
+        # The original anchored body remains the fail-closed diagnostic; no
+        # truncated prefix was sent upstream.
+        assert json.loads(request_state.request_text or "{}")["previous_response_id"] == anchor_id
+        assert session.last_completed_response_id is None
+    finally:
+        history_module.set_conversation_history_cache(None)
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_prnf_after_visible_output_does_not_spend_retry_or_duplicate_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    anchor_id = "resp-visible-prnf"
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-visible-prnf",
+        model="gpt-5.4",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=1.0,
+        response_id="resp-visible-downstream",
+        response_event_count=2,
+        downstream_visible=True,
+        previous_response_id=anchor_id,
+        proxy_injected_previous_response_id=True,
+        event_queue=asyncio.Queue(),
+        transport="http",
+        skip_request_log=True,
+    )
+    session = _make_bridge_session(
+        key_value="visible-prnf",
+        pending_requests=deque([request_state]),
+        queued_request_count=1,
+    )
+    replay = AsyncMock(return_value=False)
+    monkeypatch.setattr(service, "_replay_http_bridge_anchor_loss_from_history", replay)
+
+    await service._process_http_bridge_upstream_text(
+        session,
+        json.dumps(
+            {
+                "type": "error",
+                "status": 400,
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "previous_response_not_found",
+                    "message": f"Previous response with id '{anchor_id}' not found.",
+                    "param": "previous_response_id",
+                },
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    replay.assert_awaited_once()
+    assert request_state.replay_count == 0
+    assert request_state.downstream_visible is True
+    assert request_state.response_event_count == 2
+    assert request_state.error_http_status_override == 502
+    event_queue = request_state.event_queue
+    assert event_queue is not None
+    terminal = proxy_service.parse_sse_data_json(await event_queue.get())
+    assert isinstance(terminal, dict)
+    assert cast(dict[str, Any], cast(dict[str, Any], terminal["response"])["error"])["code"] == "stream_incomplete"
+    assert await event_queue.get() is None
+
+
+@pytest.mark.asyncio
 async def test_process_http_bridge_upstream_text_retries_precreated_usage_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
