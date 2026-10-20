@@ -1081,6 +1081,7 @@ async def test_http_bridge_gate_request_log_records_operation_status_unknown_met
     )
 
     service._write_request_log.assert_awaited_once()
+    assert service._write_request_log.await_args is not None
     fields = service._write_request_log.await_args.kwargs
     assert fields["request_id"] == "req-operation-status-unknown"
     assert fields["error_code"] == "upstream_operation_status_unknown"
@@ -1108,6 +1109,7 @@ async def test_http_bridge_gate_request_log_records_retry_circuit_metadata() -> 
         bridge_stage="retry_circuit",
     )
 
+    assert service._write_request_log.await_args is not None
     fields = service._write_request_log.await_args.kwargs
     assert fields["error_code"] == "upstream_request_timeout"
     assert fields["upstream_status_code"] == 503
@@ -22453,7 +22455,7 @@ async def test_http_bridge_prnf_loop_regression_clears_proxy_anchor_before_repla
         min_free_disk_bytes=0,
     )
     history_module.set_conversation_history_cache(cache)
-    history_input = [
+    history_input: list[proxy_service.JsonValue] = [
         {
             "type": "message",
             "role": "user",
@@ -22658,7 +22660,9 @@ async def test_http_bridge_prnf_history_replay_budget_stays_fail_closed_without_
         )
         event_queue = request_state.event_queue
         assert event_queue is not None
-        terminal = proxy_service.parse_sse_data_json(await event_queue.get())
+        raw_terminal = await event_queue.get()
+        assert raw_terminal is not None
+        terminal = proxy_service.parse_sse_data_json(raw_terminal)
         assert isinstance(terminal, dict)
         assert cast(dict[str, Any], cast(dict[str, Any], terminal["response"])["error"])["code"] == "stream_incomplete"
         assert await event_queue.get() is None
@@ -22734,7 +22738,9 @@ async def test_http_bridge_prnf_after_visible_output_does_not_spend_retry_or_dup
     assert request_state.error_http_status_override == 502
     event_queue = request_state.event_queue
     assert event_queue is not None
-    terminal = proxy_service.parse_sse_data_json(await event_queue.get())
+    raw_terminal = await event_queue.get()
+    assert raw_terminal is not None
+    terminal = proxy_service.parse_sse_data_json(raw_terminal)
     assert isinstance(terminal, dict)
     assert cast(dict[str, Any], cast(dict[str, Any], terminal["response"])["error"])["code"] == "stream_incomplete"
     assert await event_queue.get() is None

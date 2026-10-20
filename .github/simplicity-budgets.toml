@@ -64,5 +64,6 @@ allowed = [
   "renovate.json",
   "scripts",
   "tests",
+  "tools",
   "uv.lock",
 ]

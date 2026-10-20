@@ -10,6 +10,7 @@ import sqlite3
 import time
 import zlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -42,7 +43,7 @@ def _isolated_replay_budget() -> None:
 
 
 def _cache(tmp_path: Path, **overrides: object) -> ConversationHistoryCache:
-    settings = {
+    settings: dict[str, Any] = {
         "path": tmp_path / "conversation_history.db",
         "enabled": True,
         "max_bytes": 1024**3,
