@@ -3,8 +3,12 @@
 When an HTTP bridge request carries a proxy-injected `previous_response_id` and
 upstream returns `previous_response_not_found`, the bridge MUST classify that
 error before rewriting it to `stream_incomplete`, fenced-clear the matching
-durable and live-session anchor, and then attempt at most one cached full-history
-replay before emitting the fail-closed terminal.
+durable and live-session anchor before evaluating replay eligibility, and then
+attempt at most one cached full-history replay before emitting the fail-closed
+terminal. A client-supplied `previous_response_id` MUST NOT clear durable or
+live-session state. A failed durable clear MUST be observable, MUST still clear
+the local state, and MUST prevent a same-request rebind of the invalidated
+anchor.
 
 The replay MUST omit `previous_response_id`, MUST preserve the complete cached
 history, and MUST use the request's existing shared `replay_count` budget. If

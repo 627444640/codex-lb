@@ -3390,6 +3390,38 @@ class _HTTPBridgeStreamingMixin:
                 retry_previous_response_id = None
                 retry_request_stage = "stale_anchor_recover"
                 allow_previous_response_recovery_rebind = False
+            elif request_state.previous_response_anchor_invalidated:
+                if request_state.previous_response_anchor_clear_failed:
+                    raise ProxyResponseError(
+                        502,
+                        openai_error(
+                            "bridge_continuity_persistence_failed",
+                            "The stale previous response anchor could not be retired; retry the request.",
+                        ),
+                    ) from exc
+                if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
+                    bridge_durable_recover_total.labels(path="local_previous_response_stale_anchor").inc()
+                _log_http_bridge_event(
+                    "previous_response_recover_stale_anchor_without_rebind",
+                    bridge_session_key,
+                    account_id=None,
+                    model=effective_payload.model,
+                    detail="outcome=drop_invalidated_previous_response_id",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                    owner_check_applied=True,
+                )
+                await self._reset_http_bridge_session_after_local_terminal_error(
+                    session,
+                    error_code="stream_incomplete",
+                    error_message="Upstream websocket closed before response.completed",
+                )
+                recovery_path = "local_previous_response_stale_anchor"
+                retry_payload = _http_bridge_payload_without_previous_response_id(effective_payload)
+                retry_previous_response_id = None
+                retry_request_stage = "stale_anchor_recover"
+                retry_preferred_account_id = None
+                allow_previous_response_recovery_rebind = False
             else:
                 if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
                     bridge_durable_recover_total.labels(path="local_previous_response_error").inc()
@@ -3526,6 +3558,7 @@ class _HTTPBridgeStreamingMixin:
                     "local_previous_response_error",
                     "local_previous_response_fresh_replay",
                     "local_previous_response_same_owner_fresh_replay",
+                    "local_previous_response_stale_anchor",
                 }
                 if recovery_path == "local_previous_response_error":
                     await reset_previous_response_recovery_operation_spool(
@@ -3542,6 +3575,12 @@ class _HTTPBridgeStreamingMixin:
                     "local_previous_response_fresh_replay",
                     "local_previous_response_same_owner_fresh_replay",
                 }
+                retry_request_state.previous_response_anchor_invalidated = (
+                    request_state.previous_response_anchor_invalidated
+                )
+                retry_request_state.previous_response_anchor_clear_failed = (
+                    request_state.previous_response_anchor_clear_failed
+                )
                 if retry_request_state.verified_stale_anchor_replay:
                     retry_request_state.verified_stale_anchor_retry_circuit_generation_captured = (
                         verified_stale_anchor_generation_captured
