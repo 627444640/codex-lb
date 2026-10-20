@@ -178,14 +178,14 @@ test('official status links stay on the official host and incident names are tex
   assert.match(dom.window.document.querySelector('#official-status-incidents').textContent, /<img src=x/);
 });
 
-test('status navigation resolves below the public status mount', () => {
+test('status navigation resolves from the server root', () => {
   const template = readFileSync(resolve(__dirname, '../monitor/static/index.html'), 'utf8');
   const dom = new JSDOM(template, { url: 'https://status.example.invalid/status/' });
   try {
     assert.equal(dom.window.document.querySelector('link[rel="icon"]').href,
-      'https://status.example.invalid/status/static/favicon.svg?v=codex-lb');
-    assert.equal(dom.window.document.querySelector('nav a[href="static/faq.html"]').href,
-      'https://status.example.invalid/status/static/faq.html');
+      'https://status.example.invalid/static/favicon.svg?v=codex-lb');
+    assert.equal(dom.window.document.querySelector('nav a[href="/static/faq.html"]').href,
+      'https://status.example.invalid/static/faq.html');
   } finally {
     dom.window.close();
   }
