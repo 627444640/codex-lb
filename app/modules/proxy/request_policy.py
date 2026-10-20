@@ -406,6 +406,40 @@ def apply_enforced_service_tier_model_fallback(
     return True
 
 
+def apply_prewarm_service_tier_model_fallback(
+    payload: ResponsesRequest,
+    *,
+    request_kind: str,
+    registry: ModelRegistry | None = None,
+) -> bool:
+    """Treat unadvertised Flex as optional only for a no-generation prewarm.
+
+    Connection metadata alone is insufficient: later generating turns can
+    share a prewarm-opened socket and must keep explicit-tier restrictions.
+    The registry preserves advertised tiers and all unknown catalog states.
+    """
+    if (
+        request_kind != "prewarm"
+        or payload.service_tier != "flex"
+        or not payload.model_extra
+        or payload.model_extra.get("generate") is not False
+    ):
+        return False
+
+    model_registry = registry or get_model_registry()
+    if model_registry.model_advertises_service_tier(payload.model, "flex"):
+        return False
+
+    logger.info(
+        "codex_prewarm_service_tier_model_fallback request_id=%s model=%s "
+        "requested_service_tier=flex effective_service_tier=default",
+        get_request_id(),
+        payload.model,
+    )
+    payload.service_tier = None
+    return True
+
+
 def _model_responses_lite_capability(
     model: str,
     *,

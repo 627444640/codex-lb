@@ -14908,3 +14908,159 @@ def test_backend_responses_websocket_uncached_previous_response_500_does_not_swi
     assert len(owner.sent_text) == 1
     forwarded = json.loads(owner.sent_text[0])
     assert forwarded["previous_response_id"] == "resp_ws_never_cached"
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-6-astra", "codex-future-model"])
+def test_codex_prewarm_unadvertised_flex_uses_default_then_preserves_normal_turn(
+    app_instance,
+    monkeypatch,
+    model,
+):
+    from app.core.openai.model_registry import ModelRegistry, UpstreamModel
+    from app.modules.proxy import load_balancer, request_policy
+
+    entry = UpstreamModel(
+        slug=model,
+        display_name=model,
+        description="test",
+        context_window=128000,
+        input_modalities=("text",),
+        supported_reasoning_levels=(),
+        default_reasoning_level=None,
+        supports_reasoning_summaries=False,
+        support_verbosity=False,
+        default_verbosity=None,
+        prefer_websockets=True,
+        supports_parallel_tool_calls=True,
+        supported_in_api=True,
+        minimal_client_version=None,
+        priority=0,
+        available_in_plans=frozenset({"pro"}),
+        raw={"service_tiers": [{"id": "priority"}]},
+    )
+    registry = ModelRegistry(ttl_seconds=60)
+    asyncio.run(registry.update({"pro": [entry]}, per_account_results={"acct_ws_proxy": ("pro", [entry])}))
+    assert registry.model_advertises_service_tier(model, "flex") is False
+    monkeypatch.setattr(request_policy, "get_model_registry", lambda: registry)
+    monkeypatch.setattr(load_balancer, "get_model_registry", lambda: registry)
+    account = Account(id="acct_ws_proxy", email="test@example.invalid", plan_type="pro", status=AccountStatus.ACTIVE)
+    reservation_tiers = []
+    selection_tiers = []
+    logged = []
+
+    def batch(response_id, output_tokens):
+        return [
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.created",
+                        "response": {"id": response_id, "status": "in_progress"},
+                    }
+                ),
+            ),
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "id": response_id,
+                            "status": "completed",
+                            "service_tier": "default",
+                            "usage": {
+                                "input_tokens": 1,
+                                "output_tokens": output_tokens,
+                                "total_tokens": 1 + output_tokens,
+                            },
+                        },
+                    }
+                ),
+            ),
+        ]
+
+    upstream = _SequencedUpstreamWebSocket([], deferred_message_batches=[batch("prewarm", 0), batch("normal", 1)])
+
+    async def allow_firewall(_websocket):
+        return None
+
+    async def allow_key(_authorization, *, request=None):
+        return None
+
+    async def reserve(self, api_key, **kwargs):
+        reservation_tiers.append(kwargs["request_service_tier"])
+        return None
+
+    async def connect(self, headers, *, request_state, websocket, client_send_lock, **kwargs):
+        tier = request_state.requested_service_tier
+        selection_tiers.append(tier)
+        if not load_balancer._filter_accounts_for_model([account], model, service_tier=tier):
+            async with client_send_lock:
+                await websocket.send_json({"type": "error", "error": {"code": "no_plan_support_for_model"}})
+            return None, None
+        return account, upstream
+
+    async def write_log(self, **kwargs):
+        logged.append(kwargs)
+
+    async def settings():
+        return _websocket_settings()
+
+    monkeypatch.setattr(proxy_api_module, "_websocket_firewall_denial_response", allow_firewall)
+    monkeypatch.setattr(proxy_api_module, "validate_proxy_api_key_authorization", allow_key)
+    monkeypatch.setattr(proxy_module, "get_settings_cache", lambda: SimpleNamespace(get=settings))
+    monkeypatch.setattr(proxy_module.ProxyService, "_reserve_websocket_api_key_usage", reserve)
+    monkeypatch.setattr(proxy_module.ProxyService, "_connect_proxy_websocket", connect)
+    monkeypatch.setattr(proxy_module.ProxyService, "_write_request_log", write_log)
+    headers = {"x-codex-turn-metadata": json.dumps({"request_kind": "prewarm"})}
+    with TestClient(app_instance) as client:
+        with client.websocket_connect("/backend-api/codex/responses", headers=headers) as websocket:
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "model": model,
+                    "instructions": "",
+                    "input": [],
+                    "generate": False,
+                    "service_tier": "flex",
+                }
+            )
+            assert websocket.receive_json()["type"] == "response.created"
+            assert websocket.receive_json()["type"] == "response.completed"
+            # A normal follow-up on the same prewarm-marked connection retains its explicit priority tier.
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "model": model,
+                    "instructions": "",
+                    "input": [],
+                    "generate": True,
+                    "service_tier": "priority",
+                }
+            )
+            assert websocket.receive_json()["type"] == "response.created"
+            assert websocket.receive_json()["type"] == "response.completed"
+        # A new ordinary generation turn keeps Flex despite the prewarm connection metadata.
+        with client.websocket_connect("/backend-api/codex/responses", headers=headers) as websocket:
+            websocket.send_json(
+                {
+                    "type": "response.create",
+                    "model": model,
+                    "instructions": "",
+                    "input": [],
+                    "generate": True,
+                    "service_tier": "flex",
+                }
+            )
+            rejected = websocket.receive_json()
+            assert rejected["type"] == "error"
+            assert rejected["error"]["code"] == "no_plan_support_for_model"
+    forwarded = [json.loads(s) for s in upstream.sent_text]
+    assert len(forwarded) == 2
+    assert forwarded[0]["generate"] is False
+    assert "service_tier" not in forwarded[0]
+    assert forwarded[1]["service_tier"] == "priority"
+    assert reservation_tiers == [None, "priority", "flex"]
+    assert selection_tiers[0] is None
+    assert [row["request_kind"] for row in logged] == ["prewarm", "normal"]
+    assert logged[0]["requested_service_tier"] is None
