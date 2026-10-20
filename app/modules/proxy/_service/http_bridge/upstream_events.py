@@ -2594,10 +2594,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             # rewrite records continuity_fail_closed and would otherwise return
             # stream_incomplete while the history cache still holds the turn.
             anchor_invalidation_ok = True
-            if (
-                status_request_state.proxy_injected_previous_response_id
-                and status_request_state.previous_response_id
-            ):
+            if status_request_state.proxy_injected_previous_response_id and status_request_state.previous_response_id:
                 anchor_invalidation_ok = await _invalidate_proxy_injected_http_bridge_response_anchor(
                     self,
                     session,

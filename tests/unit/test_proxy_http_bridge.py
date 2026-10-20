@@ -22760,7 +22760,7 @@ def _make_prnf_state_and_session(
     *,
     anchor_id: str,
     proxy_injected: bool,
-    request_text: str | None = "{\"type\":\"response.create\"}",
+    request_text: str | None = '{"type":"response.create"}',
     replay_count: int = 0,
     fresh_retry_safe: bool = False,
 ) -> tuple[proxy_service._WebSocketRequestState, proxy_service._HTTPBridgeSession]:
@@ -22850,8 +22850,8 @@ async def test_http_bridge_prnf_durable_clear_failure_is_observable_and_blocks_r
 @pytest.mark.parametrize(
     ("request_text", "replay_count", "fresh_retry_safe"),
     [
-        ("{\"type\":\"response.create\"}", 0, True),
-        ("{\"type\":\"response.create\"}", 1, False),
+        ('{"type":"response.create"}', 0, True),
+        ('{"type":"response.create"}', 1, False),
         (None, 0, False),
     ],
 )
@@ -23012,9 +23012,7 @@ async def test_http_bridge_cleared_anchor_is_not_reinjected_on_next_streaming_re
     monkeypatch.setattr(service, "_submit_http_bridge_request", AsyncMock())
     monkeypatch.setattr(service, "_detach_http_bridge_request", AsyncMock())
 
-    payload = proxy_service.ResponsesRequest.model_validate(
-        {"model": "gpt-5.4", "instructions": "hi", "input": "next"}
-    )
+    payload = proxy_service.ResponsesRequest.model_validate({"model": "gpt-5.4", "instructions": "hi", "input": "next"})
     headers = {"x-codex-session-id": session.key.affinity_key} if injection_site == "session_anchor" else {}
     chunks = [
         chunk
