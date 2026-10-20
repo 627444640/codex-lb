@@ -1,16 +1,34 @@
 # Status-page administration
 
-Normative behavior: [status-page-management specification](../openspec/specs/status-page-management/spec.md).
+Normative behavior: [status-page-management specification](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/status-page-management/spec.md).
 
 Administrators manage email alerts and announcements from **Settings → Email alerts and announcements**. There is no separate status-page administrator account. Guests cannot access private configuration, drafts or delivery history.
 
 Enter SMTP server, port, TLS mode, sender, username and recipients. Enter the mailbox's SMTP authorization code once; subsequent saves may leave the code blank to retain it. The API never returns the code. Saving enabled settings allows the monitor to deliver new confirmed incident/recovery events. Existing events recorded while mail was disabled are not automatically backfilled.
 
-Announcements support drafts, immediate or scheduled publishing, an optional end time and withdrawal. Display times are interpreted as UTC+8. The public page shows announcements in the top centered row, seven-day capacity as a percentage and dense segmented energy meter with green/yellow/red thresholds and the next valid reset time, readiness history as a daily calendar heatmap and incidents in the bottom full-width section. When there are no normal requests, the page keeps the infrastructure status healthy and labels business quality as awaiting a real request. Luna-model probe traffic is excluded from normal request health and incident calculation; historical events are retained.
+Announcements support drafts, immediate or scheduled publishing, an optional end time and withdrawal. Display times are interpreted as UTC+8. The public page shows announcements in the top centered row, seven-day capacity as a percentage and dense segmented energy meter with green/yellow/red thresholds and the next valid reset time, infrastructure readiness history as a daily calendar heatmap and incidents in the bottom full-width section. The live request card covers the latest 15 minutes; a separate request-quality panel covers the latest 24 hours so a quiet current window does not hide recent failures. It groups failures into public-safe categories such as upstream processing, overload, stream interruption, continuation, timeout and context limit, with counts, affected models and guidance. When there are no normal requests, the page keeps the infrastructure status healthy and labels business quality as awaiting a real request while retaining recent request evidence. Luna-model probe traffic is excluded from normal request health and incident calculation; historical events are retained.
 
-The independent monitor uses a private server-to-server connector documented in [the capability context](../openspec/specs/status-page-management/context.md). Operators do not paste service-control tokens into the browser. The monitor can report an unhealthy LB process while its host remains alive; host-level failures require an external observer.
+The independent monitor uses a private server-to-server connector documented in [the capability context](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/status-page-management/context.md). Operators do not paste service-control tokens into the browser. The monitor can report an unhealthy LB process while its host remains alive; host-level failures require an external observer. The overview separates weighted pool capacity, low-reserve advisory and routability: a low account reserve does not mean the pool is out of quota, and `额度不足` is reserved for a routability outage. Settings shows the authenticated aggregate counts and lowest remaining value without exposing account identifiers publicly.
 
-The matching optional monitor source, locked dependencies and synthetic tests are included in [deploy/status-monitor](../deploy/status-monitor/README.md). Start it separately on loopback and keep its runtime state outside the source LB data directory. Repository seed addresses are labelled examples; customize them before publishing guides. The base LB installation does not start this companion automatically.
+## Official upstream status
+
+The monitor can optionally read the OpenAI Statuspage summary endpoint and
+display it in a separate **OpenAI 官方状态** card. Set `official_status.enabled`
+to `true` in the private monitor `runtime/config.json` to enable the read, then
+restart the monitor to load the setting. The source
+is fixed to `https://status.openai.com/api/v2/summary.json`; no API key is
+required and the browser never calls the provider directly.
+
+The provider status remains separate from the local gateway, quota, request
+quality, readiness history and local incidents. The page shows both the
+provider's `page.updated_at` and the monitor's local `fetched_at`. Timeouts,
+invalid responses, unknown provider values and stale samples render as
+`待核对`; old green provider data is not retained as current state. The card
+links to [OpenAI Status](https://status.openai.com/) and states that the
+provider metric is an aggregate signal rather than proof of a local model
+request.
+
+The matching optional monitor source, locked dependencies and synthetic tests are included in [deploy/status-monitor](https://github.com/627444640/codex-lb/blob/v1.24.6/deploy/status-monitor/README.md). Start it separately on loopback and keep its runtime state outside the source LB data directory. Repository seed addresses are labelled examples; customize them before publishing guides. The base LB installation does not start this companion automatically.
 
 ## Frequently asked questions
 
@@ -21,6 +39,8 @@ Lower order values appear first. Save a draft to keep content private, or save a
 Concurrent edits are protected by revisions. A stale save is rejected instead of overwriting another administrator's changes. Preserve any unsaved text, refresh the list and reopen the latest entry before applying your changes.
 
 The first monitor startup with this feature imports the two existing guides once. Later restarts do not reimport seeds or undo edits and deletions. The public page is `/static/faq.html`; the previous `/static/troubleshooting.html` address redirects to it with existing guide anchors preserved. It uses server-side rendering and stays readable with JavaScript disabled or status sampling unavailable. Its content database and service must still be available. Drafts and deleted entries never enter public HTML.
+
+The published error guides cover upstream processing, explicit upstream overload, incomplete streams, continuation ownership, upstream timeouts, context limits, client request parameters and network access. They use stable public categories and safe recovery steps. `server_error` is kept separate from `server_is_overloaded`; stream interruption is not assigned to a specific proxy without evidence; continuation guidance uses a new chat with a short summary rather than only deleting `previous_response_id`; network diagnostics must stay within the approved boundary and must not expand trusted networks or accept client-supplied trust headers.
 
 
 ## Upgrade from the retired assistant

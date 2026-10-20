@@ -1078,6 +1078,11 @@ class _WebSocketRequestState:
     precreated_replay_account_id: str | None = None
     skip_request_log: bool = False
     previous_response_id: str | None = None
+    # Set when upstream proves a proxy-injected previous-response anchor stale.
+    # Recovery must not rebind the same anchor later in this request, even when
+    # the ordinary local-recovery path would otherwise preserve it.
+    previous_response_anchor_invalidated: bool = False
+    previous_response_anchor_clear_failed: bool = False
     session_id: str | None = None
     # Session headers provide locality, but only a previous response or
     # explicit turn-state header guarantees continuity for stale recovery.
@@ -1333,6 +1338,7 @@ class _HTTPBridgeSession:
     last_completed_response_account_id: str | None = None
     last_completed_input_prefix_fingerprint: str | None = None
     last_pending_tool_calls: dict[str, str] = field(default_factory=dict)
+    last_pending_tool_calls_response_id: str | None = None
     durable_session_id: str | None = None
     durable_owner_epoch: int | None = None
     upstream_reader: asyncio.Task[None] | None = None

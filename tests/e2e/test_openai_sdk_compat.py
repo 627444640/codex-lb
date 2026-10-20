@@ -565,7 +565,17 @@ class TestAudioTranscriptions:
         # the upstream Codex transcription endpoint.
         captured: dict[str, Any] = {}
 
-        async def fake_transcribe(self, *, audio_bytes, filename, content_type, prompt, headers, api_key):
+        async def fake_transcribe(
+            self,
+            *,
+            audio_bytes,
+            filename,
+            content_type,
+            prompt,
+            headers,
+            api_key=None,
+            client_ip=None,
+        ):
             captured["filename"] = filename
             captured["bytes_len"] = len(audio_bytes)
             return {"text": "hello transcription"}

@@ -15,7 +15,7 @@ The monitor creates the credential file inside its private state directory. Conn
 
 SMTP authorization codes are write-only. An omitted or blank replacement keeps the previous code, and reads expose only `passwordConfigured`. The monitor writes a new private secret file and atomically changes the configuration reference; the worker uses the new settings on subsequent cycles. SMTP remains off until explicitly enabled. Announcement times use ISO 8601 in dashboard/control APIs and epoch timestamps only inside monitor persistence. All displayed calendar days use Asia/Taipei.
 
-Seven-day capacity is weighted by the inspected LB plan-capacity constants. Incomplete fresh weekly data or an unknown plan weight yields unknown; monthly-only accounts do not create fictional weekly quota. The public response omits account counts. Calendar availability is successful readiness probes / probes with known outcomes for each local date, with sample coverage in the tooltip. It does not claim a completed business request on an idle day or invent history before monitoring began.
+Seven-day capacity is weighted by the inspected LB plan-capacity constants. Incomplete fresh weekly data or an unknown plan weight yields unknown; monthly-only accounts do not create fictional weekly quota. The public response omits account counts and per-account values, while its quota component separates routability from a non-blocking low-reserve advisory. The authenticated Settings control response may show sanitized aggregate counts and the lowest remaining value, and clears them when the sample is stale. Calendar availability is successful readiness probes / probes with known outcomes for each local date, with sample coverage in the tooltip. It does not claim a completed business request on an idle day or invent history before monitoring began.
 
 Example: an administrator saves a maintenance draft in Settings. It remains private. Publishing it with a future start date makes it appear in the centered announcement strip only at that time; withdrawal hides it immediately. A guest cannot read the draft or SMTP settings.
 
@@ -48,3 +48,22 @@ The administrator retains guide CRUD and revision protection under the existing 
 Model assistance and diffusion descriptions in archived changes are deprecated history. Their earlier implementation and validation remain available in the repository history and archived OpenSpec records, not as active requirements. FAQ removal has no effect on core gateway models, API keys or model-source routing.
 
 Regression checks cover readable published guides, old-link redirects, clipboard behavior, preserved guide administration, unavailable retired APIs and zero outbound model requests even when a legacy configuration file is present.
+
+## Optional official upstream status
+
+The monitor may read the fixed public OpenAI Statuspage summary endpoint when
+`official_status.enabled` is enabled in its private `runtime/config.json`.
+The feature is default-off and requires a monitor restart after configuration
+changes. The adapter streams a bounded response with a total deadline and
+normalizes the provider indicator, page update time, local fetch time, bounded
+component rows and active incident summaries. Raw provider payloads and update
+bodies are not exposed.
+
+Provider state is returned under `official_status` and remains independent from
+local gateway readiness, quota capacity, real request quality, readiness
+history, local incidents and mail alerts. A provider timeout, schema change or
+expired sample becomes `unknown`/stale; it never changes the local aggregate
+status or presents old provider green data as current. The public browser still
+fetches only the same-origin `/api/status` route. The provider card links to the
+official page and explains that its aggregate availability can differ from an
+individual account, model or local request.

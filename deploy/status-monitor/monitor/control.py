@@ -109,9 +109,13 @@ class Control:
         }
 
     def overview(self):
+        quota = self.store.operator_quota()
+        for key in ("collected_at", "weekly_next_reset_at"):
+            quota[key] = iso(quota[key])
         return {
             "available": True,
             "email": self.email(),
+            "quota": quota,
             "notices": [notice_response(n) for n in self.store.notices()],
             "events": [
                 {

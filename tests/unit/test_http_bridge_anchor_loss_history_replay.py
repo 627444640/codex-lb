@@ -233,6 +233,7 @@ async def test_http_bridge_previous_response_not_found_resends_cached_history_on
     )
 
     send_text.assert_awaited_once()
+    assert send_text.await_args is not None
     sent = json.loads(send_text.await_args.args[0])
     assert "previous_response_id" not in sent
     sent_input = json.dumps(sent["input"])
@@ -248,7 +249,7 @@ async def test_http_bridge_previous_response_not_found_resends_cached_history_on
     assert session.queued_request_count == 1
     assert not _fail_closed_logged(caplog)
     assert request_state.failure_detail_override is None
-    service._handle_stream_error.assert_not_awaited()
+    cast(Any, service._handle_stream_error).assert_not_awaited()
     reconnect.assert_awaited_once()
     assert reconnect.await_args is not None
     assert reconnect.await_args.kwargs["require_same_account"] is True

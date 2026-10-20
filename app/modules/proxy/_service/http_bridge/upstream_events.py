@@ -85,6 +85,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
 )
 from app.modules.proxy._service.http_bridge.quarantine import (
     _clear_http_bridge_quarantine,
+    _quarantine_http_bridge_session,
     _record_http_bridge_quarantine_eventless_timeout,
     _record_http_bridge_quarantine_wedged_pending,
 )
@@ -958,40 +959,123 @@ async def _cancel_http_bridge_reader_child(
 async def _clear_durable_http_bridge_response_anchor(
     service: Any,
     session: "_HTTPBridgeSession",
-) -> None:
-    """Invalidate a durable proxy-injected anchor that proved eventless.
+    *,
+    expected_response_id: str | None = None,
+    reason: str = "created_timeout",
+) -> bool:
+    """Invalidate a durable proxy-injected anchor that proved unusable.
 
     Runs while ``session`` still owns the durable row (before retirement
     releases the lease), so the fenced write lands under the session's own
     owner epoch instead of silently losing the fence to a released owner.
+    ``expected_response_id`` prevents an older failure from clearing a newer
+    response that was registered while the failure was being settled.
     """
     if session.durable_session_id is None or session.durable_owner_epoch is None:
-        return
+        return True
     try:
-        lookup = await service._durable_bridge.clear_live_session_response_anchor(
-            session_id=session.durable_session_id,
-            instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
-            owner_epoch=session.durable_owner_epoch,
-        )
+        clear_kwargs = {
+            "session_id": session.durable_session_id,
+            "instance_id": _service_get_settings().http_responses_session_bridge_instance_id,
+            "owner_epoch": session.durable_owner_epoch,
+        }
+        if expected_response_id is not None:
+            clear_kwargs["expected_response_id"] = expected_response_id
+        lookup = await service._durable_bridge.clear_live_session_response_anchor(**clear_kwargs)
     except Exception:
-        logger.warning("Failed to clear durable HTTP bridge response anchor after stuck timeout", exc_info=True)
-        return
-    if lookup is None or lookup.owner_epoch != session.durable_owner_epoch or lookup.latest_response_id is not None:
+        logger.warning("Failed to clear durable HTTP bridge response anchor", exc_info=True)
+        return False
+    if lookup is None:
+        # The row is already gone, so no durable anchor can be injected by this
+        # session on a later retry.
+        return True
+    if lookup.owner_epoch != session.durable_owner_epoch or lookup.latest_response_id is not None:
         # None means the durable row is gone entirely (e.g. purged); an
         # epoch or anchor mismatch means a newer owner already claimed the
         # session before this fenced write executed. Either way, the anchor
         # was never actually cleared, so do not report an invalidation that
         # did not happen.
-        return
+        return False
     _log_http_bridge_event(
         "durable_anchor_invalidated",
         session.key,
         account_id=session.account.id,
         model=session.request_model,
-        detail=_HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
+        detail=f"reason={reason}",
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
+    return True
+
+
+def _clear_local_http_bridge_response_anchor(
+    session: "_HTTPBridgeSession",
+    *,
+    expected_response_id: str | None,
+) -> bool:
+    """Stop a live bridge from reinjecting an anchor just proven stale.
+
+    Durable state is authoritative across replicas, but an already-live bridge
+    also keeps the latest response in memory. Clear both views together so the
+    next client retry takes the unanchored/full-history path even when it is
+    admitted to this same process before a reconnect.
+    """
+    if expected_response_id is None or session.last_completed_response_id != expected_response_id:
+        return False
+    session.last_completed_response_id = None
+    session.last_completed_response_account_id = None
+    session.last_completed_input_count = 0
+    session.last_completed_input_prefix_fingerprint = None
+    session.last_pending_tool_calls.clear()
+    session.last_pending_tool_calls_response_id = None
+    session.previous_response_ids.discard(expected_response_id)
+    session.previous_response_alias_registration_generations.pop(expected_response_id, None)
+    return True
+
+
+async def _invalidate_proxy_injected_http_bridge_response_anchor(
+    service: Any,
+    session: "_HTTPBridgeSession",
+    request_state: _WebSocketRequestState,
+    *,
+    reason: str,
+) -> bool:
+    """Fence-clear a proxy-injected stale anchor before any recovery choice.
+
+    This helper deliberately runs before history-replay eligibility checks. A
+    request may be ineligible for a resend because it has siblings, output, a
+    spent replay budget, or no retained body; none of those conditions should
+    leave an expired proxy anchor available for the next client retry.
+    """
+    anchor_id = request_state.previous_response_id
+    if not request_state.proxy_injected_previous_response_id or not anchor_id:
+        return False
+    durable_cleared = await _clear_durable_http_bridge_response_anchor(
+        service,
+        session,
+        expected_response_id=anchor_id,
+        reason=reason,
+    )
+    local_cleared = _clear_local_http_bridge_response_anchor(session, expected_response_id=anchor_id)
+    request_state.previous_response_anchor_invalidated = True
+    request_state.previous_response_anchor_clear_failed = not durable_cleared
+    if not durable_cleared:
+        _log_http_bridge_event(
+            "durable_anchor_invalidation_failed",
+            session.key,
+            account_id=session.account.id,
+            model=session.request_model,
+            detail=f"reason={reason} outcome=fenced_or_exception local_cleared={str(local_cleared).lower()}",
+            cache_key_family=session.key.affinity_kind,
+            model_class=_extract_model_class(session.request_model) if session.request_model else None,
+        )
+        logger.warning(
+            "HTTP bridge proxy-injected anchor invalidation failed request_id=%s reason=%s local_cleared=%s",
+            request_state.request_id,
+            reason,
+            str(local_cleared).lower(),
+        )
+    return durable_cleared
 
 
 async def _abandon_durable_http_bridge_continuity(
@@ -1454,7 +1538,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                                 # classification rather than routing through the
                                 # generic reader-crash account penalty path.
                                 if expired_proxy_injected_anchor:
-                                    await _clear_durable_http_bridge_response_anchor(self, session)
+                                    await _clear_durable_http_bridge_response_anchor(
+                                        self,
+                                        session,
+                                        reason="created_timeout",
+                                    )
                                 _record_http_bridge_quarantine_eventless_timeout(self, session)
                                 session.closed = True
                                 await self._fail_http_bridge_reader_and_maybe_retire(
@@ -1471,7 +1559,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                             # a late response event, so this is the safe point
                             # to persist the durable-anchor invalidation.
                             if expired_proxy_injected_anchor:
-                                await _clear_durable_http_bridge_response_anchor(self, session)
+                                await _clear_durable_http_bridge_response_anchor(
+                                    self,
+                                    session,
+                                    reason="created_timeout",
+                                )
                             # Count the eventless retire toward the repeated-
                             # wedge quarantine; the first strike still goes
                             # through the bounded pre-created recovery below.
@@ -1842,6 +1934,8 @@ class _HTTPBridgeUpstreamEventsMixin:
         ``account_health_error_handled`` is set either way so terminal
         finalization does not apply a duplicate penalty.
         """
+        if request_state is not None and getattr(request_state, "account_health_error_handled", False):
+            return
         if request_state is not None and request_state.api_key_reservation is not None:
             request_state.deferred_keyed_stream_health.append(
                 _DeferredKeyedStreamHealthPenalty(account=account, error=error, code=code)
@@ -2473,6 +2567,18 @@ class _HTTPBridgeUpstreamEventsMixin:
             and status_request_state.previous_response_id is not None
             and is_missing_tool_output_event
         ):
+            session.last_pending_tool_calls.clear()
+            session.last_pending_tool_calls_response_id = None
+            _quarantine_http_bridge_session(self, session, reason="tool_call_context_mismatch")
+            _log_http_bridge_event(
+                "tool_call_context_mismatch",
+                session.key,
+                account_id=session.account.id,
+                model=session.request_model,
+                detail="outcome=upstream_orphan_tool_output",
+                cache_key_family=session.key.affinity_kind,
+                model_class=_extract_model_class(session.request_model) if session.request_model else None,
+            )
             status_request_state.error_http_status_override = 502
             event, payload, event_type, rewritten_text = _rewrite_websocket_continuity_corruption_event(
                 request_state=status_request_state,
@@ -2487,7 +2593,15 @@ class _HTTPBridgeUpstreamEventsMixin:
             # Plan the cached resend before the stale-anchor rewrite. That
             # rewrite records continuity_fail_closed and would otherwise return
             # stream_incomplete while the history cache still holds the turn.
-            if await self._replay_http_bridge_anchor_loss_from_history(
+            anchor_invalidation_ok = True
+            if status_request_state.proxy_injected_previous_response_id and status_request_state.previous_response_id:
+                anchor_invalidation_ok = await _invalidate_proxy_injected_http_bridge_response_anchor(
+                    self,
+                    session,
+                    status_request_state,
+                    reason="prnf",
+                )
+            if anchor_invalidation_ok and await self._replay_http_bridge_anchor_loss_from_history(
                 session,
                 status_request_state,
                 event_type=event_type,
@@ -3149,6 +3263,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                 # (interrupted turn) can receive synthetic interrupted
                 # outputs instead of an upstream missing-tool-output 400.
                 session.last_pending_tool_calls = dict(terminal_request_state.pending_tool_call_types)
+                session.last_pending_tool_calls_response_id = response_id
             # Prefix trimming is only meaningful for list-shaped inputs, so
             # keep the input-count / fingerprint update scoped to that path.
             if terminal_request_state.input_item_count > 0:

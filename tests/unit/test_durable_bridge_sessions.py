@@ -1736,6 +1736,46 @@ async def test_durable_bridge_clear_response_anchor_nulls_anchor_fields_but_keep
 
 
 @pytest.mark.asyncio
+async def test_durable_bridge_clear_response_anchor_expected_id_fences_newer_anchor(
+    coordinator: DurableBridgeSessionCoordinator,
+) -> None:
+    claimed = await coordinator.claim_live_session(
+        session_key_kind="session_header",
+        session_key_value="sid-clear-anchor-expected",
+        api_key_id=None,
+        instance_id="instance-a",
+        owner_process_epoch="test-process",
+        lease_ttl_seconds=60.0,
+        account_id="acc-1",
+        model="gpt-5.6-sol",
+        service_tier=None,
+        latest_turn_state=None,
+        latest_response_id="resp-current",
+        allow_takeover=True,
+    )
+
+    stale_clear = await coordinator.clear_live_session_response_anchor(
+        session_id=claimed.session_id,
+        instance_id="instance-a",
+        owner_epoch=claimed.owner_epoch,
+        expected_response_id="resp-already-replaced",
+    )
+
+    assert stale_clear is not None
+    assert stale_clear.latest_response_id == "resp-current"
+
+    current_clear = await coordinator.clear_live_session_response_anchor(
+        session_id=claimed.session_id,
+        instance_id="instance-a",
+        owner_epoch=claimed.owner_epoch,
+        expected_response_id="resp-current",
+    )
+
+    assert current_clear is not None
+    assert current_clear.latest_response_id is None
+
+
+@pytest.mark.asyncio
 async def test_durable_bridge_clear_response_anchor_is_noop_after_epoch_advance(
     coordinator: DurableBridgeSessionCoordinator,
 ) -> None:

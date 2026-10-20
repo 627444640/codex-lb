@@ -64,8 +64,25 @@ class NotificationEvent(DashboardModel):
     last_error: str | None
 
 
+class StatusQuotaSummary(DashboardModel):
+    stale: bool
+    collected_at: AwareDatetime | None
+    routability: Literal["operational", "outage", "unknown"]
+    routability_detail: str
+    low_quota_status: Literal["operational", "degraded", "unknown"]
+    low_quota_threshold: float
+    lowest_remaining_percent: float | None
+    active_accounts: int | None
+    quota_ready: int | None
+    quota_unknown: int | None
+    quota_exhausted: int | None
+    weekly_remaining_percent: float | None
+    weekly_next_reset_at: AwareDatetime | None
+
+
 class StatusPageSettingsResponse(DashboardModel):
     available: bool
     email: EmailConfigurationResponse | None = None
+    quota: StatusQuotaSummary | None = None
     notices: list[AnnouncementResponse] = Field(default_factory=list)
     events: list[NotificationEvent] = Field(default_factory=list)

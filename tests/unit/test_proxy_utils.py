@@ -12660,6 +12660,7 @@ async def test_stream_once_marks_downstream_cancel_after_visible_event(monkeypat
     created_line = (
         'data: {"type":"response.created","response":{"id":"resp_downstream_cancel","status":"in_progress"}}\n\n'
     )
+    delta_line = 'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
 
     async def fake_stream(
         payload,
@@ -12671,7 +12672,10 @@ async def test_stream_once_marks_downstream_cancel_after_visible_event(monkeypat
         enforce_openai_sdk_contract=True,
     ):
         del payload, headers, access_token, account_id, base_url, raise_for_status, enforce_openai_sdk_contract
+        # The prelude is held until a visible event arrives, so the cancel
+        # below only becomes observable after the delta.
         yield created_line
+        yield delta_line
         await asyncio.Event().wait()
 
     monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
@@ -12695,6 +12699,8 @@ async def test_stream_once_marks_downstream_cancel_after_visible_event(monkeypat
     first_chunk = await anext(stream)
     assert "event: response.created" in first_chunk
     assert '"id":"resp_downstream_cancel"' in first_chunk
+    second_chunk = await anext(stream)
+    assert "response.output_text.delta" in second_chunk
     await cast(Any, stream).aclose()
 
     assert settlement.status == "cancelled"
@@ -23291,6 +23297,7 @@ async def test_prepare_websocket_response_create_request_fills_interrupted_pendi
         ("No tool output found for custom tool call call_abc.", True),
         ("No tool output found for apply patch call call_abc.", True),
         ("No tool output found for tool search call call_abc.", True),
+        ("No tool call found for custom tool call output with call_id call_abc.", True),
         ("No tool output found for web search call ws_abc.", False),
         ("Previous response with id 'resp_abc' not found.", False),
     ],

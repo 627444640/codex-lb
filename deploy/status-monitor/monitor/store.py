@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .config import Settings
+from .official_status import unknown as unknown_official_status
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -134,7 +135,11 @@ class Store:
     def _record_daily(conn, snapshot):
         at = snapshot["collected_at"]
         day = datetime.fromtimestamp(at, TAIPEI).date().isoformat()
-        checks = [c for c in snapshot["components"] if c["id"] not in {"source", "quota", "requests"}]
+        checks = [
+            c
+            for c in snapshot["components"]
+            if c["id"] not in {"source", "quota", "requests"} and not c.get("advisory")
+        ]
         observed = int(bool(checks) and all(c["status"] != "unknown" for c in checks))
         healthy = int(bool(observed) and all(c["status"] == "operational" for c in checks))
         conn.execute(
@@ -149,6 +154,9 @@ class Store:
         now = snapshot["collected_at"]
         for component in snapshot["components"]:
             key, status = component["id"], component["status"]
+            if component.get("advisory"):
+                conn.execute("UPDATE alert_state SET failures=0,recoveries=0 WHERE component=?", (key,))
+                continue
             if key in {"quota", "requests"} and not source_ok:
                 conn.execute("UPDATE alert_state SET failures=0,recoveries=0 WHERE component=?", (key,))
                 continue
@@ -207,6 +215,64 @@ class Store:
             row = conn.execute("SELECT payload FROM snapshots ORDER BY collected_at DESC,id DESC LIMIT 1").fetchone()
         return json.loads(row["payload"]) if row else None
 
+    def operator_quota(self, now=None):
+        now = time.time() if now is None else now
+        snapshot = self.latest()
+        stale = not snapshot or now - snapshot["collected_at"] > max(3 * self.settings.poll_seconds, 120)
+        threshold = self.settings.low_quota_percent
+        if stale:
+            return {
+                "stale": True,
+                "collected_at": snapshot["collected_at"] if snapshot else None,
+                "routability": "unknown",
+                "routability_detail": "采样已过期" if snapshot else "等待首次采样",
+                "low_quota_status": "unknown",
+                "low_quota_threshold": threshold,
+                "lowest_remaining_percent": None,
+                "active_accounts": None,
+                "quota_ready": None,
+                "quota_unknown": None,
+                "quota_exhausted": None,
+                "weekly_remaining_percent": None,
+                "weekly_next_reset_at": None,
+            }
+        pool = snapshot.get("pool")
+        components = snapshot.get("components") or []
+        quota = next((c for c in components if c.get("id") == "quota"), None)
+        warning = next((c for c in components if c.get("id") == "quota_warning"), None)
+        if not isinstance(pool, dict) or quota is None or warning is None:
+            return {
+                "stale": False,
+                "collected_at": snapshot["collected_at"],
+                "routability": "unknown",
+                "routability_detail": "可路由状态待核对",
+                "low_quota_status": "unknown",
+                "low_quota_threshold": threshold,
+                "lowest_remaining_percent": None,
+                "active_accounts": None,
+                "quota_ready": None,
+                "quota_unknown": None,
+                "quota_exhausted": None,
+                "weekly_remaining_percent": None,
+                "weekly_next_reset_at": None,
+            }
+        weekly, reset = weekly_capacity_details(pool)
+        return {
+            "stale": False,
+            "collected_at": snapshot["collected_at"],
+            "routability": quota["status"],
+            "routability_detail": quota["detail"],
+            "low_quota_status": warning["status"],
+            "low_quota_threshold": threshold,
+            "lowest_remaining_percent": pool["lowest_remaining_percent"],
+            "active_accounts": pool["active"],
+            "quota_ready": pool["quota_ready"],
+            "quota_unknown": pool["quota_unknown"],
+            "quota_exhausted": pool["quota_exhausted"],
+            "weekly_remaining_percent": weekly,
+            "weekly_next_reset_at": reset,
+        }
+
     def notices(self, public=False, now=None):
         now = time.time() if now is None else now
         with self.db() as conn:
@@ -245,6 +311,28 @@ class Store:
                 "SELECT id,component,title,severity,opened_at,closed_at FROM incidents ORDER BY opened_at DESC LIMIT 30"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def incident_summary(self, now, window_seconds=86400):
+        cutoff = now - window_seconds
+        with self.db() as conn:
+            request_rows = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT id,component,title,severity,opened_at,closed_at FROM incidents "
+                    "WHERE component='requests' AND (opened_at>=? OR closed_at IS NULL) ORDER BY opened_at DESC",
+                    (cutoff,),
+                )
+            ]
+        recent_rows = [incident for incident in request_rows if incident["opened_at"] >= cutoff]
+        latest = request_rows[0] if request_rows else None
+        return {
+            "window_seconds": window_seconds,
+            "count": len(recent_rows),
+            "open_count": sum(incident["closed_at"] is None for incident in request_rows),
+            "latest_opened_at": latest["opened_at"] if latest else None,
+            "latest_closed_at": latest["closed_at"] if latest else None,
+            "latest_status": "active" if latest and latest["closed_at"] is None else "recovered" if latest else "quiet",
+        }
 
     def events(self):
         with self.db() as conn:
@@ -291,13 +379,47 @@ class Store:
         s = self.latest()
         stale = not s or now - s["collected_at"] > max(3 * self.settings.poll_seconds, 120)
         if s is None:
-            s = {"collected_at": None, "status": "unknown", "components": [], "pool": None, "requests": None}
+            s = {
+                "collected_at": None,
+                "status": "unknown",
+                "components": [],
+                "pool": None,
+                "requests": None,
+                "official_status": None,
+            }
         if stale:
             s["status"] = "unknown"
-            s["pool"] = s["requests"] = None
+            s["pool"] = s["requests"] = s["request_quality"] = None
+            s["official_status"] = (
+                unknown_official_status(self.settings.official_status, None, "监控采样已过期，官方状态暂不可确认")
+                if self.settings.official_status.enabled
+                else None
+            )
             s["components"] = [
-                {"id": c["id"], "name": c["name"], "status": "unknown", "detail": "采样已过期"} for c in s["components"]
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "status": "unknown",
+                    "detail": "采样已过期",
+                    **({"advisory": True} if c.get("advisory") else {}),
+                }
+                for c in s["components"]
             ]
+        official = s.get("official_status")
+        if self.settings.official_status.enabled and official is None:
+            official = unknown_official_status(self.settings.official_status, None, "等待官方状态首次采样")
+        if official and official.get("fetched_at") is not None:
+            official_age = now - official["fetched_at"]
+            if official_age > self.settings.official_status.stale_seconds:
+                official = {
+                    **official,
+                    "status": "unknown",
+                    "indicator": None,
+                    "description": "官方状态采样已过期",
+                    "stale": True,
+                    "components": [],
+                    "incidents": [],
+                }
         weekly_remaining_percent, weekly_next_reset_at = weekly_capacity_details(s["pool"])
         # Explicit output contract: never serialize Settings, auth, or SMTP objects.
         return {
@@ -307,13 +429,16 @@ class Store:
             "stale": stale,
             "poll_seconds": self.settings.poll_seconds,
             "components": s["components"],
+            "official_status": official,
             "capacity": {
                 "weekly_remaining_percent": weekly_remaining_percent,
                 "weekly_next_reset_at": weekly_next_reset_at,
             },
             "requests": s["requests"],
+            "request_quality": s.get("request_quality"),
             "history": self.history(now),
             "incidents": self.incidents(),
+            "incident_summary": self.incident_summary(now),
             "notices": self.notices(True, now),
             "timezone": "Asia/Taipei",
         }

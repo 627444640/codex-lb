@@ -437,6 +437,13 @@ equivalent alias and the model does not advertise it. When an
 unavailable service tier is what excluded every account, the selection error
 MUST name that tier.
 
+Verified direct Codex no-generation prewarms are the sole client-explicit
+Flex exception: when prewarm connection metadata and literal generate=false
+identify the individual request and the authoritative catalog confirms that
+its known model never advertises Flex, the proxy MUST omit Flex before
+reservation and selection. Unknown catalog state, advertised Flex, other
+tiers and ordinary generation turns MUST retain their existing filtering.
+
 #### Scenario: Same-plan accounts expose different models
 
 - **GIVEN** two active accounts share a plan
@@ -483,6 +490,13 @@ MUST name that tier.
 - **WHEN** account selection is requested for that model with `priority`
 - **THEN** no account is selected
 - **AND** the selection error names the `priority` service tier
+
+
+#### Scenario: Verified no-generation prewarm does not require unadvertised Flex
+- **GIVEN** an authoritative catalog advertises a model but not Flex
+- **WHEN** a prewarm-marked direct WebSocket frame contains generate=false and service_tier=flex
+- **THEN** model-only account filtering applies to that frame
+- **AND** normal frames on the same connection retain explicit-tier filtering
 
 ### Requirement: Unknown account catalogs degrade without false exclusion
 

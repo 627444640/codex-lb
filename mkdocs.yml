@@ -72,4 +72,10 @@ nav:
       - Remote Access: deployment/remote.md
   - Reference:
       - Settings: reference/settings.md
+  - Operations:
+      - macOS Maintenance: macos-maintenance.md
+      - SQLite Pool Maintenance: operations/sqlite-account-pool-maintenance.md
+      - Status Page: status-page-management.md
+      - Telemetry: telemetry.md
+      - Review Remediation 1.24.0: review-remediation-1.24.0.md
   - Troubleshooting: troubleshooting.md

@@ -986,6 +986,7 @@ class DurableBridgeRepository:
         session_id: str,
         instance_id: str,
         owner_epoch: int,
+        expected_response_id: str | None = None,
     ) -> DurableBridgeSessionSnapshot | None:
         """Invalidate a stuck eventless anchor with a single fenced UPDATE.
 
@@ -1007,6 +1008,7 @@ class DurableBridgeRepository:
             instance_id=instance_id,
             owner_epoch=owner_epoch,
             values=values,
+            expected_latest_response_id=expected_response_id,
         )
 
     async def record_recovery_attempt(
@@ -2222,6 +2224,7 @@ class DurableBridgeRepository:
         instance_id: str,
         owner_epoch: int,
         values: dict[str, object],
+        expected_latest_response_id: str | None = None,
     ) -> DurableBridgeSessionSnapshot | None:
         async with sqlite_writer_section():
             result = await self._session.execute(
@@ -2230,6 +2233,11 @@ class DurableBridgeRepository:
                     HttpBridgeSessionRecord.id == session_id,
                     HttpBridgeSessionRecord.owner_instance_id == instance_id,
                     HttpBridgeSessionRecord.owner_epoch == owner_epoch,
+                    *(
+                        (HttpBridgeSessionRecord.latest_response_id == expected_latest_response_id,)
+                        if expected_latest_response_id is not None
+                        else ()
+                    ),
                 )
                 .values(**values)
                 .returning(*_SNAPSHOT_COLUMNS)

@@ -37,6 +37,21 @@ const notice = {
   createdAt: "2026-09-28T04:00:00Z",
   updatedAt: "2026-09-28T04:00:00Z",
 };
+const quota = {
+  stale: false,
+  collectedAt: "2026-09-28T04:00:00Z",
+  routability: "operational" as const,
+  routabilityDetail: "仍有可路由额度",
+  lowQuotaStatus: "degraded" as const,
+  lowQuotaThreshold: 20,
+  lowestRemainingPercent: 13,
+  activeAccounts: 2,
+  quotaReady: 2,
+  quotaUnknown: 0,
+  quotaExhausted: 0,
+  weeklyRemainingPercent: 41,
+  weeklyNextResetAt: "2026-09-30T04:00:00Z",
+};
 
 function mount() {
   const client = new QueryClient({
@@ -54,6 +69,7 @@ beforeEach(() => {
   vi.mocked(getStatusPageSettings).mockResolvedValue({
     available: true,
     email,
+    quota,
     notices: [],
     events: [],
   });
@@ -62,6 +78,14 @@ beforeEach(() => {
 });
 
 describe("StatusPageSettings", () => {
+  it("shows separate capacity, routability and low-reserve signals", async () => {
+    mount();
+    expect(await screen.findByText("Account-pool quota detail")).toBeInTheDocument();
+    expect(screen.getByText("41%")).toBeInTheDocument();
+    expect(screen.getByText("13%")).toBeInTheDocument();
+    expect(screen.getByText("2 / 2 ready")).toBeInTheDocument();
+  });
+
   it("keeps a configured secret when saving another mail field", async () => {
     const user = userEvent.setup();
     mount();
@@ -108,6 +132,7 @@ describe("StatusPageSettings", () => {
     vi.mocked(getStatusPageSettings).mockResolvedValue({
       available: true,
       email,
+    quota: null,
       notices: [notice],
       events: [],
     });
@@ -129,6 +154,7 @@ describe("StatusPageSettings", () => {
     vi.mocked(getStatusPageSettings).mockResolvedValue({
       available: false,
       email: null,
+    quota: null,
       notices: [],
       events: [],
     });

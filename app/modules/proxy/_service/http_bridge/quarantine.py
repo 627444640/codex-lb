@@ -35,6 +35,7 @@ _HTTP_BRIDGE_QUARANTINE_MAX_ENTRIES = 1024
 
 _HTTP_BRIDGE_QUARANTINE_WEDGED_REATTACH_REASON = "reattach_missing_response_created"
 _HTTP_BRIDGE_QUARANTINE_REPEATED_EVENTLESS_REASON = "repeated_eventless_timeout"
+_HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON = "operation_status_unknown"
 
 
 @dataclass(slots=True)
@@ -116,26 +117,38 @@ def _quarantine_http_bridge_session(service: Any, session: _HTTPBridgeSession, *
     """Quarantine a bridge session that has proven silent/wedged.
 
     Session-scoped only: no account-health writes happen here, and the entry
-    is bounded by TTL, a registry size cap, and the healthy-completion clear.
+    is bounded by a TTL or terminal marker, a registry size cap, and the
+    healthy-completion clear.
     """
     now = time.monotonic()
     registry = _http_bridge_quarantine_registry(service)
     entry = registry.setdefault(session.key, _HTTPBridgeQuarantineEntry())
     already_quarantined = entry.quarantined_until > now
     entry.generation += 1
-    entry.quarantined_until = max(entry.quarantined_until, now + _HTTP_BRIDGE_QUARANTINE_TTL_SECONDS)
+    if reason == _HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON:
+        # An unknown durable operation is an ambiguous dispatch, not a
+        # transient socket wedge. Letting this marker expire with the retry
+        # circuit would recreate the same operation every cooldown interval.
+        entry.quarantined_until = float("inf")
+    else:
+        entry.quarantined_until = max(entry.quarantined_until, now + _HTTP_BRIDGE_QUARANTINE_TTL_SECONDS)
     entry.last_touched_monotonic = now
     entry.reason = reason
     _prune_http_bridge_quarantine_registry(registry, now)
     session.quarantined = True
     if already_quarantined:
         return
+    ttl_label = (
+        "terminal"
+        if reason == _HTTP_BRIDGE_QUARANTINE_OPERATION_STATUS_UNKNOWN_REASON
+        else f"{_HTTP_BRIDGE_QUARANTINE_TTL_SECONDS:.0f}"
+    )
     _log_http_bridge_event(
         "session_quarantined",
         session.key,
         account_id=session.account.id,
         model=session.request_model,
-        detail=f"reason={reason}, ttl_seconds={_HTTP_BRIDGE_QUARANTINE_TTL_SECONDS:.0f}",
+        detail=f"reason={reason}, ttl_seconds={ttl_label}",
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
