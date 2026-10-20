@@ -35,3 +35,23 @@ Production delivery is a recorded two-file overlay on e1b47a9c / 1.24.9,
 not a deployment of all newer source commits. Original runtime bytes, package
 RECORD and deployment metadata are backed up before replacement. The base
 release identity remains intact with separate overlay provenance.
+
+The exact deployed wheel plus the two runtime changes also passed 20 selected
+prewarm tests (158 deselected), with app imports verified from the staged
+baseline rather than the newer source checkout. A read-only production catalog
+check confirmed normalization only for generate=false on both incident models.
+At 2026-10-20 11:22:18 +08:00, verified-TLS HTTPS/WebSocket probes against the
+still-unpatched service returned no_plan_support_for_model for both models.
+The probes used the existing client API key in memory and no-generation frames.
+
+The fix commit is 13d445487ef6b1accbe21dadba152e8c01cd733d, merged locally as
+f97455c979cec001f84de9e8ef22c1e8511e6367. Seven pre-existing modified files
+were hash-verified unchanged around that merge. Two reversible 20-second drain
+attempts were cancelled because active requests remained; neither attempt
+changed installed files or stopped the backend.
+
+A third reversible drain at 11:26:35 +08:00 reached zero bridge pending work
+but retained one process in-flight request for the full observation window.
+It was cancelled at 11:26:55 without restarting or changing installed files.
+Production loading and post-deployment live validation remain pending until
+active work ends. The OpenSpec change remains active and is not archived.

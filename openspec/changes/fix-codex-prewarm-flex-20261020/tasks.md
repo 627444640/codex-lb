@@ -9,6 +9,6 @@
 
 ## 3. Verify and deliver
 - [x] Run regression, compatibility and static checks.
-- [ ] Commit the isolated fix and merge into the recorded target without changing existing edits.
+- [x] Commit the isolated fix and merge into the recorded target without changing existing edits.
 - [ ] Back up and deploy only the verified runtime patch, drain/restart and read back.
 - [ ] Verify the installed path against live catalog evidence and observe production outcomes.
