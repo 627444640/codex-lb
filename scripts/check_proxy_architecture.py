@@ -91,13 +91,27 @@ ALLOWED_SERVICE_IMPORT_DOMAINS_BY_DOMAIN = {
     "codex_control": {"support"},
     "compact": {"support"},
     "file_ops": {"support"},
-    "http_bridge": {"api_key_usage", "compact", "http_bridge", "observability", "support", "warmup"},
+    # http_bridge reuses the websocket anchor-loss replay predicates so both
+    # transports make the same re-injection decision instead of duplicating
+    # them; the coupling stays explicit here.
+    "http_bridge": {
+        "api_key_usage",
+        "compact",
+        "http_bridge",
+        "observability",
+        "support",
+        "warmup",
+        "websocket",
+    },
     "response_create": {"support"},
+    # streaming carries the shared retry-mark type that request_log owns; the
+    # import is a type reference, not a call path into the request-log writer.
     "streaming": {
         "api_key_usage",
         "compact",
         "http_bridge",
         "observability",
+        "request_log",
         "streaming",
         "support",
         "warmup",
