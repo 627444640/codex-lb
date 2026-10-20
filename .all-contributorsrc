@@ -1474,6 +1474,15 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "cursoragent",
+      "name": "Cursor Agent",
+      "avatar_url": "https://avatars.githubusercontent.com/u/199161495?v=4",
+      "profile": "https://github.com/cursoragent",
+      "contributions": [
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,

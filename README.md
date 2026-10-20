@@ -319,6 +319,7 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/e
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/shuhulx"><img src="https://avatars.githubusercontent.com/u/106345809?v=4?s=100" width="100px;" alt="Shuhul"/><br /><sub><b>Shuhul</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=shuhulx" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/TheFoolThatDoesntBelongToThisEra"><img src="https://avatars.githubusercontent.com/u/252236154?v=4?s=100" width="100px;" alt="⃟"/><br /><sub><b>⃟</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=TheFoolThatDoesntBelongToThisEra" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/VictorStatko"><img src="https://avatars.githubusercontent.com/u/34319599?v=4?s=100" width="100px;" alt="Victor Statko"/><br /><sub><b>Victor Statko</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=VictorStatko" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/cursoragent"><img src="https://avatars.githubusercontent.com/u/199161495?v=4?s=100" width="100px;" alt="Cursor Agent"/><br /><sub><b>Cursor Agent</b></sub></a><br /><a href="https://github.com/Soju06/codex-lb/commits?author=cursoragent" title="Code">💻</a></td>
     </tr>
   </tbody>
 </table>
