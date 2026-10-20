@@ -26,7 +26,7 @@ class FAQTests(unittest.TestCase):
         self.assertNotIn("错误排查", response.text)
         overview = self.client.get("/").text
         self.assertIn('href="/static/faq.html">常见问题</a>', overview)
-        self.assertIn('>问题上报</a>', response.text)
+        self.assertIn(">问题上报</a>", response.text)
         self.assertIn('target="_blank"', response.text)
         self.assertNotIn("错误排查", overview)
 

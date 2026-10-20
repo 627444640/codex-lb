@@ -298,6 +298,7 @@ class CollectorTests(Fixture):
         self.assertEqual(quota["status"], "outage")
         self.assertEqual(quota["detail"], "额度不足")
         self.assertEqual(snapshot["status"], "outage")
+
     def test_official_provider_status_does_not_change_local_health(self):
         def provider_status(settings, now):
             return {
