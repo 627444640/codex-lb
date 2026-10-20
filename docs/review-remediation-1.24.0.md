@@ -5,29 +5,29 @@ the application; three are in portable macOS operator tooling. The macOS
 tooling is published as source under `deploy/macos/`. Actual deployment
 configuration and runtime files are not included.
 
-The owning specifications are [deployment installation](../openspec/specs/deployment-installation/spec.md),
-[API keys](../openspec/specs/api-keys/spec.md),
-[admin authentication](../openspec/specs/admin-auth/spec.md),
-[Responses compatibility](../openspec/specs/responses-api-compat/spec.md),
-[HTTP ingress limits](../openspec/specs/http-ingress-limits/spec.md),
-[proxy admission](../openspec/specs/proxy-admission-control/spec.md) and
-[query caching](../openspec/specs/query-caching/spec.md).
-The [application verification record](../openspec/changes/archive/2026-09-14-remediate-deployed-1-24-review/verification.md)
+The owning specifications are [deployment installation](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/deployment-installation/spec.md),
+[API keys](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/api-keys/spec.md),
+[admin authentication](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/admin-auth/spec.md),
+[Responses compatibility](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/responses-api-compat/spec.md),
+[HTTP ingress limits](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/http-ingress-limits/spec.md),
+[proxy admission](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/proxy-admission-control/spec.md) and
+[query caching](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/query-caching/spec.md).
+The [application verification record](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/changes/archive/2026-09-14-remediate-deployed-1-24-review/verification.md)
 records the prior complete application validation.
 
 | ID | Repaired behavior | Primary implementation |
 |---|---|---|
-| R01 | Bound zstd declared output, decoder window and streamed output before excessive allocation. | [request_decompression.py](../app/core/middleware/request_decompression.py) |
-| R02 | Wait for bounded LaunchAgent removal, process-group exit and listener closure before maintenance; retain incomplete-stop evidence across retries. | [manage.py: stop](../deploy/macos/bin/manage.py) |
-| R03 | Restore a verified backup when the current database is damaged or absent; first preserve separate, explicitly unverified raw recovery material. | [manage.py: restore](../deploy/macos/bin/manage.py) |
-| R04 | Reject unsupported credits limits at creation/update and admission; retain supported token/cost limits. | [API key service](../app/modules/api_keys/service.py) |
-| R05 | Bind dashboard cookies to the credentials actually verified and validate them at every consumer; preserve TOTP upgrade boundaries. | [dashboard auth](../app/modules/dashboard_auth/service.py) |
-| R06 | Preserve independent tool calls with distinct nonblank call IDs and their outputs. | [tool_call_dedupe.py](../app/modules/proxy/tool_call_dedupe.py) |
-| R07 | Bound request and shared event-queue memory; fail overflowing delivery without blocking siblings or losing upstream settlement. | [http_bridge_event_queue.py](../app/modules/proxy/http_bridge_event_queue.py) |
-| R08 | Run bcrypt outside the event loop with two permits and cancellation-safe ownership. | [dashboard auth](../app/modules/dashboard_auth/service.py) |
-| R09 | Trim usage-history caches as the requested window advances; bound retention and protect concurrent invalidation. | [usage repository](../app/modules/usage/repository.py) |
-| R10 | Drain child output through EOF or a two-second deadline, retaining final diagnostics, redaction and exit status. | [supervise.py](../deploy/macos/bin/supervise.py) |
-| R11 | Measure current macOS RSS so admission can recover after memory is released. | [memory_monitor.py](../app/core/resilience/memory_monitor.py) |
+| R01 | Bound zstd declared output, decoder window and streamed output before excessive allocation. | [request_decompression.py](https://github.com/627444640/codex-lb/blob/v1.24.6/app/core/middleware/request_decompression.py) |
+| R02 | Wait for bounded LaunchAgent removal, process-group exit and listener closure before maintenance; retain incomplete-stop evidence across retries. | [manage.py: stop](https://github.com/627444640/codex-lb/blob/v1.24.6/deploy/macos/bin/manage.py) |
+| R03 | Restore a verified backup when the current database is damaged or absent; first preserve separate, explicitly unverified raw recovery material. | [manage.py: restore](https://github.com/627444640/codex-lb/blob/v1.24.6/deploy/macos/bin/manage.py) |
+| R04 | Reject unsupported credits limits at creation/update and admission; retain supported token/cost limits. | [API key service](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/api_keys/service.py) |
+| R05 | Bind dashboard cookies to the credentials actually verified and validate them at every consumer; preserve TOTP upgrade boundaries. | [dashboard auth](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/dashboard_auth/service.py) |
+| R06 | Preserve independent tool calls with distinct nonblank call IDs and their outputs. | [tool_call_dedupe.py](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/proxy/tool_call_dedupe.py) |
+| R07 | Bound request and shared event-queue memory; fail overflowing delivery without blocking siblings or losing upstream settlement. | [http_bridge_event_queue.py](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/proxy/http_bridge_event_queue.py) |
+| R08 | Run bcrypt outside the event loop with two permits and cancellation-safe ownership. | [dashboard auth](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/dashboard_auth/service.py) |
+| R09 | Trim usage-history caches as the requested window advances; bound retention and protect concurrent invalidation. | [usage repository](https://github.com/627444640/codex-lb/blob/v1.24.6/app/modules/usage/repository.py) |
+| R10 | Drain child output through EOF or a two-second deadline, retaining final diagnostics, redaction and exit status. | [supervise.py](https://github.com/627444640/codex-lb/blob/v1.24.6/deploy/macos/bin/supervise.py) |
+| R11 | Measure current macOS RSS so admission can recover after memory is released. | [memory_monitor.py](https://github.com/627444640/codex-lb/blob/v1.24.6/app/core/resilience/memory_monitor.py) |
 
 The additional admin/guest login-form error-handling fix is also included.
 

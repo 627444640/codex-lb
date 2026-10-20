@@ -1,6 +1,6 @@
 # Portable macOS maintenance tooling
 
-Owning specification: [deployment installation](../openspec/specs/deployment-installation/spec.md).
+Owning specification: [deployment installation](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/deployment-installation/spec.md).
 
 The scripts in `deploy/macos/bin/` publish the R02, R03 and R10 repairs for
 an existing single-user macOS deployment. They provide bounded service
@@ -16,7 +16,7 @@ its `bin/` directory. Keep this runtime outside a Git checkout. Create
 `config/`, `state/`, `logs/`, `backups/` and `certs/` locally with owner-only
 permissions. Configuration is read relative to the scripts' runtime root.
 
-The synthetic files in [examples](../deploy/macos/examples/) describe the
+The synthetic files in [examples](https://github.com/627444640/codex-lb/tree/v1.24.6/deploy/macos/examples) describe the
 configuration shape. Replace all placeholder paths with actual absolute
 paths locally. Do not commit the rendered files. The runtime needs:
 

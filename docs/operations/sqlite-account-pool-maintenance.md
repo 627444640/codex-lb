@@ -5,10 +5,10 @@ public commit `9e932343a003d8caf229ef8e4b0d5e045705d0ea` and retains its account
 pricing, generation-timing and earlier review fixes. It does not replace the
 newer beta version on `main`.
 
-Owning specifications: [Responses compatibility](../../openspec/specs/responses-api-compat/spec.md),
-[account routing](../../openspec/specs/account-routing/spec.md),
-[database backends](../../openspec/specs/database-backends/spec.md), and the
-[active maintenance change](../../openspec/changes/harden-local-account-pool-recovery/proposal.md).
+Owning specifications: [Responses compatibility](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/responses-api-compat/spec.md),
+[account routing](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/account-routing/spec.md),
+[database backends](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/specs/database-backends/spec.md), and the
+[active maintenance change](https://github.com/627444640/codex-lb/blob/v1.24.6/openspec/changes/harden-local-account-pool-recovery/proposal.md).
 
 ## Source and release identity
 
