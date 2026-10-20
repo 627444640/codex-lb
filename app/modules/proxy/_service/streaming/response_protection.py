@@ -247,5 +247,11 @@ async def handle_stream_error(
                 preserve_on_selection_exhausted=True,
             )
         elif result.transient_error is None:
-            settlement.account_health_error = not saw_text_delta
+            # A preserved raw error line still carries a code the account
+            # contract knows: invalid_request_error stays request-log only,
+            # while an account-health code such as rate_limit_exceeded keeps
+            # penalising the account once nothing has been visible yet.
+            settlement.account_health_error = (
+                _facade()._should_penalize_stream_error(raw_error_code) if not saw_text_delta else False
+            )
     return result
