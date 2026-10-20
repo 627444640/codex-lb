@@ -510,6 +510,7 @@ from app.modules.proxy.load_balancer import AccountLease, effective_account_conc
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
     apply_enforced_service_tier_model_fallback,
+    apply_prewarm_service_tier_model_fallback,
     model_alias_requests_fast_mode,
     normalize_responses_request_payload,
     openai_client_payload_error,
@@ -3052,6 +3053,9 @@ class _WebSocketMixin:
         synthesized_turn_state: str | None = None,
         capability_header_values: tuple[str, ...] | None = None,
     ) -> _PreparedWebSocketRequest:
+        # These mixins import each other during startup; reuse the parser after initialization.
+        from app.modules.proxy._service.http_bridge.request_submit import _request_kind_from_headers
+
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
         refreshed_api_key = await proxy._refresh_websocket_api_key_policy(api_key)
@@ -3089,6 +3093,10 @@ class _WebSocketMixin:
         apply_enforced_service_tier_model_fallback(
             responses_payload,
             service_tier_was_enforced=service_tier_was_enforced,
+        )
+        apply_prewarm_service_tier_model_fallback(
+            responses_payload,
+            request_kind=_request_kind_from_headers(headers),
         )
         # Judged on the full client input, before the websocket-specific
         # trimming and anchor injection below rewrite it — the same payload
