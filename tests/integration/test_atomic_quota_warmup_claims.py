@@ -241,33 +241,41 @@ async def test_claim_counts_cross_midnight_claim_against_claim_day(db_setup):
 
 
 @pytest.mark.asyncio
-async def test_claim_refuses_spent_credit_budget_after_stale_gate_read(monkeypatch, db_setup):
-    """The claim itself refuses a spent credit budget even if the gate passed.
+async def test_claim_refuses_spent_count_budget_after_stale_gate_read(monkeypatch, db_setup):
+    """The atomic claim refuses exhausted count budget even if the gate passed.
 
-    The gate is patched to always allow, simulating a replica whose budget
-    pre-check read stale state. Before this change the planned->executing
-    transition had no budget guard, so the probe was sent anyway.
+    An in-flight claim reserves the only daily slot. The advisory gate is
+    forced open to simulate a replica's stale pre-check, so only the atomic
+    planned->executing guard can prevent a second probe.
     """
     del db_setup
-    await _seed_planner(_account("acc-credits"), max_warmups_per_day=5)
+    await _seed_planner(_account("acc-count-budget"), max_warmups_per_day=1)
+    midnight = _midnight()
     async with SessionLocal() as session:
-        session.add(
-            RequestLog(
-                account_id="acc-credits",
-                request_id="warmup-cost-today",
-                model="gpt-5.4-mini",
-                status="success",
-                request_kind="warmup",
-                requested_at=utcnow(),
-                cost_usd=2.0,
-            )
-        )
-        await session.commit()
-        decision = await QuotaPlannerRepository(session).log_decision(
+        repo = QuotaPlannerRepository(session)
+        existing = await repo.log_decision(
             mode="auto",
             action="warmup",
-            idempotency_key="credit-budget-claim",
-            account_id="acc-credits",
+            idempotency_key="count-budget-existing",
+            account_id="acc-count-budget",
+            status="planned",
+        )
+        claimed = await repo.claim_warmup_decision(
+            existing.id,
+            since=midnight,
+            max_warmups=1,
+            max_credits=1.0,
+        )
+        assert claimed is not None
+        assert claimed.status == "executing"
+        assert claimed.executed_at is not None
+        assert midnight <= claimed.executed_at < midnight + timedelta(days=1)
+        claimed_at = claimed.executed_at
+        decision = await repo.log_decision(
+            mode="auto",
+            action="warmup",
+            idempotency_key="count-budget-target",
+            account_id="acc-count-budget",
             status="planned",
         )
 
@@ -277,23 +285,110 @@ async def test_claim_refuses_spent_credit_budget_after_stale_gate_read(monkeypat
 
     async def fail_send(self, *, account, model, request_id):
         del self, account, model, request_id
-        raise AssertionError("claim must refuse the spent credit budget before any probe is sent")
+        raise AssertionError("claim must refuse the spent count budget before any probe is sent")
+
+    async def noop_record_effect(self, account, model, *, source, confidence):
+        del self, account, model, source, confidence
 
     monkeypatch.setattr(QuotaWarmupService, "_execution_gate", gate_always_allows)
     monkeypatch.setattr(QuotaWarmupService, "_send_warmup_probe", fail_send)
+    monkeypatch.setattr(QuotaWarmupService, "_record_warmup_effect", noop_record_effect)
 
     async with SessionLocal() as session:
         result = await QuotaWarmupService(session).warm_now(
-            account_id="acc-credits",
+            account_id="acc-count-budget",
             model="gpt-5.4-mini",
             decision_id=decision.id,
         )
 
     assert result.status == "skipped"
-    assert result.reason == "daily_warmup_credit_budget_exhausted"
+    assert result.reason == "daily_warmup_count_budget_exhausted"
+    assert result.request_id is None
     async with SessionLocal() as session:
-        status = await session.scalar(select(QuotaPlannerDecision.status).where(QuotaPlannerDecision.id == decision.id))
-    assert status == "skipped"
+        persisted = await session.get(QuotaPlannerDecision, decision.id)
+        assert persisted is not None
+        assert persisted.status == "skipped"
+        assert persisted.reason == "daily_warmup_count_budget_exhausted"
+        existing_claim = await session.get(QuotaPlannerDecision, existing.id)
+        assert existing_claim is not None
+        assert existing_claim.status == "executing"
+        assert existing_claim.reason == "warmup_executing"
+        assert existing_claim.executed_at == claimed_at
+        assert await QuotaPlannerRepository(session).count_active_warmups_since(midnight) == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_ignores_historical_credit_cost_when_count_budget_remains(monkeypatch, db_setup):
+    """Historical costs above the dormant credit limit neither block nor price a probe."""
+    del db_setup
+    await _seed_planner(_account("acc-historical-credits"), max_warmups_per_day=1)
+    async with SessionLocal() as session:
+        session.add(
+            RequestLog(
+                account_id="acc-historical-credits",
+                request_id="historical-warmup-cost-today",
+                model="gpt-5.4-mini",
+                status="success",
+                request_kind="warmup",
+                requested_at=utcnow(),
+                cost_usd=2.0,
+                pricing_version="historical-test-pricing",
+            )
+        )
+        await session.commit()
+        decision = await QuotaPlannerRepository(session).log_decision(
+            mode="auto",
+            action="warmup",
+            idempotency_key="historical-credit-inert-claim",
+            account_id="acc-historical-credits",
+            status="planned",
+        )
+
+    probes: list[str] = []
+
+    async def fake_send(self, *, account, model, request_id):
+        del self, account, model
+        probes.append(request_id)
+        return WarmupUsage(input_tokens=3, output_tokens=1, cached_input_tokens=0, reasoning_tokens=None)
+
+    async def noop_record_effect(self, account, model, *, source, confidence):
+        del self, account, model, source, confidence
+
+    monkeypatch.setattr(QuotaWarmupService, "_send_warmup_probe", fake_send)
+    monkeypatch.setattr(QuotaWarmupService, "_record_warmup_effect", noop_record_effect)
+
+    async with SessionLocal() as session:
+        result = await QuotaWarmupService(session).warm_now(
+            account_id="acc-historical-credits",
+            model="gpt-5.4-mini",
+            force_probe=True,
+            decision_id=decision.id,
+        )
+
+    assert result.status == "executed"
+    assert result.reason == "warmup_executed"
+    assert result.request_id is not None
+    assert probes == [result.request_id]
+    async with SessionLocal() as session:
+        persisted = await session.get(QuotaPlannerDecision, decision.id)
+        assert persisted is not None
+        assert persisted.status == "executed"
+        assert persisted.reason == "warmup_executed"
+        log = await session.scalar(select(RequestLog).where(RequestLog.request_id == result.request_id))
+        assert log is not None
+        assert log.request_kind == "warmup"
+        assert log.status == "success"
+        assert (log.input_tokens, log.output_tokens, log.cached_input_tokens) == (3, 1, 0)
+        assert log.cost_usd is None
+        assert log.pricing_version is None
+        historical = await session.scalar(
+            select(RequestLog).where(RequestLog.request_id == "historical-warmup-cost-today")
+        )
+        assert historical is not None
+        assert historical.cost_usd == 2.0
+        assert historical.pricing_version == "historical-test-pricing"
+        settings = await QuotaPlannerRepository(session).get_settings()
+        assert settings.max_warmup_credits_per_day == 1.0
 
 
 @pytest.mark.asyncio
