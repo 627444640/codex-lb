@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+from collections.abc import Iterator
 
 import pytest
 
@@ -14,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _clear_budget() -> None:
+def _clear_budget() -> Iterator[None]:
     reset_transparent_retry()
     yield
     reset_transparent_retry()
