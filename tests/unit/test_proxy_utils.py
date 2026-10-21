@@ -16992,8 +16992,9 @@ async def test_stream_post_dispatch_network_failure_rotates_generation_for_next_
     assert request_logs.calls[1]["status"] == "success"
 
 
+@pytest.mark.parametrize("visible_output", [False, True], ids=["buffered-prelude", "visible-output"])
 @pytest.mark.asyncio
-async def test_stream_websocket_network_drop_rotates_generation_for_next_request(monkeypatch):
+async def test_stream_websocket_network_drop_rotates_generation_for_next_request(monkeypatch, visible_output: bool):
     settings = _make_proxy_settings()
     settings.upstream_base_url = "https://chatgpt.com/backend-api"
     settings.upstream_connect_timeout_seconds = 8.0
@@ -17012,12 +17013,26 @@ async def test_stream_websocket_network_drop_rotates_generation_for_next_request
     cause = OSError(errno.ENETUNREACH, "Network is unreachable")
     network_error = aiohttp.ClientPayloadError("websocket receive failed")
     network_error.__cause__ = cause
-    failed_websocket = _WsResponse(
-        [
-            _ws_text_message({"type": "response.created", "response": {"id": "resp_ws_before_drop"}}),
-            _WsMessage(aiohttp.WSMsgType.ERROR, network_error),
-        ]
-    )
+    failed_messages = [
+        _ws_text_message({"type": "response.created", "response": {"id": "resp_ws_before_drop"}}),
+    ]
+    if visible_output:
+        # A lifecycle prelude is held until model output arrives. Exercise both
+        # the pre-output failure and the visible-stream no-replay boundary.
+        failed_messages.append(
+            _ws_text_message(
+                {
+                    "type": "response.output_text.delta",
+                    "response_id": "resp_ws_before_drop",
+                    "item_id": "msg_ws_before_drop",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": "partial",
+                }
+            )
+        )
+    failed_messages.append(_WsMessage(aiohttp.WSMsgType.ERROR, network_error))
+    failed_websocket = _WsResponse(failed_messages)
     replacement_websocket = _WsResponse(
         [
             _ws_text_message({"type": "response.created", "response": {"id": "resp_ws_after_rotation"}}),
@@ -17049,7 +17064,12 @@ async def test_stream_websocket_network_drop_rotates_generation_for_next_request
     failed = [chunk async for chunk in service.stream_responses(payload, {})]
     recovered = [chunk async for chunk in service.stream_responses(payload, {})]
 
-    assert len(failed) == 2
+    failed_events = [parse_sse_data_json(chunk) for chunk in failed]
+    assert all(event is not None for event in failed_events)
+    expected_failure_events = (
+        ["response.created", "response.output_text.delta", "response.failed"] if visible_output else ["response.failed"]
+    )
+    assert [event["type"] for event in failed_events if event is not None] == expected_failure_events
     failed_terminal = parse_sse_data_json(failed[-1])
     assert failed_terminal is not None
     assert cast(dict[str, JsonValue], failed_terminal["response"])["error"] == {
@@ -17057,9 +17077,23 @@ async def test_stream_websocket_network_drop_rotates_generation_for_next_request
         "message": "websocket receive failed",
         "type": "server_error",
     }
-    recovered_event = parse_sse_data_json(recovered[0])
-    assert recovered_event is not None
-    assert cast(dict[str, JsonValue], recovered_event["response"])["id"] == "resp_ws_after_rotation"
+    if visible_output:
+        created = parse_sse_data_json(failed[0])
+        delta = parse_sse_data_json(failed[1])
+        assert created is not None and delta is not None
+        assert cast(dict[str, JsonValue], created["response"])["id"] == "resp_ws_before_drop"
+        assert delta["response_id"] == "resp_ws_before_drop"
+        assert delta["delta"] == "partial"
+        assert cast(dict[str, JsonValue], failed_terminal["response"])["id"] == "resp_ws_before_drop"
+    recovered_events = [parse_sse_data_json(chunk) for chunk in recovered]
+    assert all(event is not None for event in recovered_events)
+    assert [event["type"] for event in recovered_events if event is not None] == [
+        "response.created",
+        "response.completed",
+    ]
+    for event in recovered_events:
+        assert event is not None
+        assert cast(dict[str, JsonValue], event["response"])["id"] == "resp_ws_after_rotation"
     assert generations.leased_sessions == [failed_session, replacement_session]
     assert len(failed_session.ws_calls) == len(replacement_session.ws_calls) == 1
     assert generations.rotations == [("stream", cast(aiohttp.ClientSession, failed_session))]
