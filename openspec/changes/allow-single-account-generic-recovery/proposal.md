@@ -18,6 +18,7 @@ None.
 ### Modified Capabilities
 
 - `account-routing`: a single hard-eligible account is not excluded solely by generic transient-error backoff.
+- `proxy-runtime-observability`: the liveness fallback emits one bounded, sanitized observation.
 
 ## Impact
 

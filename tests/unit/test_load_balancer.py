@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from datetime import datetime
@@ -4123,6 +4124,39 @@ def test_single_account_error_backoff_remains_selectable_without_resetting():
     assert result.account.account_id == "a"
     assert state.error_count == 5
     assert state.last_error_at == now - 60
+
+
+def test_single_account_recovery_fallback_is_observable(caplog: pytest.LogCaptureFixture):
+    now = 1_700_000_000.0
+    state = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        error_count=5,
+        last_error_at=now - 60,
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.core.balancer.logic"):
+        result = select_account([state], now=now)
+
+    assert result.account is not None
+    messages = [record.getMessage() for record in caplog.records]
+    observation = next(message for message in messages if "account_selection_recovery_fallback" in message)
+    assert "account_id=a" in observation
+    assert "reason=single_account_generic_backoff" in observation
+    assert "error_count=5" in observation
+    assert "remaining_backoff_seconds=" in observation
+
+
+def test_normal_selection_does_not_emit_recovery_fallback(caplog: pytest.LogCaptureFixture):
+    now = 1_700_000_000.0
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+
+    with caplog.at_level(logging.INFO, logger="app.core.balancer.logic"):
+        result = select_account([state], now=now)
+
+    assert result.account is not None
+    assert not any("account_selection_recovery_fallback" in record.getMessage() for record in caplog.records)
 
 
 def test_single_account_error_backoff_remains_selectable_when_fallback_is_disabled():

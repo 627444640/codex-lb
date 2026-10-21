@@ -619,6 +619,20 @@ def select_account(
         single_account_backoff = (
             len(all_states) == 1 and len(in_error_backoff) == 1 and in_error_backoff[0].status == AccountStatus.ACTIVE
         )
+        if single_account_backoff:
+            recovered = in_error_backoff[0]
+            remaining_backoff = max(
+                0.0,
+                float(backoff_seconds(recovered.error_count))
+                - (current - (recovered.last_error_at if recovered.last_error_at is not None else current)),
+            )
+            logger.info(
+                "account_selection_recovery_fallback account_id=%s reason=single_account_generic_backoff "
+                "error_count=%d remaining_backoff_seconds=%.1f",
+                recovered.account_id,
+                recovered.error_count,
+                remaining_backoff,
+            )
         if single_account_backoff or (
             allow_backoff_fallback and (len(in_error_backoff) > 1 or (in_error_backoff and hard_blocked_exists))
         ):

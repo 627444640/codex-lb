@@ -28,7 +28,8 @@ Only synthetic selector tests and sanitized OpenSpec artifacts are publication c
 
 ## Verification record
 
-- Full `tests/unit/test_load_balancer.py` and `tests/integration/test_proxy_transient_retry.py`: 301 passed.
+- Full `tests/unit/test_load_balancer.py` and `tests/integration/test_proxy_transient_retry.py`: 301 passed before the observation slice.
 - Focused quota-bypass, single-account, multi-account and hard-state tests: 5 passed.
+- Observation log-capture test passes; it records account id, fixed reason, error count and remaining backoff without payload or affinity data.
 - Ruff/format and ty passed for the selector; strict OpenSpec validation passed for this change.
 - Published as focused PR #22; no production request, merge or deployment was involved.
