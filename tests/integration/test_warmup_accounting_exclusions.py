@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import update
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, ApiKey
+from app.db.models import Account, AccountStatus, ApiKey, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeyAccountCost, ApiKeysRepository
@@ -51,7 +52,7 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
         )
         await session.commit()
 
-        await logs_repo.add_log(
+        normal_log = await logs_repo.add_log(
             account_id="acc-warmup-exclusion",
             api_key_id="key-warmup-exclusion",
             request_id="req-normal",
@@ -65,7 +66,7 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
             error_code="rate_limit_exceeded",
             requested_at=now - timedelta(minutes=5),
         )
-        await logs_repo.add_log(
+        warmup_log = await logs_repo.add_log(
             account_id="acc-warmup-exclusion",
             api_key_id="key-warmup-exclusion",
             request_id="req-warmup",
@@ -79,7 +80,7 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
             error_code="quota_exceeded",
             requested_at=now - timedelta(minutes=4),
         )
-        await logs_repo.add_log(
+        limit_warmup_log = await logs_repo.add_log(
             account_id="acc-warmup-exclusion",
             api_key_id="key-warmup-exclusion",
             request_id="req-limit-warmup",
@@ -94,6 +95,12 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
             requested_at=now - timedelta(minutes=3),
         )
 
+        # New logs are unpriced; seed stored historical amounts explicitly so
+        # excluding either warmup kind remains observable in legacy cost totals.
+        for log, historical_cost in ((normal_log, 1.25), (warmup_log, 12.5), (limit_warmup_log, 125.0)):
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=historical_cost))
+        await session.commit()
+
         since = now - timedelta(hours=1)
         until = now + timedelta(hours=1)
 
@@ -103,6 +110,7 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
         assert activity.input_tokens == 10
         assert activity.output_tokens == 5
         assert activity.cached_input_tokens == 3
+        assert activity.cost_usd == 1.25
 
         top_error = await logs_repo.top_error_since(since)
         assert top_error == "rate_limit_exceeded"
@@ -113,33 +121,40 @@ async def test_warmup_request_logs_are_excluded_from_dashboard_api_key_and_accou
         assert buckets[0].error_count == 1
         assert buckets[0].input_tokens == 10
         assert buckets[0].output_tokens == 5
+        assert buckets[0].cached_input_tokens == 3
+        assert buckets[0].cost_usd == 1.25
 
         key_summary = await api_keys_repo.get_usage_summary_by_key_id("key-warmup-exclusion")
         assert key_summary.request_count == 1
         assert key_summary.total_tokens == 15
         assert key_summary.cached_input_tokens == 3
+        assert key_summary.total_cost_usd == 1.25
 
         key_trends = await api_keys_repo.trends_by_key("key-warmup-exclusion", since, until, bucket_seconds=3600)
         assert len(key_trends) == 1
         assert key_trends[0].total_tokens == 15
+        assert key_trends[0].total_cost_usd == 1.25
 
         key_usage_7d = await api_keys_repo.usage_7d("key-warmup-exclusion", since, until)
         assert key_usage_7d.total_requests == 1
         assert key_usage_7d.total_tokens == 15
         assert key_usage_7d.cached_input_tokens == 3
+        assert key_usage_7d.total_cost_usd == 1.25
 
         key_account_costs = await api_keys_repo.usage_7d_by_account("key-warmup-exclusion", since, until)
         assert key_account_costs == [
             ApiKeyAccountCost(
                 account_id="acc-warmup-exclusion",
                 email="warmup-exclusion@example.com",
-                cost_usd=key_usage_7d.total_cost_usd,
+                cost_usd=1.25,
                 is_deleted=False,
             )
         ]
+        assert key_usage_7d.account_costs == key_account_costs
 
         account_usage = await accounts_repo.list_request_usage_summary_by_account(["acc-warmup-exclusion"])
         summary = account_usage["acc-warmup-exclusion"]
         assert summary.request_count == 1
         assert summary.total_tokens == 15
         assert summary.cached_input_tokens == 3
+        assert summary.total_cost_usd == 1.25
