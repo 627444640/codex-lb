@@ -1102,20 +1102,20 @@ async def test_http_bridge_gate_request_log_records_retry_circuit_metadata() -> 
     await service._write_http_bridge_gate_request_log(
         session,
         request_state,
-        error_code="upstream_request_timeout",
+        error_code="bridge_session_cooldown",
         error_message="HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly.",
         failure_phase="bridge_admission",
-        failure_detail="hard_key_cooldown retry_after_seconds=23",
+        failure_detail="bridge_session_cooldown retry_after_seconds=23",
         bridge_stage="retry_circuit",
     )
 
     assert service._write_request_log.await_args is not None
     fields = service._write_request_log.await_args.kwargs
-    assert fields["error_code"] == "upstream_request_timeout"
+    assert fields["error_code"] == "bridge_session_cooldown"
     assert fields["upstream_status_code"] == 503
     assert fields["failure_phase"] == "bridge_admission"
     assert fields["bridge_stage"] == "retry_circuit"
-    assert fields["upstream_error_code"] == "upstream_request_timeout"
+    assert fields["upstream_error_code"] == "bridge_session_cooldown"
     assert fields["failure_detail"].endswith("retry_after_seconds=23")
 
 
@@ -30065,7 +30065,12 @@ async def test_http_bridge_server_anchored_replay_does_not_bypass_submit_cooldow
         previous_response_id="resp-anchor",
         request_text='{"type":"response.create","previous_response_id":"resp-anchor"}',
     )
-    retry_allowed = AsyncMock(return_value=False)
+    retry_decision = AsyncMock(
+        return_value=http_bridge_retry_circuit_module._HTTPBridgePrecreatedRetryDecision(
+            blocked_reason="cooldown",
+            cooldown_remaining_seconds=30.0,
+        )
+    )
     monkeypatch.setattr(
         proxy_service,
         "get_settings",
@@ -30073,8 +30078,7 @@ async def test_http_bridge_server_anchored_replay_does_not_bypass_submit_cooldow
             http_responses_session_bridge_ambiguous_continuation_recovery_mode="server_anchored_replay_once"
         ),
     )
-    monkeypatch.setattr(service, "_http_bridge_precreated_retry_allowed", retry_allowed)
-    monkeypatch.setattr(service, "_http_bridge_precreated_retry_cooldown_seconds", AsyncMock(return_value=30.0))
+    monkeypatch.setattr(service, "_http_bridge_precreated_retry_decision", retry_decision)
 
     with pytest.raises(ProxyResponseError) as exc_info:
         await service._submit_http_bridge_request_with_handoff(
@@ -30087,9 +30091,9 @@ async def test_http_bridge_server_anchored_replay_does_not_bypass_submit_cooldow
         )
 
     assert exc_info.value.status_code == 503
-    retry_allowed_call = retry_allowed.await_args
-    assert retry_allowed_call is not None
-    assert retry_allowed_call.kwargs["allow_proof_gated_continuity_replay"] is False
+    retry_decision_call = retry_decision.await_args
+    assert retry_decision_call is not None
+    assert retry_decision_call.kwargs["allow_proof_gated_continuity_replay"] is False
 
 
 @pytest.mark.asyncio
@@ -30191,6 +30195,25 @@ async def test_http_bridge_verified_stale_anchor_bypasses_only_captured_circuit_
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_generation_claim_failure_reports_only_evidenced_cooldown() -> None:
+    service = proxy_service.ProxyService.__new__(proxy_service.ProxyService)
+    key = proxy_service._HTTPBridgeSessionKey("session_header", "synthetic-generation-claim", None)
+    service._http_bridge_retry_circuit_cooldown_seconds_for_key = AsyncMock(return_value=42.0)
+
+    cooldown_error = await service._http_bridge_generation_claim_failure_response(key=key)
+    assert cooldown_error.status_code == 503
+    assert cooldown_error.payload["error"]["code"] == "bridge_session_cooldown"
+    assert cooldown_error.retry_after_seconds == 42
+
+    service._http_bridge_retry_circuit_cooldown_seconds_for_key = AsyncMock(return_value=0.0)
+    conflict_error = await service._http_bridge_generation_claim_failure_response(key=key)
+    assert conflict_error.status_code == 503
+    assert conflict_error.payload["error"]["code"] == "upstream_unavailable"
+    assert conflict_error.retry_after_seconds is None
+    assert "generation" in conflict_error.payload["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -31172,9 +31195,52 @@ async def test_http_bridge_submit_suppresses_hard_key_during_retry_cooldown() ->
         )
 
     assert exc_info.value.status_code == 503
-    assert exc_info.value.payload["error"]["code"] == "upstream_request_timeout"
+    assert exc_info.value.payload["error"]["code"] == "bridge_session_cooldown"
     assert exc_info.value.retry_after_seconds is not None
     assert exc_info.value.retry_after_seconds >= 60
+    assert hard_session.queued_request_count == 0
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_submit_reports_half_open_busy_without_fake_cooldown() -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    hard_session = _make_bridge_session(key_value="bridge-submit-half-open")
+    now = time.monotonic()
+    cast(Any, service)._http_bridge_retry_circuits[hard_session.key] = (
+        http_bridge_retry_circuit_module._HTTPBridgeRetryCircuitState(
+            consecutive_failures=2,
+            cooldown_until=0.0,
+            half_open_until=now + 30.0,
+            last_detail="stream_idle_timeout",
+            last_touched_monotonic=now,
+        )
+    )
+    service._durable_bridge = SimpleNamespace(lookup_retry_circuit=AsyncMock(return_value=None))
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req-submit-half-open",
+        model="gpt-5.6-luna",
+        service_tier=None,
+        reasoning_effort=None,
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        transport="http",
+        awaiting_response_created=True,
+        request_text='{"type":"response.create","input":"hello"}',
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await service._submit_http_bridge_request_with_handoff(
+            hard_session,
+            request_state=request_state,
+            text_data=request_state.request_text or "",
+            queue_limit=8,
+            request_scope_id="scope-submit-half-open",
+            owned_unanchored_handoff=False,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.payload["error"]["code"] == "upstream_unavailable"
+    assert exc_info.value.retry_after_seconds is None
     assert hard_session.queued_request_count == 0
 
 

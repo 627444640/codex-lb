@@ -147,6 +147,46 @@ async def test_stream_proxy_error_preserves_retry_after_as_sse_retry_hint():
 
 
 @pytest.mark.asyncio
+async def test_bridge_session_cooldown_preserves_retry_hint_without_ambiguous_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        proxy_api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            http_responses_session_bridge_ambiguous_continuation_recovery_mode="server_indefinite_recovery"
+        ),
+    )
+
+    async def recovery() -> AsyncIterator[str]:
+        raise AssertionError("a local bridge cooldown is not ambiguous upstream execution")
+        yield ""
+
+    async def stream():
+        if False:
+            yield ""
+        raise ProxyResponseError(
+            503,
+            {"error": {"code": "bridge_session_cooldown", "message": "Retry shortly.", "type": "server_error"}},
+            retry_after_seconds=3,
+        )
+
+    events = [
+        event
+        async for event in _stream_response_error_events(
+            stream(),
+            owns_reservation=False,
+            reservation=None,
+            recovery_stream_factory=recovery,
+        )
+    ]
+
+    assert len(events) == 1
+    assert events[0].startswith("retry: 3000\n")
+    assert '"code":"bridge_session_cooldown"' in events[0]
+
+
+@pytest.mark.asyncio
 async def test_indefinite_recovery_does_not_retry_after_downstream_event(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         proxy_api,

@@ -753,6 +753,28 @@ def test_stream_startup_error_response_masks_proxy_previous_response_error():
     assert "resp_missing" not in response_body.decode()
 
 
+def test_stream_startup_error_response_preserves_bridge_session_cooldown_and_retry_after():
+    request = Request({"type": "http", "method": "POST", "path": "/v1/responses", "headers": []})
+    error = ProxyResponseError(
+        503,
+        {
+            "error": {
+                "message": "HTTP responses session bridge is cooling down; retry shortly.",
+                "type": "server_error",
+                "code": "bridge_session_cooldown",
+            }
+        },
+        retry_after_seconds=17,
+    )
+
+    response = proxy_api_module._stream_startup_error_response(request, error, headers={})
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "17"
+    body = json.loads(bytes(response.body))
+    assert body["error"]["code"] == "bridge_session_cooldown"
+
+
 def test_public_stream_incomplete_error_event_is_not_rewritten_when_already_public():
     payload = {
         "type": "error",
