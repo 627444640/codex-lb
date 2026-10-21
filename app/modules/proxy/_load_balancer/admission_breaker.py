@@ -24,6 +24,18 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config.settings import get_settings
+from app.modules.proxy._load_balancer.response_retry_budget import (
+    _transparent_retry_used as _transparent_retry_used,
+)
+from app.modules.proxy._load_balancer.response_retry_budget import (
+    mark_transparent_retry as mark_transparent_retry,
+)
+from app.modules.proxy._load_balancer.response_retry_budget import (
+    reset_transparent_retry as reset_transparent_retry,
+)
+from app.modules.proxy._load_balancer.response_retry_budget import (
+    transparent_retry_used as transparent_retry_used,
+)
 from app.modules.proxy._load_balancer.types import RuntimeState
 
 logger = logging.getLogger(__name__)
@@ -108,51 +120,11 @@ class AdmissionFailoverAction:
 
 
 _failover_mark: ContextVar[AdmissionFailoverMark | None] = ContextVar("admission_failover_mark", default=None)
-# One transparent resend per request, shared by admission failover and history replay.
-# The bool covers a task that serves one request. The id set covers a long-lived
-# websocket or bridge reader that serves many requests on one task.
-_transparent_retry_used: ContextVar[bool] = ContextVar("transparent_retry_used", default=False)
-_transparent_retry_request_ids: ContextVar[frozenset[str]] = ContextVar(
-    "transparent_retry_request_ids",
-    default=frozenset(),
-)
 # Qualifying failures already counted for this attempt, so one close is not applied twice.
 _admission_counted: ContextVar[frozenset[tuple[str, str]]] = ContextVar(
     "admission_counted",
     default=frozenset(),
 )
-
-
-def transparent_retry_used(request_id: str | None = None) -> bool:
-    """True after this request already used its one hidden resend.
-
-    A long-lived websocket or bridge task keeps the bool set after the first
-    request. Pass ``request_id`` so a later request on that task still has its
-    own resend.
-    """
-
-    if request_id is not None:
-        return request_id in _transparent_retry_request_ids.get()
-    return _transparent_retry_used.get()
-
-
-def mark_transparent_retry(request_id: str | None = None) -> None:
-    """Consume the single pre-output resend shared by failover and history replay."""
-
-    _transparent_retry_used.set(True)
-    if not request_id:
-        return
-    used_ids = _transparent_retry_request_ids.get()
-    if request_id in used_ids:
-        return
-    _transparent_retry_request_ids.set(frozenset((*used_ids, request_id)))
-
-
-def reset_transparent_retry() -> None:
-    """Clear the shared resend budget. Tests and a new request context use this."""
-
-    _transparent_retry_used.set(False)
-    _transparent_retry_request_ids.set(frozenset())
 
 
 def reset_admission_request_context() -> None:
