@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,9 +12,14 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from tests.fixtures.history_cache_safety import discard_test_history_cache
+
 TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="codex-lb-tests-"))
 TEST_DB_PATH = TEST_DB_DIR / "codex-lb.db"
 
+# Isolate lazy history-cache creation and import-time data defaults as well as
+# the primary database. Never inherit an operator's real application data dir.
+os.environ["CODEX_LB_DATA_DIR"] = str(TEST_DB_DIR)
 os.environ["CODEX_LB_DATABASE_URL"] = os.environ.get(
     "CODEX_LB_TEST_DATABASE_URL", f"sqlite+aiosqlite:///{TEST_DB_PATH}"
 )
@@ -134,7 +140,7 @@ async def app_instance(_reset_db_state, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_request_retry_budget():
+def _isolated_request_retry_budget(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """Each test starts with a fresh admission and history-replay budget.
 
     Those marks live in ContextVars. Pytest runs the suite on one task, so a
@@ -155,11 +161,11 @@ def _isolated_request_retry_budget():
         reset_history_replay_context()
         if current is None:
             return
-        path = current.path
-        set_conversation_history_cache(None)
-        for suffix in ("", "-wal", "-shm", "-journal"):
-            candidate = path if suffix == "" else path.with_name(path.name + suffix)
-            candidate.unlink(missing_ok=True)
+        discard_test_history_cache(
+            current.path,
+            owned_roots=(TEST_DB_DIR, tmp_path_factory.getbasetemp()),
+            close_cache=lambda: set_conversation_history_cache(None),
+        )
 
     _discard_conversation_history_cache()
     yield
