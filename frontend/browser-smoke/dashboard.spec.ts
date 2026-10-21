@@ -156,7 +156,7 @@ test("status controls preserve secrets and announcement schedules across support
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "GET") {
       await route.fulfill({
-        json: { available: true, email, notices, events: [] },
+        json: { available: true, email, quota: null, notices, events: [] },
       });
     } else if (pathname.endsWith("/email")) {
       const body = request.postDataJSON() as StatusEmailUpdate;
