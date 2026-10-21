@@ -4,10 +4,11 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, ApiKey
+from app.db.models import Account, AccountStatus, ApiKey, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.request_logs.repository import RequestLogsRepository
@@ -30,21 +31,14 @@ def _make_account(account_id: str, email: str, *, plan_type: str = "plus") -> Ac
     )
 
 
-def _cost(
-    input_tokens: int,
-    output_tokens: int,
-    cached_tokens: int = 0,
-    *,
-    input_rate: float = 1.25,
-    cached_rate: float = 0.125,
-    output_rate: float = 10.0,
-) -> float:
-    billable = input_tokens - cached_tokens
-    return (
-        (billable / 1_000_000) * input_rate
-        + (cached_tokens / 1_000_000) * cached_rate
-        + (output_tokens / 1_000_000) * output_rate
+async def _persist_historical_cost(
+    session: AsyncSession, log: RequestLog, cost_usd: float, *, pricing_version: str | None = None
+) -> None:
+    # add_log deliberately ignores monetary overrides; emulate pre-retirement history.
+    await session.execute(
+        update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=cost_usd, pricing_version=pricing_version)
     )
+    await session.commit()
 
 
 async def _seed_cancelled_and_error_logs() -> None:
@@ -576,7 +570,13 @@ async def test_request_logs_search_preserves_wildcard_behavior(async_client, db_
 
 
 @pytest.mark.asyncio
-async def test_request_logs_tokens_and_cost_use_reasoning_tokens(async_client, db_setup):
+@pytest.mark.parametrize(
+    ("output_tokens", "expected_total", "usage_status"),
+    [(None, 1400, "partial"), (500, 1500, "complete")],
+)
+async def test_request_logs_reasoning_tokens_preserve_usage_without_pricing(
+    async_client, db_setup, output_tokens, expected_total, usage_status
+):
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -588,8 +588,9 @@ async def test_request_logs_tokens_and_cost_use_reasoning_tokens(async_client, d
             request_id="req_reason_1",
             model="gpt-5.1",
             input_tokens=1000,
-            output_tokens=None,
+            output_tokens=output_tokens,
             cached_input_tokens=100,
+            cache_write_tokens=50,
             reasoning_tokens=400,
             reasoning_effort="xhigh",
             latency_ms=50,
@@ -603,19 +604,25 @@ async def test_request_logs_tokens_and_cost_use_reasoning_tokens(async_client, d
     payload = response.json()["requests"]
     assert len(payload) == 1
     entry = payload[0]
-    assert entry["tokens"] == 1400
+    assert entry["tokens"] == expected_total
     assert entry["inputTokens"] == 1000
-    assert entry["outputTokens"] == 400
+    assert entry["outputTokens"] == output_tokens
+    assert entry["outputTokensRaw"] == output_tokens
+    assert entry["usageStatus"] == usage_status
     assert entry["reasoningTokens"] == 400
     assert entry["cachedInputTokens"] == 100
+    assert entry["cacheWriteTokens"] == 50
     assert entry["reasoningEffort"] == "xhigh"
-    expected = _cost(1000, 400, 100)
-    assert entry["costUsd"] == pytest.approx(expected)
-    assert entry["costBreakdown"]["inputUsd"] == pytest.approx((900 / 1_000_000) * 1.25)
-    assert entry["costBreakdown"]["cachedInputUsd"] == pytest.approx((100 / 1_000_000) * 0.125)
-    assert entry["costBreakdown"]["cacheWriteUsd"] == 0.0
-    assert entry["costBreakdown"]["outputUsd"] == pytest.approx((400 / 1_000_000) * 10.0)
-    assert entry["costBreakdown"]["totalUsd"] == pytest.approx(expected)
+    assert entry["costUsd"] is None
+    assert entry["pricingVersion"] is None
+    assert entry["costStatus"] == "not_applicable"
+    assert entry["costBreakdown"] == {
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
+        "outputUsd": None,
+        "totalUsd": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -645,20 +652,28 @@ async def test_request_logs_partial_rows_keep_nullable_cost_breakdown_shape(asyn
     payload = response.json()["requests"]
     assert len(payload) == 1
     entry = payload[0]
+    assert entry["tokens"] == 1000
     assert entry["inputTokens"] == 1000
     assert entry["outputTokens"] is None
+    assert entry["outputTokensRaw"] is None
+    assert entry["reasoningTokens"] is None
+    assert entry["cachedInputTokens"] == 100
+    assert entry["usageStatus"] == "partial"
     assert entry["costUsd"] is None
+    assert entry["pricingVersion"] is None
+    assert entry["costStatus"] == "not_applicable"
     assert entry["costBreakdown"] == {
-        "inputUsd": pytest.approx((900 / 1_000_000) * 1.25),
-        "cachedInputUsd": pytest.approx((100 / 1_000_000) * 0.125),
-        "cacheWriteUsd": 0.0,
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
         "outputUsd": None,
         "totalUsd": None,
     }
 
 
 @pytest.mark.asyncio
-async def test_request_logs_cost_uses_computed_total_when_persisted_cost_missing(async_client, db_setup):
+@pytest.mark.parametrize("pricing_version", [None, "historical-test-version"])
+async def test_request_logs_cost_stays_null_when_persisted_cost_missing(async_client, db_setup, pricing_version):
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -675,20 +690,35 @@ async def test_request_logs_cost_uses_computed_total_when_persisted_cost_missing
             status="success",
             error_code=None,
             requested_at=now,
+            cost_usd=123.45,  # Legacy overrides must not price new logs.
         )
-        await session.execute(update(log.__class__).where(log.__class__.id == log.id).values(cost_usd=None))
+        assert log.cost_usd is None
+        assert log.pricing_version is None
+        await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(pricing_version=pricing_version))
         await session.commit()
 
     response = await async_client.get("/api/request-logs?accountId=acc_missing_persisted_cost&limit=1")
     assert response.status_code == 200
     payload = response.json()["requests"]
     assert len(payload) == 1
-    expected = round(_cost(1000, 500), 6)
-    assert payload[0]["costUsd"] == pytest.approx(expected)
-    assert payload[0]["costBreakdown"]["totalUsd"] == pytest.approx(expected)
+    entry = payload[0]
+    assert entry["tokens"] == 1500
+    assert entry["inputTokens"] == 1000
+    assert entry["outputTokens"] == 500
+    assert entry["usageStatus"] == "complete"
+    assert entry["pricingVersion"] == pricing_version
+    assert entry["costStatus"] == "not_applicable"
+    assert entry["costUsd"] is None
+    assert entry["costBreakdown"] == {
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
+        "outputUsd": None,
+        "totalUsd": None,
+    }
 
 
-async def test_request_logs_cost_uses_priority_service_tier(async_client, db_setup):
+async def test_request_logs_priority_service_tier_stays_unpriced(async_client, db_setup):
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -700,6 +730,8 @@ async def test_request_logs_cost_uses_priority_service_tier(async_client, db_set
             request_id="req_priority_1",
             model="gpt-5.4",
             service_tier="priority",
+            requested_service_tier="priority",
+            actual_service_tier="priority",
             input_tokens=200_000,
             output_tokens=1_000_000,
             latency_ms=50,
@@ -714,12 +746,26 @@ async def test_request_logs_cost_uses_priority_service_tier(async_client, db_set
     assert len(payload) == 1
     entry = payload[0]
     assert entry["serviceTier"] == "priority"
-    expected = _cost(200_000, 1_000_000, input_rate=5.0, cached_rate=0.5, output_rate=30.0)
-    assert entry["costUsd"] == pytest.approx(expected)
+    assert entry["requestedServiceTier"] == "priority"
+    assert entry["actualServiceTier"] == "priority"
+    assert entry["tokens"] == 1_200_000
+    assert entry["inputTokens"] == 200_000
+    assert entry["outputTokens"] == 1_000_000
+    assert entry["usageStatus"] == "complete"
+    assert entry["costUsd"] is None
+    assert entry["pricingVersion"] is None
+    assert entry["costStatus"] == "not_applicable"
+    assert entry["costBreakdown"] == {
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
+        "outputUsd": None,
+        "totalUsd": None,
+    }
 
 
 @pytest.mark.asyncio
-async def test_request_logs_cost_uses_flex_service_tier(async_client, db_setup):
+async def test_request_logs_flex_service_tier_stays_unpriced(async_client, db_setup):
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -731,6 +777,8 @@ async def test_request_logs_cost_uses_flex_service_tier(async_client, db_setup):
             request_id="req_flex_1",
             model="gpt-5.4",
             service_tier="flex",
+            requested_service_tier="flex",
+            actual_service_tier="flex",
             input_tokens=300_000,
             output_tokens=100_000,
             cached_input_tokens=50_000,
@@ -746,13 +794,28 @@ async def test_request_logs_cost_uses_flex_service_tier(async_client, db_setup):
     assert len(payload) == 1
     entry = payload[0]
     assert entry["serviceTier"] == "flex"
-    expected = round(_cost(300_000, 100_000, 50_000, input_rate=2.5, cached_rate=0.25, output_rate=11.25), 6)
-    assert entry["costUsd"] == pytest.approx(expected)
-    assert entry["costBreakdown"]["outputUsd"] == pytest.approx(round((100_000 / 1_000_000) * 11.25, 6))
+    assert entry["requestedServiceTier"] == "flex"
+    assert entry["actualServiceTier"] == "flex"
+    assert entry["tokens"] == 400_000
+    assert entry["inputTokens"] == 300_000
+    assert entry["outputTokens"] == 100_000
+    assert entry["cachedInputTokens"] == 50_000
+    assert entry["usageStatus"] == "complete"
+    assert entry["costUsd"] is None
+    assert entry["pricingVersion"] is None
+    assert entry["costStatus"] == "not_applicable"
+    assert entry["costBreakdown"] == {
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
+        "outputUsd": None,
+        "totalUsd": None,
+    }
 
 
 @pytest.mark.asyncio
-async def test_request_logs_cost_uses_persisted_cost_field(async_client, db_setup):
+@pytest.mark.parametrize("stored_cost", [4.321234, 0.004321234, 0.0])
+async def test_request_logs_cost_uses_persisted_cost_field(async_client, db_setup, stored_cost):
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
@@ -770,18 +833,27 @@ async def test_request_logs_cost_uses_persisted_cost_field(async_client, db_setu
             error_code=None,
             requested_at=now,
         )
-        await session.execute(update(log.__class__).where(log.__class__.id == log.id).values(cost_usd=4.321234))
-        await session.commit()
+        await _persist_historical_cost(session, log, stored_cost, pricing_version="historical-test-version")
 
     response = await async_client.get("/api/request-logs?accountId=acc_persisted_log_cost&limit=1")
     assert response.status_code == 200
     payload = response.json()["requests"]
     assert len(payload) == 1
-    assert payload[0]["costUsd"] == pytest.approx(4.321234)
-    assert payload[0]["costBreakdown"]["inputUsd"] is None
-    assert payload[0]["costBreakdown"]["cachedInputUsd"] is None
-    assert payload[0]["costBreakdown"]["outputUsd"] is None
-    assert payload[0]["costBreakdown"]["totalUsd"] == pytest.approx(4.321234)
+    assert payload[0]["costUsd"] == stored_cost
+    assert payload[0]["costStatus"] == "historical"
+    assert payload[0]["pricingVersion"] == "historical-test-version"
+    assert payload[0]["costBreakdown"] == {
+        "inputUsd": None,
+        "cachedInputUsd": None,
+        "cacheWriteUsd": None,
+        "outputUsd": None,
+        "totalUsd": stored_cost,
+    }
+    async with SessionLocal() as session:
+        stored_log = await session.get(RequestLog, log.id)
+        assert stored_log is not None
+        assert stored_log.cost_usd == stored_cost
+        assert stored_log.pricing_version == "historical-test-version"
 
 
 @pytest.mark.asyncio
@@ -1022,7 +1094,7 @@ async def test_request_logs_conversation_filter_aggregates_all_matching_rows(asy
             source,
             cost_usd,
         ) in rows:
-            await logs_repo.add_log(
+            log = await logs_repo.add_log(
                 account_id=account_id,
                 request_id=request_id,
                 model=model,
@@ -1035,8 +1107,8 @@ async def test_request_logs_conversation_filter_aggregates_all_matching_rows(asy
                 conversation_id=conversation_id,
                 api_key_id=api_key_id,
                 source=source,
-                cost_usd=cost_usd,
             )
+            await _persist_historical_cost(session, log, cost_usd)
 
     since = (now - timedelta(minutes=25)).isoformat()
     query = (
@@ -1048,6 +1120,9 @@ async def test_request_logs_conversation_filter_aggregates_all_matching_rows(asy
     body = response.json()
     assert [entry["requestId"] for entry in body["requests"]] == ["req_conv_target_new"]
     assert body["requests"][0]["conversationId"] == "conv-a"
+    assert body["requests"][0]["costUsd"] == 2.0
+    assert body["requests"][0]["costStatus"] == "historical"
+    assert body["hasMore"] is True
     assert body["total"] == 2
     assert body["conversation"] == {"requestCount": 2, "aggregatedCostUsd": 3.0}
     assert set(body["conversation"]) == {"requestCount", "aggregatedCostUsd"}
@@ -1056,6 +1131,8 @@ async def test_request_logs_conversation_filter_aggregates_all_matching_rows(asy
     assert second_page.status_code == 200
     second_body = second_page.json()
     assert [entry["requestId"] for entry in second_body["requests"]] == ["req_conv_target_old"]
+    assert second_body["requests"][0]["costUsd"] == 1.0
+    assert second_body["hasMore"] is False
     assert second_body["conversation"] == body["conversation"]
     assert second_body["total"] == body["total"]
 
@@ -1085,7 +1162,7 @@ async def test_request_logs_conversation_summary_does_not_mix_cached_count_with_
     logs_repository_module._clear_recent_count_cache()
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)
-        await logs_repo.add_log(
+        log = await logs_repo.add_log(
             account_id=None,
             request_id="req_conv_snapshot_old",
             model="gpt-5.1",
@@ -1095,8 +1172,8 @@ async def test_request_logs_conversation_summary_does_not_mix_cached_count_with_
             status="success",
             error_code=None,
             conversation_id="conv-snapshot",
-            cost_usd=1.25,
         )
+        await _persist_historical_cost(session, log, 1.25)
 
     first = await async_client.get("/api/request-logs?conversation_id=conv-snapshot&limit=1")
     assert first.status_code == 200
@@ -1106,7 +1183,7 @@ async def test_request_logs_conversation_summary_does_not_mix_cached_count_with_
 
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)
-        await logs_repo.add_log(
+        log = await logs_repo.add_log(
             account_id=None,
             request_id="req_conv_snapshot_new",
             model="gpt-5.1",
@@ -1116,8 +1193,8 @@ async def test_request_logs_conversation_summary_does_not_mix_cached_count_with_
             status="success",
             error_code=None,
             conversation_id="conv-snapshot",
-            cost_usd=8.75,
         )
+        await _persist_historical_cost(session, log, 8.75)
 
     second = await async_client.get("/api/request-logs?conversation_id=conv-snapshot&limit=1")
     assert second.status_code == 200

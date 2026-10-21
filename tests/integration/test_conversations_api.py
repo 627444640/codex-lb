@@ -55,6 +55,8 @@ def _account(account_id: str) -> Account:
 
 @dataclass(frozen=True, slots=True)
 class _ConversationSeed:
+    """Conversation read fixture with a synthetic historical stored cost."""
+
     request_id: str
     account_id: str
     model: str
@@ -153,7 +155,7 @@ async def _seed_conversations(base):
             ),
         ]
         for row in rows:
-            await logs.add_log(
+            log = await logs.add_log(
                 account_id=row.account_id,
                 request_id=row.request_id,
                 model=row.model,
@@ -169,8 +171,12 @@ async def _seed_conversations(base):
                 api_key_id=row.api_key_id,
                 useragent_group=row.useragent_group,
                 conversation_id=row.conversation_id,
-                cost_usd=row.cost_usd,
             )
+            assert log.cost_usd is None
+            assert log.pricing_version is None
+            # add_log is token-only; seed synthetic historical costs explicitly for read aggregation.
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=row.cost_usd))
+        await session.commit()
 
 
 async def _seed_conversation_rows(rows: list[_ConversationSeed]) -> None:
@@ -180,7 +186,7 @@ async def _seed_conversation_rows(rows: list[_ConversationSeed]) -> None:
         for account_id in {row.account_id for row in rows}:
             await accounts.upsert(_account(account_id))
         for row in rows:
-            await logs.add_log(
+            log = await logs.add_log(
                 account_id=row.account_id,
                 request_id=row.request_id,
                 model=row.model,
@@ -196,8 +202,12 @@ async def _seed_conversation_rows(rows: list[_ConversationSeed]) -> None:
                 api_key_id=row.api_key_id,
                 useragent_group=row.useragent_group,
                 conversation_id=row.conversation_id,
-                cost_usd=row.cost_usd,
             )
+            assert log.cost_usd is None
+            assert log.pricing_version is None
+            # add_log is token-only; seed synthetic historical costs explicitly for read aggregation.
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=row.cost_usd))
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -762,8 +772,9 @@ async def test_conversation_details_excludes_warmups_and_soft_deleted_rows(async
             ("eligible-1", base - timedelta(minutes=2), 10, 5, 1.0),
             ("eligible-2", base - timedelta(minutes=1), 20, 10, 2.0),
         )
+        # Seed historical amounts outside token-only add_log, including excluded rows below.
         for request_id, requested_at, input_tokens, output_tokens, cost_usd in normal_rows:
-            await logs.add_log(
+            log = await logs.add_log(
                 account_id="eligible-account",
                 request_id=request_id,
                 model="eligible-model",
@@ -771,17 +782,17 @@ async def test_conversation_details_excludes_warmups_and_soft_deleted_rows(async
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 latency_ms=input_tokens,
-                cost_usd=cost_usd,
                 status="success",
                 error_code=None,
                 requested_at=requested_at,
                 conversation_id="eligible-conversation",
             )
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=cost_usd))
         for request_id, request_kind in (
             ("excluded-warmup", RequestKind.WARMUP.value),
             ("excluded-limit-warmup", "limit_warmup"),
         ):
-            await logs.add_log(
+            log = await logs.add_log(
                 account_id=None,
                 request_id=request_id,
                 model="excluded-model",
@@ -789,13 +800,13 @@ async def test_conversation_details_excludes_warmups_and_soft_deleted_rows(async
                 input_tokens=999,
                 output_tokens=999,
                 latency_ms=999,
-                cost_usd=999.0,
                 status="success",
                 error_code=None,
                 requested_at=base + timedelta(minutes=1),
                 conversation_id="eligible-conversation",
                 request_kind=request_kind,
             )
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=999.0))
         deleted = await logs.add_log(
             account_id=None,
             request_id="excluded-deleted",
@@ -804,13 +815,14 @@ async def test_conversation_details_excludes_warmups_and_soft_deleted_rows(async
             input_tokens=999,
             output_tokens=999,
             latency_ms=999,
-            cost_usd=999.0,
             status="success",
             error_code=None,
             requested_at=base + timedelta(minutes=2),
             conversation_id="eligible-conversation",
         )
-        await session.execute(update(RequestLog).where(RequestLog.id == deleted.id).values(deleted_at=base))
+        await session.execute(
+            update(RequestLog).where(RequestLog.id == deleted.id).values(deleted_at=base, cost_usd=999.0)
+        )
         await session.commit()
 
     response = await async_client.get("/api/conversations/eligible-conversation")
