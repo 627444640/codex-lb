@@ -14135,6 +14135,7 @@ async def test_v1_responses_http_bridge_rebinds_after_upstream_previous_response
         "owner-bound-tool-history",
         "forwarded-owner-bound-tool-history",
         "missing-prior-output",
+        "missing-prior-output-with-cache",
         "transport-only",
         "operation-fence-unavailable",
         "spool-reset-unavailable",
@@ -14154,9 +14155,30 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
     async_client,
     app_instance,
     monkeypatch,
+    tmp_path,
     replay_case,
 ):
+    from app.modules.proxy import conversation_history as history_module
+
     _install_bridge_settings(monkeypatch, enabled=True)
+    missing_prior_output = replay_case in {"missing-prior-output", "missing-prior-output-with-cache"}
+    cache_available = replay_case == "missing-prior-output-with-cache"
+    history_cache = None
+    if missing_prior_output:
+        # Missing client output and missing local history are separate proofs.
+        # Use real, explicitly controlled caches rather than incidental defaults.
+        history_cache = history_module.ConversationHistoryCache(
+            tmp_path / "stale-owner-history.db",
+            enabled=cache_available,
+            min_free_disk_bytes=1,
+            disk_free=10 * 1024**3,
+            start_maintenance=False,
+        )
+        history_module.set_conversation_history_cache(history_cache)
+    original_verify_full_resend = http_bridge_streaming_module._verify_durable_full_resend
+    verify_full_resend = Mock(wraps=original_verify_full_resend)
+    if missing_prior_output:
+        monkeypatch.setattr(http_bridge_streaming_module, "_verify_durable_full_resend", verify_full_resend)
     account_neutral = replay_case in {
         "account-neutral",
         "forwarded-account-neutral",
@@ -14269,6 +14291,15 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         headers=session_headers,
     )
     first_response_id = cast(str, first_events[-1]["response"]["id"])
+    if missing_prior_output:
+        assert first_events[-1]["type"] == "response.completed"
+        assert first_response_id == "resp_stale_owner_1"
+        assert first_events[-1]["response"]["output"] == [
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}
+        ]
+        assert history_cache is not None
+        assert history_cache.holds_replayable_history(first_response_id) is cache_available
+        assert history_cache.stats().replays == 0
 
     service = get_proxy_service_for_app(app_instance)
     async with service._http_bridge_lock:
@@ -14409,7 +14440,7 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         ),
         *(
             []
-            if replay_case in {"missing-prior-output", "pending-tool-manifest"}
+            if missing_prior_output or pending_tool_manifest
             else [
                 {
                     "type": "message",
@@ -14454,6 +14485,7 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         "stream": True,
     }
     expected_replay_input = proxy_module.ResponsesRequest.model_validate(second_payload).to_payload()["input"]
+    assert isinstance(expected_replay_input, list)
     if inactive_unknown_journal:
         failed_response = await async_client.post(
             "/backend-api/codex/responses",
@@ -14592,11 +14624,45 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
         replay_connect_headers = {
             key.lower(): value for key, value in connect_headers_by_account[owner_chatgpt_account_id].items()
         }
-        assert replay_payload["previous_response_id"] == first_response_id
+        if cache_available:
+            assert "previous_response_id" not in replay_payload
+            rejected_payload = json.loads(rejecting_upstream.sent_text[0])
+            expected_cached_input = [
+                *json.loads(owner_upstream.sent_text[0])["input"],
+                *first_events[-1]["response"]["output"],
+                *rejected_payload["input"],
+            ]
+            assert len(expected_cached_input) == 3
+            assert replay_payload["input"] == expected_cached_input
+        else:
+            assert replay_payload["previous_response_id"] == first_response_id
     if account_neutral:
         assert "previous_response_id" not in replay_payload
         assert replay_payload["input"] == expected_replay_input
     assert replay_connect_headers["x-request-trace"] == "keep-me"
+    if missing_prior_output:
+        assert history_cache is not None
+        assert history_cache.stats().replays == int(cache_available)
+        assert len(owner_upstream.sent_text) == 2
+        assert len(rejecting_upstream.sent_text) == 1
+        assert alternate_upstream.sent_text == []
+        assert replay_connect_headers["x-codex-session-id"] == session_headers["x-codex-session-id"]
+        assert sum(event["type"] == "response.completed" for event in second_events) == 1
+        assert all(event["type"] not in {"error", "response.failed"} for event in second_events)
+        assert second_events[-1]["response"]["output"] == first_events[-1]["response"]["output"]
+        rejected_payload = json.loads(rejecting_upstream.sent_text[0])
+        assert rejected_payload["previous_response_id"] == first_response_id
+        assert rejected_payload["input"] == expected_replay_input[-1:]
+        if not cache_available:
+            assert replay_payload["input"] == expected_replay_input
+        matching_lookups = [
+            call.args[1]
+            for call in verify_full_resend.call_args_list
+            if call.args[1] is not None and call.args[1].latest_response_id == first_response_id
+        ]
+        assert matching_lookups
+        second_request = proxy_module.ResponsesRequest.model_validate(second_payload)
+        assert all(original_verify_full_resend(second_request, lookup) is None for lookup in matching_lookups)
 
 
 @pytest.mark.asyncio
