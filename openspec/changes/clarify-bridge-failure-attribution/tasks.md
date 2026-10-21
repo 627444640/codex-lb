@@ -14,7 +14,7 @@
 
 ## 3. Verification and publication
 
-- [ ] 3.1 Run focused unit and HTTP bridge route regressions, then relevant broader suites; record exact results and any baseline failures, not merely HTTP 200 counts.
-- [ ] 3.2 Run Ruff/format, type checking and strict OpenSpec validation for the change and owning specifications; do not substitute manual inspection for validation.
-- [ ] 3.3 Audit the staged diff and every newly published ancestor for privacy; verify only reviewed source/tests/sanitized OpenSpec are publication candidates and keep raw logs local.
-- [ ] 3.4 Publish a focused PR linked to #16 and #15 using the repository template; preserve existing release PR #1, record CI/review state, and do not merge or deploy without the corresponding gates.
+- [x] 3.1 Run focused unit and HTTP bridge route regressions, then relevant broader suites; record exact results and any baseline failures, not merely HTTP 200 counts.
+- [x] 3.2 Run Ruff/format, type checking and strict OpenSpec validation for the change and owning specifications; do not substitute manual inspection for validation.
+- [x] 3.3 Audit the staged diff and every newly published ancestor for privacy; verify only reviewed source/tests/sanitized OpenSpec are publication candidates and keep raw logs local.
+- [x] 3.4 Publish a focused PR linked to #16 and #15 using the repository template; preserve existing release PR #1, record CI/review state, and do not merge or deploy without the corresponding gates.
