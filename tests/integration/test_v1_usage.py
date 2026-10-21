@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import update
 
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, ApiKeyLimit, LimitType, LimitWindow, UsageHistory
+from app.db.models import Account, AccountStatus, ApiKeyLimit, LimitType, LimitWindow, RequestLog, UsageHistory
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
@@ -326,14 +327,14 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
         name="usage-key-a",
         limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1_000)],
     )
-    key_b_id, _ = await _create_api_key(
+    key_b_id, key_b = await _create_api_key(
         name="usage-key-b",
-        limits=[LimitRuleInput(limit_type="cost_usd", limit_window="monthly", max_value=5_000_000)],
+        limits=[LimitRuleInput(limit_type="output_tokens", limit_window="monthly", max_value=5_000_000)],
     )
 
     now = utcnow()
     limit_a_total_reset = now + timedelta(days=6)
-    limit_a_cost_reset = now + timedelta(days=20)
+    limit_a_input_reset = now + timedelta(days=20)
     limit_b_reset = now + timedelta(days=20)
 
     async with SessionLocal() as session:
@@ -352,12 +353,12 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
                 ),
                 ApiKeyLimit(
                     api_key_id=key_a_id,
-                    limit_type=LimitType.COST_USD,
+                    limit_type=LimitType.INPUT_TOKENS,
                     limit_window=LimitWindow.MONTHLY,
                     max_value=10_000_000,
                     current_value=2_500_000,
                     model_filter=None,
-                    reset_at=limit_a_cost_reset,
+                    reset_at=limit_a_input_reset,
                 ),
             ],
         )
@@ -366,7 +367,7 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
             [
                 ApiKeyLimit(
                     api_key_id=key_b_id,
-                    limit_type=LimitType.COST_USD,
+                    limit_type=LimitType.OUTPUT_TOKENS,
                     limit_window=LimitWindow.MONTHLY,
                     max_value=5_000_000,
                     current_value=5,
@@ -377,7 +378,7 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
         )
 
         logs = RequestLogsRepository(session)
-        await logs.add_log(
+        first_a_log = await logs.add_log(
             account_id=None,
             api_key_id=key_a_id,
             request_id="req_v1_usage_a1",
@@ -390,7 +391,7 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
             error_code=None,
             requested_at=now - timedelta(minutes=2),
         )
-        await logs.add_log(
+        second_a_log = await logs.add_log(
             account_id=None,
             api_key_id=key_a_id,
             request_id="req_v1_usage_a2",
@@ -403,7 +404,7 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
             error_code=None,
             requested_at=now - timedelta(minutes=1),
         )
-        await logs.add_log(
+        b_log = await logs.add_log(
             account_id=None,
             api_key_id=key_b_id,
             request_id="req_v1_usage_b1",
@@ -416,6 +417,17 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
             error_code=None,
             requested_at=now - timedelta(minutes=3),
         )
+        # New requests are unpriced. Seed synthetic historical values explicitly
+        # so this read-only scope test still detects monetary data leaking from B.
+        for row, historical_cost in ((first_a_log, 0.25), (second_a_log, 0.5), (b_log, 9.0)):
+            assert row.cost_usd is None
+            assert row.pricing_version is None
+            await session.execute(
+                update(RequestLog)
+                .where(RequestLog.id == row.id)
+                .values(cost_usd=historical_cost, pricing_version="synthetic-historical")
+            )
+        await session.commit()
 
     response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {key_a}"})
 
@@ -424,7 +436,7 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
     assert payload["request_count"] == 2
     assert payload["total_tokens"] == 140
     assert payload["cached_input_tokens"] == 22
-    assert payload["total_cost_usd"] > 0
+    assert payload["total_cost_usd"] == pytest.approx(0.75)
     assert payload["limits"] == [
         {
             "limit_type": "total_tokens",
@@ -437,13 +449,33 @@ async def test_v1_usage_scopes_usage_and_limits_to_authenticated_key(async_clien
             "source": "api_key_limit",
         },
         {
-            "limit_type": "cost_usd",
+            "limit_type": "input_tokens",
             "limit_window": "monthly",
             "max_value": 10000000,
             "current_value": 2500000,
             "remaining_value": 7500000,
             "model_filter": None,
-            "reset_at": limit_a_cost_reset.isoformat() + "Z",
+            "reset_at": limit_a_input_reset.isoformat() + "Z",
+            "source": "api_key_limit",
+        },
+    ]
+
+    response_b = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {key_b}"})
+    assert response_b.status_code == 200
+    payload_b = response_b.json()
+    assert payload_b["request_count"] == 1
+    assert payload_b["total_tokens"] == 1110
+    assert payload_b["cached_input_tokens"] == 50
+    assert payload_b["total_cost_usd"] == pytest.approx(9.0)
+    assert payload_b["limits"] == [
+        {
+            "limit_type": "output_tokens",
+            "limit_window": "monthly",
+            "max_value": 5000000,
+            "current_value": 5,
+            "remaining_value": 4999995,
+            "model_filter": None,
+            "reset_at": limit_b_reset.isoformat() + "Z",
             "source": "api_key_limit",
         },
     ]

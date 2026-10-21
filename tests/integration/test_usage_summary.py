@@ -33,7 +33,7 @@ def _make_account(account_id: str, email: str) -> Account:
 
 
 @pytest.mark.asyncio
-async def test_usage_summary_cost_includes_cached_tokens(db_setup):
+async def test_usage_summary_preserves_tokens_without_pricing(db_setup):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -43,7 +43,7 @@ async def test_usage_summary_cost_includes_cached_tokens(db_setup):
         await accounts_repo.upsert(_make_account("acc1", "cached@example.com"))
 
         now = utcnow()
-        await logs_repo.add_log(
+        log = await logs_repo.add_log(
             account_id="acc1",
             request_id="req_summary_1",
             model="gpt-5.1",
@@ -57,12 +57,19 @@ async def test_usage_summary_cost_includes_cached_tokens(db_setup):
             requested_at=now - timedelta(minutes=5),
         )
 
-        summary = await service.get_usage_summary()
-        cost = summary.cost
+        await session.refresh(log)
+        assert log.cost_usd is None
+        assert log.pricing_version is None
 
-        expected_raw = (800 / 1_000_000) * 1.25 + (200 / 1_000_000) * 0.125 + (500 / 1_000_000) * 10.0
-        expected = round(expected_raw, 6)
-        assert cost.total_usd_7d == pytest.approx(expected)
+        summary = await service.get_usage_summary()
+        assert summary.cost.total_usd_7d == 0.0
+        assert summary.metrics is not None
+        assert summary.metrics.requests_7d == 1
+        assert summary.metrics.tokens_secondary_window == 1500
+        assert summary.metrics.cached_tokens_secondary_window == 200
+
+        aggregate = await logs_repo.aggregate_usage_metrics_since(now - timedelta(days=7))
+        assert aggregate.cost_by_model == []
 
 
 @pytest.mark.asyncio
