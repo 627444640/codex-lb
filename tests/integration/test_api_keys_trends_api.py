@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.utils.time import utcnow
-from app.db.models import RequestLog
+from app.db.models import ApiKeyLimit, LimitType, LimitWindow, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 
@@ -186,27 +186,48 @@ async def test_adding_model_scoped_limit_backfills_only_matching_model(async_cli
     assert limit["modelFilter"] == "gpt-5.1"
 
 
+@pytest.mark.parametrize(
+    ("historical_cost", "historical_counter"),
+    [(0.0000005, 37), (0.0000015, 83)],
+    ids=["sub-microdollar-history", "fractional-microdollar-history"],
+)
 @pytest.mark.asyncio
-async def test_adding_cost_limit_uses_per_request_truncation(
+async def test_adding_token_limit_preserves_dormant_monetary_counter(
     async_client,
     monkeypatch: pytest.MonkeyPatch,
+    historical_cost: float,
+    historical_counter: int,
 ):
-    key_id = await _create_api_key(async_client, name="cost-truncation-zero-key")
+    key_id = await _create_api_key(async_client, name="token-edit-historical-cost-key")
     now = datetime(2026, 4, 30, 12, 0, 0)
     monkeypatch.setattr("app.modules.api_keys.service.utcnow", lambda: now)
+    historical_reset = now + timedelta(days=1)
+    async with SessionLocal() as session:
+        historical_limit = ApiKeyLimit(
+            api_key_id=key_id,
+            limit_type=LimitType.COST_USD,
+            limit_window=LimitWindow.DAILY,
+            max_value=1_000_000,
+            current_value=historical_counter,
+            model_filter=None,
+            reset_at=historical_reset,
+        )
+        session.add(historical_limit)
+        await session.commit()
+        historical_limit_id = historical_limit.id
 
     await _insert_request_logs(
         *[
             RequestLog(
                 api_key_id=key_id,
-                request_id=f"req-cost-truncation-zero-{index}",
+                request_id=f"req-historical-cost-{index}",
                 requested_at=now - timedelta(minutes=index),
                 model="gpt-5.1",
                 status="success",
                 input_tokens=1,
                 output_tokens=1,
                 cached_input_tokens=0,
-                cost_usd=0.0000005,
+                cost_usd=historical_cost,
             )
             for index in range(1, 101)
         ]
@@ -217,63 +238,43 @@ async def test_adding_cost_limit_uses_per_request_truncation(
         json={
             "limits": [
                 {
-                    "limitType": "cost_usd",
+                    "limitType": "total_tokens",
                     "limitWindow": "daily",
-                    "maxValue": 1_000_000,
+                    "maxValue": 1_000,
                 }
             ]
         },
     )
 
     assert response.status_code == 200
-    limit = _only_limit(response.json())
-    assert limit["currentValue"] == 0
-    assert limit["maxValue"] == 1_000_000
-
-
-@pytest.mark.asyncio
-async def test_adding_cost_limit_backfills_truncated_microdollars(
-    async_client,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    key_id = await _create_api_key(async_client, name="cost-truncation-total-key")
-    now = datetime(2026, 4, 30, 12, 0, 0)
-    monkeypatch.setattr("app.modules.api_keys.service.utcnow", lambda: now)
-
-    await _insert_request_logs(
-        *[
-            RequestLog(
-                api_key_id=key_id,
-                request_id=f"req-cost-truncation-total-{index}",
-                requested_at=now - timedelta(minutes=index),
-                model="gpt-5.1",
-                status="success",
-                input_tokens=1,
-                output_tokens=1,
-                cached_input_tokens=0,
-                cost_usd=0.0000015,
-            )
-            for index in range(1, 101)
-        ]
-    )
-
-    response = await async_client.patch(
-        f"/api/api-keys/{key_id}",
-        json={
-            "limits": [
-                {
-                    "limitType": "cost_usd",
-                    "limitWindow": "daily",
-                    "maxValue": 1_000_000,
-                }
-            ]
-        },
-    )
-
-    assert response.status_code == 200
-    limit = _only_limit(response.json())
-    assert limit["currentValue"] == 100
-    assert limit["maxValue"] == 1_000_000
+    limits = response.json()["limits"]
+    assert len(limits) == 2
+    by_type = {limit["limitType"]: limit for limit in limits}
+    assert set(by_type) == {"total_tokens", "cost_usd"}
+    token_limit = by_type["total_tokens"]
+    assert token_limit["currentValue"] == 200
+    assert token_limit["maxValue"] == 1_000
+    # The administrative response retains the historical row for compatibility;
+    # the token edit must preserve it, not erase it or backfill a new amount.
+    historical_response = by_type["cost_usd"]
+    assert historical_response["id"] == historical_limit_id
+    assert historical_response["currentValue"] == historical_counter
+    assert historical_response["maxValue"] == 1_000_000
+    assert _parse_utc(historical_response["resetAt"]) == historical_reset.replace(tzinfo=timezone.utc)
+    async with SessionLocal() as session:
+        persisted = await session.get(ApiKeyLimit, historical_limit_id)
+        assert persisted is not None
+        assert persisted.limit_type == LimitType.COST_USD
+        assert persisted.limit_window == LimitWindow.DAILY
+        assert persisted.max_value == 1_000_000
+        # Deliberately different from either former truncation result (0/100):
+        # normal token edits must not reprice, reset or delete historical rules.
+        assert persisted.current_value == historical_counter
+        assert persisted.reset_at == historical_reset
+        summary = await ApiKeysRepository(session).get_usage_summary_by_key_id(key_id)
+        assert summary.request_count == 100
+        assert summary.total_tokens == 200
+        assert summary.total_cost_usd == pytest.approx(100 * historical_cost)
 
 
 @pytest.mark.asyncio

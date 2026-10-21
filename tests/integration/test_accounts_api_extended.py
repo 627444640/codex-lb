@@ -748,7 +748,7 @@ async def test_accounts_list_includes_per_account_reset_times(async_client, db_s
 
 
 @pytest.mark.asyncio
-async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db_setup):
+async def test_accounts_list_includes_historical_request_usage_cost_rollup(async_client, db_setup):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -756,7 +756,7 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
         await accounts_repo.upsert(_make_account("acc_cost", "cost@example.com"))
         await accounts_repo.upsert(_make_account("acc_other", "other@example.com"))
 
-        await logs_repo.add_log(
+        first = await logs_repo.add_log(
             account_id="acc_cost",
             request_id="req_cost_1",
             model="gpt-5.3-codex",
@@ -767,7 +767,7 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
             status="success",
             error_code=None,
         )
-        await logs_repo.add_log(
+        second = await logs_repo.add_log(
             account_id="acc_cost",
             request_id="req_cost_2",
             model="gpt-5.1-codex",
@@ -778,7 +778,7 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
             status="success",
             error_code=None,
         )
-        await logs_repo.add_log(
+        other = await logs_repo.add_log(
             account_id="acc_other",
             request_id="req_other_1",
             model="gpt-5.1-codex-mini",
@@ -789,6 +789,12 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
             status="success",
             error_code=None,
         )
+        # Synthetic historical amounts exercise stored-cost sums, not live model pricing.
+        for log, historical_cost in ((first, 1.25), (second, 2.5), (other, 7.5)):
+            assert log.cost_usd is None
+            assert log.pricing_version is None
+            await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=historical_cost))
+        await session.commit()
 
     response = await async_client.get("/api/accounts")
     assert response.status_code == 200
@@ -800,33 +806,42 @@ async def test_accounts_list_includes_request_usage_cost_rollup(async_client, db
     assert request_usage["requestCount"] == 2
     assert request_usage["totalTokens"] == 180_000
     assert request_usage["cachedInputTokens"] == 90_000
-    assert request_usage["totalCostUsd"] == pytest.approx(0.47575, abs=1e-6)
+    assert request_usage["totalCostUsd"] == pytest.approx(3.75, abs=1e-6)
 
     other_usage = accounts["acc_other"]["requestUsage"]
     assert other_usage is not None
     assert other_usage["requestCount"] == 1
     assert other_usage["totalTokens"] == 1_500
+    assert other_usage["cachedInputTokens"] == 0
+    assert other_usage["totalCostUsd"] == pytest.approx(7.5, abs=1e-6)
 
 
 @pytest.mark.asyncio
-async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(async_client, db_setup):
+async def test_accounts_list_request_usage_preserves_service_tier_and_historical_cost(async_client, db_setup):
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
 
         await accounts_repo.upsert(_make_account("acc_priority_cost", "priority-cost@example.com"))
 
-        await logs_repo.add_log(
+        log = await logs_repo.add_log(
             account_id="acc_priority_cost",
             request_id="req_priority_cost_1",
             model="gpt-5.4",
             service_tier="priority",
+            requested_service_tier="priority",
+            actual_service_tier="priority",
             input_tokens=1_000_000,
             output_tokens=1_000_000,
             latency_ms=200,
             status="success",
             error_code=None,
         )
+        assert log.cost_usd is None
+        assert log.pricing_version is None
+        # Synthetic historical amount: the tier must not cause repricing on reads.
+        await session.execute(update(RequestLog).where(RequestLog.id == log.id).values(cost_usd=12.5))
+        await session.commit()
 
     response = await async_client.get("/api/accounts")
     assert response.status_code == 200
@@ -838,7 +853,16 @@ async def test_accounts_list_request_usage_cost_rollup_respects_service_tier(asy
     assert request_usage["requestCount"] == 1
     assert request_usage["totalTokens"] == 2_000_000
     assert request_usage["cachedInputTokens"] == 0
-    assert request_usage["totalCostUsd"] == pytest.approx(35.0, abs=1e-6)
+    assert request_usage["totalCostUsd"] == pytest.approx(12.5, abs=1e-6)
+
+    async with SessionLocal() as session:
+        stored_log = await session.get(RequestLog, log.id)
+        assert stored_log is not None
+        assert stored_log.service_tier == "priority"
+        assert stored_log.requested_service_tier == "priority"
+        assert stored_log.actual_service_tier == "priority"
+        assert stored_log.cost_usd == 12.5
+        assert stored_log.pricing_version is None
 
 
 @pytest.mark.asyncio
