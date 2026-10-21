@@ -7,4 +7,4 @@
 
 - [x] 2.1 Run the focused selector tests and the existing transient-retry suite; record exact outcomes.
 - [x] 2.2 Run Ruff/format, ty and strict OpenSpec validation; record results.
-- [ ] 2.3 Audit the publication diff for privacy and publish a focused PR linked to #18/#15; do not merge or deploy without separate gates.
+- [x] 2.3 Audit the publication diff for privacy and publish a focused PR linked to #18/#15; do not merge or deploy without separate gates.
