@@ -14476,7 +14476,8 @@ async def test_backend_responses_http_bridge_replays_verified_full_resend_after_
             headers={**session_headers, "x-codex-turn-state": f"http_turn_stale_{case}"},
         )
         assert failed_response.status_code == 503
-        assert failed_response.json()["error"]["code"] == "upstream_request_timeout"
+        assert failed_response.json()["error"]["code"] == "bridge_session_cooldown"
+        assert int(failed_response.headers["retry-after"]) >= 1
         assert connected_account_ids == (
             [owner_chatgpt_account_id, alternate_chatgpt_account_id]
             if account_neutral

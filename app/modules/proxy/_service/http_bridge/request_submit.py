@@ -162,6 +162,7 @@ from app.modules.proxy._service.support import (
     _HTTPBridgeResponseCreateAttempt,
     _HTTPBridgeRetryCircuitAttemptSelection,
     _HTTPBridgeSession,
+    _HTTPBridgeSessionKey,
     _request_log_client_fields,
     _websocket_request_can_replay_before_visible_output,
     _WebSocketRequestState,
@@ -979,6 +980,31 @@ class _HTTPBridgeRequestSubmitMixin:
             operation_state in {"completed", "incomplete"} and bool(getattr(operation, "event_spool_complete", False))
         )
 
+    async def _http_bridge_generation_claim_failure_response(
+        self: Any,
+        *,
+        key: _HTTPBridgeSessionKey,
+    ) -> ProxyResponseError:
+        """Describe a failed source-generation claim without inventing a deadline."""
+        cooldown = await self._http_bridge_retry_circuit_cooldown_seconds_for_key(key)
+        if cooldown > 0:
+            retry_after_seconds = max(1, math.ceil(cooldown))
+            return ProxyResponseError(
+                503,
+                openai_error(
+                    "bridge_session_cooldown",
+                    "HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly.",
+                ),
+                retry_after_seconds=retry_after_seconds,
+            )
+        return ProxyResponseError(
+            503,
+            openai_error(
+                "upstream_unavailable",
+                "The bridge recovery generation changed before dispatch; retry shortly.",
+            ),
+        )
+
     async def _submit_http_bridge_request_with_handoff(
         self: Any,
         session: "_HTTPBridgeSession",
@@ -1017,42 +1043,46 @@ class _HTTPBridgeRequestSubmitMixin:
             and request_state.response_event_count == 0
             and request_state.replay_count == 0
         )
-        retry_allowed = await self._http_bridge_precreated_retry_allowed(
+        retry_decision = await self._http_bridge_precreated_retry_decision(
             session,
             allow_proof_gated_continuity_replay=allow_proof_gated_continuity_replay,
             allow_operation_fenced_continuity_replay=allow_operation_fenced_continuity_replay,
         )
-        if not retry_allowed:
-            retry_after_seconds = max(
-                1,
-                math.ceil(await self._http_bridge_precreated_retry_cooldown_seconds(session)),
-            )
+        if not retry_decision.allowed:
+            cooldown_remaining = retry_decision.cooldown_remaining_seconds
+            if retry_decision.blocked_reason == "cooldown" and cooldown_remaining > 0:
+                retry_after_seconds: int | None = max(1, math.ceil(cooldown_remaining))
+                error_code = "bridge_session_cooldown"
+                error_message = (
+                    "HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly."
+                )
+                failure_detail = f"bridge_session_cooldown retry_after_seconds={retry_after_seconds}"
+            else:
+                retry_after_seconds = None
+                error_code = "upstream_unavailable"
+                error_message = "HTTP responses session bridge has an active half-open recovery probe; retry shortly."
+                failure_detail = f"bridge_gate_blocked reason={retry_decision.blocked_reason or 'unknown'}"
             _log_http_bridge_event(
                 "submit_retry_circuit_suppressed",
                 session.key,
                 account_id=session.account.id,
                 model=session.request_model,
-                detail="hard_key_cooldown",
+                detail=retry_decision.blocked_reason or "unknown",
                 cache_key_family=session.key.affinity_kind,
                 model_class=_extract_model_class(session.request_model) if session.request_model else None,
             )
             await self._write_http_bridge_gate_request_log(
                 session,
                 request_state,
-                error_code="upstream_request_timeout",
-                error_message=(
-                    "HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly."
-                ),
+                error_code=error_code,
+                error_message=error_message,
                 failure_phase="bridge_admission",
-                failure_detail=f"hard_key_cooldown retry_after_seconds={retry_after_seconds}",
+                failure_detail=failure_detail,
                 bridge_stage="retry_circuit",
             )
             raise ProxyResponseError(
                 503,
-                openai_error(
-                    "upstream_request_timeout",
-                    "HTTP responses session bridge is cooling down after repeated upstream timeouts; retry shortly.",
-                ),
+                openai_error(error_code, error_message),
                 retry_after_seconds=retry_after_seconds,
             )
         # Persist the recovery checkpoint only after the retry circuit has
@@ -2015,34 +2045,19 @@ class _HTTPBridgeRequestSubmitMixin:
                             )
                         )
                         if not generation_claimed:
-                            suppressed_retry_after_seconds = max(
-                                1,
-                                math.ceil(
-                                    await self._http_bridge_retry_circuit_cooldown_seconds_for_key(
-                                        circuit_key or session.key,
-                                    )
-                                ),
-                            )
+                            claim_key = circuit_key or session.key
                             _log_http_bridge_event(
                                 "stale_anchor_replay_generation_suppressed",
-                                circuit_key or session.key,
+                                claim_key,
                                 account_id=session.account.id,
                                 model=session.request_model,
-                                detail="circuit_generation_advanced_before_dispatch_claim",
-                                cache_key_family=(circuit_key or session.key).affinity_kind,
+                                detail="generation_claim_failed",
+                                cache_key_family=claim_key.affinity_kind,
                                 model_class=(
                                     _extract_model_class(session.request_model) if session.request_model else None
                                 ),
                             )
-                            raise ProxyResponseError(
-                                503,
-                                openai_error(
-                                    "upstream_request_timeout",
-                                    "HTTP responses session bridge is cooling down after repeated upstream "
-                                    "timeouts; retry shortly.",
-                                ),
-                                retry_after_seconds=suppressed_retry_after_seconds,
-                            )
+                            raise await self._http_bridge_generation_claim_failure_response(key=claim_key)
                     async with session.pending_lock:
                         session.pending_requests.append(request_state)
                         session.admission_waiter_count = max(0, session.admission_waiter_count - 1)
