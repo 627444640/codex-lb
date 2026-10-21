@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import update
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import naive_utc_to_epoch, utcnow
@@ -99,7 +100,7 @@ async def test_dashboard_overview_combines_data(async_client, db_setup):
             window="secondary",
             recorded_at=secondary_time,
         )
-        await logs_repo.add_log(
+        log = await logs_repo.add_log(
             account_id="acc_dash",
             request_id="req_dash_1",
             model="gpt-5.1",
@@ -111,6 +112,15 @@ async def test_dashboard_overview_combines_data(async_client, db_setup):
             conversation_id="conv-dash",
             requested_at=now - timedelta(minutes=1),
         )
+        assert log.cost_usd is None
+        assert log.pricing_version is None
+        # Exercise positive historical aggregation without computing a new price.
+        await session.execute(
+            update(RequestLog)
+            .where(RequestLog.id == log.id)
+            .values(cost_usd=0.75, pricing_version="synthetic-historical")
+        )
+        await session.commit()
 
     response = await async_client.get("/api/dashboard/overview")
     assert response.status_code == 200
@@ -126,7 +136,7 @@ async def test_dashboard_overview_combines_data(async_client, db_setup):
         "bucketCount": 28,
     }
     assert payload["summary"]["primaryWindow"]["capacityCredits"] == pytest.approx(225.0)
-    assert payload["summary"]["cost"]["totalUsd"] == pytest.approx(0.000625)
+    assert payload["summary"]["cost"]["totalUsd"] == pytest.approx(0.75)
     assert payload["summary"]["metrics"]["requests"] == 1
     assert payload["summary"]["metrics"]["tokens"] == 150
     assert payload["summary"]["metrics"]["cachedInputTokens"] == 0
@@ -1185,7 +1195,7 @@ async def test_dashboard_overview_includes_previous_window_summary_when_history_
             window="secondary",
             recorded_at=fixed_now - timedelta(minutes=2),
         )
-        await logs_repo.add_log(
+        coverage_log = await logs_repo.add_log(
             account_id="acc_compare",
             request_id="req_compare_coverage",
             model="gpt-5.1",
@@ -1196,7 +1206,7 @@ async def test_dashboard_overview_includes_previous_window_summary_when_history_
             error_code=None,
             requested_at=fixed_now - timedelta(days=2, minutes=1),
         )
-        await logs_repo.add_log(
+        previous_log = await logs_repo.add_log(
             account_id="acc_compare",
             request_id="req_compare_previous",
             model="gpt-5.1",
@@ -1207,7 +1217,7 @@ async def test_dashboard_overview_includes_previous_window_summary_when_history_
             error_code=None,
             requested_at=fixed_now - timedelta(days=1, hours=1),
         )
-        await logs_repo.add_log(
+        current_log = await logs_repo.add_log(
             account_id="acc_compare",
             request_id="req_compare_current",
             model="gpt-5.1",
@@ -1218,6 +1228,17 @@ async def test_dashboard_overview_includes_previous_window_summary_when_history_
             error_code=None,
             requested_at=fixed_now - timedelta(hours=2),
         )
+        # Distinct stored historical amounts prove current/previous/outside
+        # windows stay isolated; new requests themselves remain unpriced.
+        for log, historical_cost in ((coverage_log, 9.0), (previous_log, 0.5), (current_log, 1.25)):
+            assert log.cost_usd is None
+            assert log.pricing_version is None
+            await session.execute(
+                update(RequestLog)
+                .where(RequestLog.id == log.id)
+                .values(cost_usd=historical_cost, pricing_version="synthetic-historical")
+            )
+        await session.commit()
 
     response = await async_client.get("/api/dashboard/overview?timeframe=1d")
     assert response.status_code == 200
@@ -1225,12 +1246,13 @@ async def test_dashboard_overview_includes_previous_window_summary_when_history_
     payload = response.json()
     assert payload["summary"]["metrics"]["requests"] == 1
     assert payload["summary"]["metrics"]["tokens"] == 150
+    assert payload["summary"]["cost"]["totalUsd"] == pytest.approx(1.25)
     assert payload["summary"]["comparison"] == {
         "canCompare": True,
         "previous": {
             "requests": 1,
             "tokens": 300,
-            "costUsd": pytest.approx(0.00125),
+            "costUsd": pytest.approx(0.5),
         },
     }
 
