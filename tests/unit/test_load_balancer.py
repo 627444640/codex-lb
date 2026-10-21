@@ -4109,7 +4109,7 @@ def test_error_backoff_resets_error_count_when_expired():
     assert state.last_error_at is None
 
 
-def test_error_backoff_does_not_reset_when_still_active():
+def test_single_account_error_backoff_remains_selectable_without_resetting():
     now = 1_700_000_000.0
     state = AccountState(
         "a",
@@ -4119,8 +4119,54 @@ def test_error_backoff_does_not_reset_when_still_active():
         last_error_at=now - 60,
     )
     result = select_account([state], now=now)
-    assert result.account is None
+    assert result.account is not None
+    assert result.account.account_id == "a"
     assert state.error_count == 5
+    assert state.last_error_at == now - 60
+
+
+def test_single_account_error_backoff_remains_selectable_when_fallback_is_disabled():
+    now = 1_700_000_000.0
+    state = AccountState(
+        "a",
+        AccountStatus.ACTIVE,
+        used_percent=5.0,
+        error_count=5,
+        last_error_at=now - 60,
+    )
+
+    result = select_account([state], now=now, allow_backoff_fallback=False)
+
+    assert result.account is not None
+    assert result.account.account_id == "a"
+
+
+def test_multi_account_error_backoff_does_not_gain_the_single_account_exception():
+    now = 1_700_000_000.0
+    states = [
+        AccountState("a", AccountStatus.ACTIVE, error_count=5, last_error_at=now - 60),
+        AccountState("b", AccountStatus.ACTIVE, error_count=5, last_error_at=now - 60),
+    ]
+
+    result = select_account(states, now=now, allow_backoff_fallback=False)
+
+    assert result.account is None
+    assert result.error_code is None
+
+
+def test_hard_blocked_single_account_is_not_revived_by_generic_backoff():
+    now = 1_700_000_000.0
+    state = AccountState(
+        "a",
+        AccountStatus.QUOTA_EXCEEDED,
+        reset_at=int(now + 3600),
+        error_count=5,
+        last_error_at=now - 60,
+    )
+
+    result = select_account([state], now=now)
+
+    assert result.account is None
 
 
 def test_error_backoff_expired_account_does_not_immediately_relock():

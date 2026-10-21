@@ -616,7 +616,12 @@ def select_account(
             and state.account_id not in in_error_backoff_ids
             for state in all_states
         )
-        if allow_backoff_fallback and (len(in_error_backoff) > 1 or (in_error_backoff and hard_blocked_exists)):
+        single_account_backoff = (
+            len(all_states) == 1 and len(in_error_backoff) == 1 and in_error_backoff[0].status == AccountStatus.ACTIVE
+        )
+        if single_account_backoff or (
+            allow_backoff_fallback and (len(in_error_backoff) > 1 or (in_error_backoff and hard_blocked_exists))
+        ):
 
             def _backoff_expires_at(s: AccountState) -> float:
                 backoff = min(300, 30 * (2 ** (s.error_count - ERROR_BACKOFF_THRESHOLD)))
