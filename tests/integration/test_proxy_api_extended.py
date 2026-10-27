@@ -2935,9 +2935,12 @@ async def test_source_responses_stream_starts_sse_keepalive_before_first_upstrea
     assert keepalives == ["responses_source"]
     release_upstream.set()
     remaining: list[str] = []
+    # The first-chunk assertion owns the 200 ms heartbeat bound. Terminal
+    # draining also finishes request-log persistence, which can take longer
+    # under the integration shard's database load.
     while True:
         try:
-            remaining.append(cast(str, await asyncio.wait_for(iterator.__anext__(), timeout=0.2)))
+            remaining.append(cast(str, await asyncio.wait_for(iterator.__anext__(), timeout=3.0)))
         except StopAsyncIteration:
             break
     joined = "".join(remaining)

@@ -931,23 +931,15 @@ async def test_bridge_turn_lifecycle_seeded_schedules_settle_exactly_once(latenc
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "known production behavior: reachable detach/terminal/abort races issue a second (or third) release call "
-        "for the same reservation; the DB compare-and-set makes it a no-op, so only the redundant round trip "
-        "remains. Flips to XPASS when production settles with a single write; then drop the marker."
-    ),
-)
 async def test_bridge_turn_lifecycle_settles_reservation_with_a_single_write() -> None:
-    """Pins the redundant-release observation so nobody mistakes it for harness rot.
+    """Concurrent cleanup shares one successful reservation write.
 
     `_detach_http_bridge_request` decides `detached` under `pending_lock`,
     awaits the gate release and only then reads `request_state.api_key_reservation`,
     which the terminal path (draining-branch finalizer or the shielded abort
-    settlement) may already be writing; both paths clear the reservation only
-    after their awaited write returns. The seeded schedules reach that shape
-    under every latency profile.
+    settlement) may already be writing. Request-local settlement ownership
+    serializes the write and reference update across those paths. The seeded
+    schedules reach the race under every latency profile.
     """
 
     for latency in _LATENCY_PROFILES.values():
