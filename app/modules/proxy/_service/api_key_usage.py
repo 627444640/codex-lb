@@ -166,8 +166,9 @@ class _ApiKeyUsageMixin:
         request_state: _WebSocketRequestState,
     ) -> None:
         self._cancel_request_state_api_key_reservation_heartbeat(request_state)
-        await self._release_websocket_reservation(request_state.api_key_reservation)
-        request_state.api_key_reservation = None
+        async with request_state.api_key_reservation_lock:
+            await self._release_websocket_reservation(request_state.api_key_reservation)
+            request_state.api_key_reservation = None
         lifecycle = request_state.deferred_account_backoff_lifecycle
         if lifecycle is not None:
             lifecycle.settlement_confirmed = True
