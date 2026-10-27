@@ -31,6 +31,8 @@ Cargo 1.96.0 generated the lockfile using the official crates.io GitHub index as
 
 The first native-updated run passes the Rust build, 28 Rust test cases, 361 native wire-probe tests and cargo-deny. Its only unit failure is the existing packaging assertion still requiring the vulnerable rustls/aws-lc-rs versions. Update that assertion to the reviewed patched pins and retain its exact-version checks; the WebSocket fork and HTTP-family pins remain unchanged.
 
+A later integration run fails after the keepalive test's first-chunk assertions have passed: the terminal iterator drain at line 2940 shares the heartbeat's 200 ms wall-clock allowance even though it also completes request-log persistence. Keep the first heartbeat's 200 ms requirement and all frame/order assertions, and use a separate three-second bound for terminal draining. The isolated case passes; the full integration shard must pass on the updated head. No production timeout is changed.
+
 Primary native advisory references:
 
 - https://rustsec.org/advisories/RUSTSEC-2026-0346.html
