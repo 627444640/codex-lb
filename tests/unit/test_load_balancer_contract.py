@@ -222,6 +222,25 @@ async def test_public_selection_returns_a_detached_success(selection_cache: Acco
     assert persisted.email == "contract-success@example.com"
 
 
+async def test_public_selection_reloads_evicted_scopes_without_crossing_account_boundaries() -> None:
+    cache = AccountSelectionCache(ttl_seconds=60, max_entries=1)
+    balancer, accounts_repo, _, _ = _balancer([_account("scope-a"), _account("scope-b")], cache)
+
+    for expected in ("scope-a", "scope-b", "scope-a"):
+        selected = await balancer.select_account(
+            routing_strategy="usage_weighted",
+            account_ids={expected},
+            lease_kind="stream",
+            concurrency_caps=_CONCURRENCY_CAPS,
+        )
+        assert selected.account is not None and selected.account.id == expected
+        assert selected.error_code is None
+        assert selected.lease is not None
+        await balancer.release_account_lease(selected.lease)
+
+    assert accounts_repo.list_calls == 3
+
+
 @pytest.mark.asyncio
 async def test_public_selection_with_default_fair_share_kwargs_matches_default_behavior(
     selection_cache: AccountSelectionCache,
