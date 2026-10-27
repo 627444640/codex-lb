@@ -241,6 +241,62 @@ async def test_public_selection_reloads_evicted_scopes_without_crossing_account_
     assert accounts_repo.list_calls == 3
 
 
+async def test_public_selection_coalesces_a_same_scope_cold_burst(monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = AccountSelectionCache(ttl_seconds=60)
+    balancer, accounts_repo, _, _ = _balancer([_account("shared-scope")], cache)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    loads = 0
+    original_list = accounts_repo.list_accounts
+
+    async def list_accounts() -> list[Account]:
+        nonlocal loads
+        loads += 1
+        entered.set()
+        await finish.wait()
+        return await original_list()
+
+    monkeypatch.setattr(accounts_repo, "list_accounts", list_accounts)
+    requests = [asyncio.create_task(balancer.select_account(routing_strategy="usage_weighted")) for _ in range(20)]
+    try:
+        await entered.wait()
+        await asyncio.sleep(0)
+        assert loads == 1
+    finally:
+        finish.set()
+        results = await asyncio.gather(*requests)
+    assert accounts_repo.list_calls == 1
+    assert all(result.account is not None and result.account.id == "shared-scope" for result in results)
+    assert len({id(result.account) for result in results}) == 20
+
+
+async def test_cancelled_selection_loader_yields_to_waiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = AccountSelectionCache(ttl_seconds=60)
+    balancer, accounts_repo, _, _ = _balancer([_account("retry-scope")], cache)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    original_list = accounts_repo.list_accounts
+    loads = 0
+
+    async def list_accounts() -> list[Account]:
+        nonlocal loads
+        loads += 1
+        entered.set()
+        await finish.wait()
+        return await original_list()
+
+    monkeypatch.setattr(accounts_repo, "list_accounts", list_accounts)
+    owner = asyncio.create_task(balancer.select_account(routing_strategy="usage_weighted"))
+    await entered.wait()
+    waiter = asyncio.create_task(balancer.select_account(routing_strategy="usage_weighted"))
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    finish.set()
+    result = await waiter
+    assert result.account is not None and result.account.id == "retry-scope"
+    assert loads == 2
+    assert not cache._load_gates
+
+
 @pytest.mark.asyncio
 async def test_public_selection_with_default_fair_share_kwargs_matches_default_behavior(
     selection_cache: AccountSelectionCache,

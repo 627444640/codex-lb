@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gc
 import weakref
 
@@ -127,3 +128,82 @@ async def test_eviction_does_not_invalidate_or_defeat_generation_fencing(monkeyp
 def test_invalid_capacity_fails_fast(max_entries: int) -> None:
     with pytest.raises(ValueError, match="max_entries"):
         AccountSelectionCache(ttl_seconds=5, max_entries=max_entries)
+
+
+async def test_distinct_load_scopes_progress_independently() -> None:
+    cache = AccountSelectionCache(ttl_seconds=60)
+    first_entered, second_entered, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def load(model: str, entered: asyncio.Event) -> None:
+        async with cache.load_scope(_key(model)):
+            entered.set()
+            await finish.wait()
+
+    first = asyncio.create_task(load("first", first_entered))
+    await first_entered.wait()
+    second = asyncio.create_task(load("second", second_entered))
+    try:
+        await asyncio.wait_for(second_entered.wait(), timeout=3)
+    finally:
+        finish.set()
+        await asyncio.gather(first, second)
+    assert not cache._load_gates
+
+
+async def test_cancelled_load_waiter_does_not_abandon_the_owner() -> None:
+    cache = AccountSelectionCache(ttl_seconds=60)
+    entered, finish = asyncio.Event(), asyncio.Event()
+
+    async def load() -> None:
+        async with cache.load_scope(_key("shared")):
+            entered.set()
+            await finish.wait()
+
+    owner = asyncio.create_task(load())
+    await entered.wait()
+    waiter = asyncio.create_task(load())
+    try:
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert not owner.done()
+        assert len(cache._load_gates) == 1
+    finally:
+        finish.set()
+        await owner
+    assert not cache._load_gates
+
+
+async def test_invalidation_fences_owner_and_waiter_reloads_current_snapshot() -> None:
+    cache = AccountSelectionCache(ttl_seconds=60)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    key = _key("generation")
+
+    async def old_load() -> None:
+        async with cache.load_scope(key):
+            generation = cache.generation
+            entered.set()
+            await finish.wait()
+            await cache.set(_snapshot("stale"), key, generation=generation)
+
+    async def fresh_load() -> None:
+        async with cache.load_scope(key):
+            assert await cache.get(key) is None
+            await cache.set(_snapshot("current"), key, generation=cache.generation)
+
+    owner = asyncio.create_task(old_load())
+    await entered.wait()
+    waiter = asyncio.create_task(fresh_load())
+    cache.invalidate(propagate=False)
+    finish.set()
+    await asyncio.gather(owner, waiter)
+    result = await cache.get(key)
+    assert result is not None and result.accounts[0].id == "current"
+    assert not cache._load_gates
+
+
+async def test_disabled_cache_allocates_no_load_coordination() -> None:
+    cache = AccountSelectionCache(ttl_seconds=0)
+    async with cache.load_scope(_key("disabled")):
+        assert not cache._load_gates

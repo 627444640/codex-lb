@@ -1194,68 +1194,121 @@ class LoadBalancer:
         if cached is not None:
             return _clone_selection_inputs(cached)
 
-        load_generation = self._selection_inputs_cache.generation
+        async with self._selection_inputs_cache.load_scope(cache_key):
+            cached = await self._selection_inputs_cache.get(cache_key)
+            if cached is not None:
+                return _clone_selection_inputs(cached)
 
-        async with self._repo_factory() as repos:
-            all_accounts = await repos.accounts.list_accounts()
-            quota_planner_repo = getattr(repos, "quota_planner", None)
-            get_quota_planner_settings = getattr(quota_planner_repo, "get_settings", None)
-            if callable(get_quota_planner_settings):
-                try:
-                    settings_result = get_quota_planner_settings()
-                    quota_planner_settings = (
-                        await settings_result if inspect.isawaitable(settings_result) else settings_result
-                    )
-                    if not isinstance(quota_planner_settings, PlannerSettings):
+            load_generation = self._selection_inputs_cache.generation
+
+            async with self._repo_factory() as repos:
+                all_accounts = await repos.accounts.list_accounts()
+                quota_planner_repo = getattr(repos, "quota_planner", None)
+                get_quota_planner_settings = getattr(quota_planner_repo, "get_settings", None)
+                if callable(get_quota_planner_settings):
+                    try:
+                        settings_result = get_quota_planner_settings()
+                        quota_planner_settings = (
+                            await settings_result if inspect.isawaitable(settings_result) else settings_result
+                        )
+                        if not isinstance(quota_planner_settings, PlannerSettings):
+                            quota_planner_settings = PlannerSettings()
+                    except Exception:
+                        logger.warning("Failed to load quota planner settings; using defaults", exc_info=True)
                         quota_planner_settings = PlannerSettings()
-                except Exception:
-                    logger.warning("Failed to load quota planner settings; using defaults", exc_info=True)
+                else:
                     quota_planner_settings = PlannerSettings()
-            else:
-                quota_planner_settings = PlannerSettings()
-            ignore_standard_quota_status = effective_limit_name is not None
-            routing_policy_override = _additional_quota_routing_policy_override(
-                effective_limit_name,
-                additional_quota_routing_policies,
-            )
-            scoped_accounts = all_accounts
-            if account_ids is not None:
-                allowed_account_ids = set(account_ids)
-                scoped_accounts = [account for account in scoped_accounts if account.id in allowed_account_ids]
-            sticky_mutation_authority_account_ids = frozenset(account.id for account in scoped_accounts)
-            accounts = _selectable_accounts(scoped_accounts)
-            pre_model_filter_accounts = accounts
-            model_catalog_omitted_account_ids: frozenset[str] = frozenset()
-            applied_service_tier: str | None = None
-            if model and _mapped_model_has_registry_entry(model):
-                continuity_owner_candidates = _filter_accounts_for_model(
-                    scoped_accounts,
-                    model,
-                    service_tier=service_tier,
+                ignore_standard_quota_status = effective_limit_name is not None
+                routing_policy_override = _additional_quota_routing_policy_override(
+                    effective_limit_name,
+                    additional_quota_routing_policies,
                 )
-                canonical_quota_can_override_account_catalog = (
-                    additional_limit_name is None and mapped_limit_name is not None
-                )
-                model_filter = _filter_accounts_for_model_with_catalog_evidence(
-                    pre_model_filter_accounts,
-                    model,
-                    service_tier=service_tier,
-                    additional_quota_can_override_account_catalog=canonical_quota_can_override_account_catalog,
-                )
-                accounts = model_filter.accounts
-                general_model_account_ids = model_filter.general_model_account_ids
-                applied_service_tier = model_filter.applied_service_tier
-                if canonical_quota_can_override_account_catalog and general_model_account_ids is not None:
-                    model_catalog_omitted_account_ids = frozenset(
-                        account.id for account in accounts if account.id not in general_model_account_ids
+                scoped_accounts = all_accounts
+                if account_ids is not None:
+                    allowed_account_ids = set(account_ids)
+                    scoped_accounts = [account for account in scoped_accounts if account.id in allowed_account_ids]
+                sticky_mutation_authority_account_ids = frozenset(account.id for account in scoped_accounts)
+                accounts = _selectable_accounts(scoped_accounts)
+                pre_model_filter_accounts = accounts
+                model_catalog_omitted_account_ids: frozenset[str] = frozenset()
+                applied_service_tier: str | None = None
+                if model and _mapped_model_has_registry_entry(model):
+                    continuity_owner_candidates = _filter_accounts_for_model(
+                        scoped_accounts,
+                        model,
+                        service_tier=service_tier,
                     )
-            else:
-                # Administrative/runtime status affects routability, not who
-                # may own account-scoped upstream state. Capture this pool
-                # before PAUSED/DEACTIVATED/etc. can manufacture uniqueness.
-                continuity_owner_candidates = scoped_accounts
-            if model and not accounts:
-                if not all_accounts:
+                    canonical_quota_can_override_account_catalog = (
+                        additional_limit_name is None and mapped_limit_name is not None
+                    )
+                    model_filter = _filter_accounts_for_model_with_catalog_evidence(
+                        pre_model_filter_accounts,
+                        model,
+                        service_tier=service_tier,
+                        additional_quota_can_override_account_catalog=canonical_quota_can_override_account_catalog,
+                    )
+                    accounts = model_filter.accounts
+                    general_model_account_ids = model_filter.general_model_account_ids
+                    applied_service_tier = model_filter.applied_service_tier
+                    if canonical_quota_can_override_account_catalog and general_model_account_ids is not None:
+                        model_catalog_omitted_account_ids = frozenset(
+                            account.id for account in accounts if account.id not in general_model_account_ids
+                        )
+                else:
+                    # Administrative/runtime status affects routability, not who
+                    # may own account-scoped upstream state. Capture this pool
+                    # before PAUSED/DEACTIVATED/etc. can manufacture uniqueness.
+                    continuity_owner_candidates = scoped_accounts
+                if model and not accounts:
+                    if not all_accounts:
+                        selection_inputs = _SelectionInputs(
+                            accounts=[],
+                            latest_primary={},
+                            latest_secondary={},
+                            latest_monthly={},
+                            continuity_owner_candidates=[
+                                _clone_account(account) for account in continuity_owner_candidates
+                            ],
+                            sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
+                            quota_planner_settings=quota_planner_settings,
+                            runtime_accounts=[_clone_account(account) for account in all_accounts],
+                        )
+                        await self._selection_inputs_cache.set(
+                            _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
+                        )
+                        return selection_inputs
+                    if not pre_model_filter_accounts:
+                        selection_inputs = _SelectionInputs(
+                            accounts=[],
+                            latest_primary={},
+                            latest_secondary={},
+                            latest_monthly={},
+                            continuity_owner_candidates=[],
+                            sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
+                            quota_planner_settings=quota_planner_settings,
+                            runtime_accounts=[_clone_account(account) for account in all_accounts],
+                        )
+                        await self._selection_inputs_cache.set(
+                            _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
+                        )
+                        return selection_inputs
+                    if continuity_owner_candidates:
+                        selection_inputs = _SelectionInputs(
+                            accounts=[],
+                            latest_primary={},
+                            latest_secondary={},
+                            latest_monthly={},
+                            continuity_owner_candidates=[
+                                _clone_account(account) for account in continuity_owner_candidates
+                            ],
+                            sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
+                            quota_planner_settings=quota_planner_settings,
+                            runtime_accounts=[_clone_account(account) for account in all_accounts],
+                        )
+                        await self._selection_inputs_cache.set(
+                            _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
+                        )
+                        return selection_inputs
                     selection_inputs = _SelectionInputs(
                         accounts=[],
                         latest_primary={},
@@ -1267,82 +1320,56 @@ class LoadBalancer:
                         sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
+                        error_message=(
+                            f"No accounts with a plan supporting model '{model}' "
+                            f"at service tier '{applied_service_tier}'"
+                            if applied_service_tier is not None
+                            else f"No accounts with a plan supporting model '{model}'"
+                        ),
+                        error_code=NO_PLAN_SUPPORT_FOR_MODEL,
                     )
                     await self._selection_inputs_cache.set(
                         _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
                     )
                     return selection_inputs
-                if not pre_model_filter_accounts:
-                    selection_inputs = _SelectionInputs(
-                        accounts=[],
-                        latest_primary={},
-                        latest_secondary={},
-                        latest_monthly={},
-                        continuity_owner_candidates=[],
-                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
-                        quota_planner_settings=quota_planner_settings,
-                        runtime_accounts=[_clone_account(account) for account in all_accounts],
-                    )
-                    await self._selection_inputs_cache.set(
-                        _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
-                    )
-                    return selection_inputs
-                if continuity_owner_candidates:
-                    selection_inputs = _SelectionInputs(
-                        accounts=[],
-                        latest_primary={},
-                        latest_secondary={},
-                        latest_monthly={},
-                        continuity_owner_candidates=[
-                            _clone_account(account) for account in continuity_owner_candidates
-                        ],
-                        sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
-                        quota_planner_settings=quota_planner_settings,
-                        runtime_accounts=[_clone_account(account) for account in all_accounts],
-                    )
-                    await self._selection_inputs_cache.set(
-                        _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
-                    )
-                    return selection_inputs
-                selection_inputs = _SelectionInputs(
-                    accounts=[],
-                    latest_primary={},
-                    latest_secondary={},
-                    latest_monthly={},
-                    continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
-                    sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
-                    quota_planner_settings=quota_planner_settings,
-                    runtime_accounts=[_clone_account(account) for account in all_accounts],
-                    error_message=(
-                        f"No accounts with a plan supporting model '{model}' at service tier '{applied_service_tier}'"
-                        if applied_service_tier is not None
-                        else f"No accounts with a plan supporting model '{model}'"
-                    ),
-                    error_code=NO_PLAN_SUPPORT_FOR_MODEL,
-                )
-                await self._selection_inputs_cache.set(
-                    _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
-                )
-                return selection_inputs
 
-            if effective_limit_name:
-                additional_quota_candidates = accounts
-                additional_filter = await self._filter_accounts_for_additional_limit(
-                    additional_quota_candidates,
-                    model=model,
-                    limit_name=effective_limit_name,
-                    explicit_limit=additional_limit_name is not None,
-                    repos=repos,
-                    require_fresh_evidence_account_ids=model_catalog_omitted_account_ids,
-                )
-                accounts = additional_filter.accounts
-                if not accounts and all_accounts_require_reauthentication(
-                    additional_quota_candidates,
-                    self._encryptor,
-                    now=self._clock.time(),
-                ):
-                    accounts = additional_quota_candidates
-                elif not accounts:
+                if effective_limit_name:
+                    additional_quota_candidates = accounts
+                    additional_filter = await self._filter_accounts_for_additional_limit(
+                        additional_quota_candidates,
+                        model=model,
+                        limit_name=effective_limit_name,
+                        explicit_limit=additional_limit_name is not None,
+                        repos=repos,
+                        require_fresh_evidence_account_ids=model_catalog_omitted_account_ids,
+                    )
+                    accounts = additional_filter.accounts
+                    if not accounts and all_accounts_require_reauthentication(
+                        additional_quota_candidates,
+                        self._encryptor,
+                        now=self._clock.time(),
+                    ):
+                        accounts = additional_quota_candidates
+                    elif not accounts:
+                        selection_inputs = _SelectionInputs(
+                            accounts=[],
+                            latest_primary={},
+                            latest_secondary={},
+                            latest_monthly={},
+                            continuity_owner_candidates=[
+                                _clone_account(account) for account in continuity_owner_candidates
+                            ],
+                            sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
+                            quota_planner_settings=quota_planner_settings,
+                            runtime_accounts=[_clone_account(account) for account in all_accounts],
+                            error_message=additional_filter.error_message,
+                            error_code=additional_filter.error_code,
+                        )
+                        await self._selection_inputs_cache.set(
+                            _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
+                        )
+                        return selection_inputs
+                if not accounts:
                     selection_inputs = _SelectionInputs(
                         accounts=[],
                         latest_primary={},
@@ -1354,88 +1381,72 @@ class LoadBalancer:
                         sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
                         quota_planner_settings=quota_planner_settings,
                         runtime_accounts=[_clone_account(account) for account in all_accounts],
-                        error_message=additional_filter.error_message,
-                        error_code=additional_filter.error_code,
                     )
                     await self._selection_inputs_cache.set(
                         _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
                     )
                     return selection_inputs
-            if not accounts:
-                selection_inputs = _SelectionInputs(
-                    accounts=[],
-                    latest_primary={},
-                    latest_secondary={},
-                    latest_monthly={},
-                    continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
-                    sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
-                    quota_planner_settings=quota_planner_settings,
-                    runtime_accounts=[_clone_account(account) for account in all_accounts],
-                )
-                await self._selection_inputs_cache.set(
-                    _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
-                )
-                return selection_inputs
 
-            # These share one AsyncSession: concurrent execution on a single
-            # session is unsafe (asyncpg) and gains nothing — the driver
-            # serializes statements per connection anyway.
-            standard_latest_primary = await repos.usage.latest_by_account()
-            standard_latest_secondary = await repos.usage.latest_by_account(window="secondary")
-            latest_monthly = await repos.usage.latest_by_account(window="monthly")
-            if effective_limit_name:
-                model_allowed_plans = get_model_registry().plan_types_for_model(model) if model else None
-                latest_primary = additional_filter.latest_primary
-                latest_secondary = additional_filter.latest_secondary
-                quota_scoped_account_ids = frozenset(
-                    account.id
-                    for account in accounts
-                    if additional_limit_name is not None
-                    or (
-                        model_allowed_plans is not None
-                        and normalize_account_plan_type(account.plan_type) not in _ADDITIONAL_QUOTA_EXEMPT_PLAN_TYPES
-                        and account_plan_matches_allowed(
-                            account.plan_type,
-                            model_allowed_plans,
+                # These share one AsyncSession: concurrent execution on a single
+                # session is unsafe (asyncpg) and gains nothing — the driver
+                # serializes statements per connection anyway.
+                standard_latest_primary = await repos.usage.latest_by_account()
+                standard_latest_secondary = await repos.usage.latest_by_account(window="secondary")
+                latest_monthly = await repos.usage.latest_by_account(window="monthly")
+                if effective_limit_name:
+                    model_allowed_plans = get_model_registry().plan_types_for_model(model) if model else None
+                    latest_primary = additional_filter.latest_primary
+                    latest_secondary = additional_filter.latest_secondary
+                    quota_scoped_account_ids = frozenset(
+                        account.id
+                        for account in accounts
+                        if additional_limit_name is not None
+                        or (
+                            model_allowed_plans is not None
+                            and normalize_account_plan_type(account.plan_type)
+                            not in _ADDITIONAL_QUOTA_EXEMPT_PLAN_TYPES
+                            and account_plan_matches_allowed(
+                                account.plan_type,
+                                model_allowed_plans,
+                            )
                         )
                     )
+                    latest_primary: dict[str, UsageHistory | AdditionalUsageHistory] = dict(standard_latest_primary)
+                    latest_secondary: dict[str, UsageHistory | AdditionalUsageHistory] = dict(standard_latest_secondary)
+                    for account_id in quota_scoped_account_ids:
+                        latest_primary.pop(account_id, None)
+                        latest_secondary.pop(account_id, None)
+                        if account_id in additional_filter.latest_primary:
+                            latest_primary[account_id] = additional_filter.latest_primary[account_id]
+                        if account_id in additional_filter.latest_secondary:
+                            latest_secondary[account_id] = additional_filter.latest_secondary[account_id]
+                    ignore_standard_quota_account_ids = quota_scoped_account_ids
+                else:
+                    latest_primary = standard_latest_primary
+                    latest_secondary = standard_latest_secondary
+                    ignore_standard_quota_account_ids = frozenset()
+                quota_admitted_catalog_omission_account_ids = frozenset(
+                    account.id for account in accounts if account.id in model_catalog_omitted_account_ids
                 )
-                latest_primary: dict[str, UsageHistory | AdditionalUsageHistory] = dict(standard_latest_primary)
-                latest_secondary: dict[str, UsageHistory | AdditionalUsageHistory] = dict(standard_latest_secondary)
-                for account_id in quota_scoped_account_ids:
-                    latest_primary.pop(account_id, None)
-                    latest_secondary.pop(account_id, None)
-                    if account_id in additional_filter.latest_primary:
-                        latest_primary[account_id] = additional_filter.latest_primary[account_id]
-                    if account_id in additional_filter.latest_secondary:
-                        latest_secondary[account_id] = additional_filter.latest_secondary[account_id]
-                ignore_standard_quota_account_ids = quota_scoped_account_ids
-            else:
-                latest_primary = standard_latest_primary
-                latest_secondary = standard_latest_secondary
-                ignore_standard_quota_account_ids = frozenset()
-            quota_admitted_catalog_omission_account_ids = frozenset(
-                account.id for account in accounts if account.id in model_catalog_omitted_account_ids
-            )
-            selection_inputs = _SelectionInputs(
-                accounts=[_clone_account(account) for account in accounts],
-                latest_primary={account_id: clone_row(entry) for account_id, entry in latest_primary.items()},
-                latest_secondary={account_id: clone_row(entry) for account_id, entry in latest_secondary.items()},
-                latest_monthly={account_id: clone_row(entry) for account_id, entry in latest_monthly.items()},
-                continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
-                sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
-                quota_planner_settings=quota_planner_settings,
-                runtime_accounts=[_clone_account(account) for account in all_accounts],
-                ignore_standard_quota_account_ids=ignore_standard_quota_account_ids,
-                ignore_standard_quota_status=ignore_standard_quota_status,
-                persist_standard_quota_status=True,
-                routing_policy_override=routing_policy_override,
-                quota_admitted_catalog_omission_account_ids=quota_admitted_catalog_omission_account_ids,
-            )
-            await self._selection_inputs_cache.set(
-                _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
-            )
-            return selection_inputs
+                selection_inputs = _SelectionInputs(
+                    accounts=[_clone_account(account) for account in accounts],
+                    latest_primary={account_id: clone_row(entry) for account_id, entry in latest_primary.items()},
+                    latest_secondary={account_id: clone_row(entry) for account_id, entry in latest_secondary.items()},
+                    latest_monthly={account_id: clone_row(entry) for account_id, entry in latest_monthly.items()},
+                    continuity_owner_candidates=[_clone_account(account) for account in continuity_owner_candidates],
+                    sticky_mutation_authority_account_ids=sticky_mutation_authority_account_ids,
+                    quota_planner_settings=quota_planner_settings,
+                    runtime_accounts=[_clone_account(account) for account in all_accounts],
+                    ignore_standard_quota_account_ids=ignore_standard_quota_account_ids,
+                    ignore_standard_quota_status=ignore_standard_quota_status,
+                    persist_standard_quota_status=True,
+                    routing_policy_override=routing_policy_override,
+                    quota_admitted_catalog_omission_account_ids=quota_admitted_catalog_omission_account_ids,
+                )
+                await self._selection_inputs_cache.set(
+                    _clone_selection_inputs(selection_inputs), key=cache_key, generation=load_generation
+                )
+                return selection_inputs
 
     async def check_opportunistic_admission(
         self,

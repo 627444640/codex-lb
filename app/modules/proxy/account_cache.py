@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -33,6 +35,12 @@ class _CachedSelectionInputs:
     expires_at: float
 
 
+@dataclass(slots=True)
+class _SelectionLoadGate:
+    lock: asyncio.Lock
+    users: int = 0
+
+
 class AccountSelectionCache:
     def __init__(self, ttl_seconds: int | None = None, *, max_entries: int = _MAX_SELECTION_CACHE_ENTRIES) -> None:
         if ttl_seconds is None:
@@ -46,12 +54,33 @@ class AccountSelectionCache:
         self._ttl_seconds = ttl_seconds
         self._max_entries = max_entries
         self._cache: OrderedDict[_CacheKey, _CachedSelectionInputs] = OrderedDict()
+        self._load_gates: dict[_CacheKey, _SelectionLoadGate] = {}
         self._lock = anyio.Lock()
         self._generation: int = 0
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    @asynccontextmanager
+    async def load_scope(self, key: _CacheKey) -> AsyncIterator[None]:
+        if self._ttl_seconds == 0:
+            yield
+            return
+        gate = self._load_gates.get(key)
+        if gate is None:
+            gate = _SelectionLoadGate(asyncio.Lock())
+            self._load_gates[key] = gate
+        gate.users += 1
+        try:
+            async with gate.lock:
+                yield
+        finally:
+            # No await between bookkeeping steps: cancellation cannot leave
+            # an abandoned gate, and invalidation does not replace live gates.
+            gate.users -= 1
+            if gate.users == 0:
+                del self._load_gates[key]
 
     async def get(self, key: _CacheKey = (None, None, None, "", None)) -> SelectionInputs | None:
         if self._ttl_seconds == 0:
