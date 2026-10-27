@@ -6517,28 +6517,29 @@ class _WebSocketMixin:
             upstream_control.reconnect_requested = True
             upstream_control.retire_after_drain = True
         lifecycle = request_state.deferred_account_backoff_lifecycle
-        settlement_committed = await proxy._settle_stream_api_key_usage(
-            api_key,
-            request_state.api_key_reservation,
-            settlement,
-            response_id,
-            # The reservation must be settled before the load-balancer
-            # health write below (settlement-ordering invariant).
-            wait_for_settlement=(
-                lifecycle is not None
-                or settlement.account_health_error
-                or settlement.record_success
-                or bool(request_state.deferred_account_error_backoffs)
-                or bool(request_state.deferred_keyed_stream_health)
-            ),
-        )
-        # Settlement responsibility has transferred (the settle path tracks
-        # its own failure/cancellation fallback release). Clear any terminal-
-        # bookkeeping settlement claim so a later abort of the surrounding
-        # continuation does not race a duplicate release against it.
-        request_state.terminal_settlement_phase = None
+        async with request_state.api_key_reservation_lock:
+            settlement_committed = await proxy._settle_stream_api_key_usage(
+                api_key,
+                request_state.api_key_reservation,
+                settlement,
+                response_id,
+                # The reservation must be settled before the load-balancer
+                # health write below (settlement-ordering invariant).
+                wait_for_settlement=(
+                    lifecycle is not None
+                    or settlement.account_health_error
+                    or settlement.record_success
+                    or bool(request_state.deferred_account_error_backoffs)
+                    or bool(request_state.deferred_keyed_stream_health)
+                ),
+            )
+            # The settle path owns its failure/cancellation fallback. Keep
+            # the claim and reservation update atomic with that handoff so
+            # detach/abort cannot submit the same live reservation again.
+            request_state.terminal_settlement_phase = None
+            if settlement_committed:
+                request_state.api_key_reservation = None
         if settlement_committed:
-            request_state.api_key_reservation = None
             if lifecycle is not None:
                 lifecycle.settlement_confirmed = True
             pending_backoffs = (
