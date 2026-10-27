@@ -8,7 +8,7 @@
 
 - [x] 2.1 Run related cache, selection, invalidation and lifecycle tests; record the existing skip and xfail.
 - [x] 2.2 Run lint, formatting, changed-file typing and architecture checks.
-- [ ] 2.3 Verify current-head CI and review state before integrating into main.
+- [x] 2.3 Verify current-head CI and review state before integrating into main.
 
 ## Workflow follow-up
 

@@ -7,4 +7,4 @@
 ## 2. Acceptance
 
 - [x] 2.1 Run cache/selection/invalidation regression tests, typing, lint and architecture checks.
-- [ ] 2.2 Publish the bounded-cache and coalesced-load refinements together as one focused cache PR on current main; verify current-head CI before merge.
+- [x] 2.2 Publish the bounded-cache and coalesced-load refinements together as one focused cache PR on current main; verify current-head CI before merge.

@@ -178,3 +178,19 @@ short windows, or evaluated for a quota the plan does not have.
 Settlement is discarded if newer replica-local runtime activity arrives while
 that snapshot is loading, preventing an older probe success from clearing a
 later failure.
+
+## Selection snapshot residency and cold bursts
+
+Selection snapshots have a fixed default capacity of 256 routing scopes. FIFO
+expiry ordering bounds retained state without introducing an operator setting;
+an evicted scope follows the normal reload path. The bound is on entries, not
+bytes, so large account pools still warrant memory measurement.
+
+Cache hits avoid load coordination. A cold burst for one key has one load
+owner, while different keys remain independent; for example, 20 simultaneous
+requests for the same eligible account scope reuse one snapshot load and each
+receives a detached account result. Cancellation retires coordination state,
+and generation fencing prevents an invalidated load from repopulating the
+cache. See the requirements in [spec.md](spec.md) and the verified changes
+[bounded residency](../../changes/archive/2026-10-28-bound-account-selection-cache/verification.md)
+and [coalesced loading](../../changes/archive/2026-10-28-coalesce-selection-cache-loads/verification.md).

@@ -8,4 +8,4 @@
 
 - [x] 2.1 Run the proxy lifecycle and affected reservation/HTTP bridge/websocket test slices.
 - [x] 2.2 Run lint, typing, architecture and strict OpenSpec checks.
-- [ ] 2.3 Verify current-head CI and review state before integration.
+- [x] 2.3 Verify current-head CI and review state before integration.
