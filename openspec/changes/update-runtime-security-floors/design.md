@@ -22,3 +22,18 @@ Patched networking libraries can alter error/timeout handling. Run HTTP-client a
 ## Validation
 
 The frozen environment resolves successfully and release metadata still validates as v1.25.0-beta.9. The HTTP-client/proxy-utility/transient-retry slice reports 1,490 passed and one Windows startup-probe timeout. Running that exact failure with the original five dependency versions reproduces the same timeout, so it is not introduced by the upgrade; it remains visible and is not skipped or weakened. Fresh Linux CI and the Docker image scan remain required.
+
+## Native dependency closure
+
+The first fresh CI run passes the Python Docker scan but exposes ten native advisories (RUSTSEC-2026-0285, -0346, -0348, -0349, -0382, -0386, -0391, -0398, -0403 and -0410). Retain audit policy and protocol features; update rustls to 0.23.46, rustls-webpki to 0.103.16, Tokio to the patched 1.51.6 line, and zstd/zstd-safe/zstd-sys to 0.14.3/8.2.0/2.1.2. rustls requires aws-lc-rs 1.18, so pin 1.18.2 and resolve its companion sys crate. Updating async-compression and its codec/core dependencies also updates their Brotli allocator/decompressor closure. Preserve the pinned WebSocket fork revisions and Rust 1.96 toolchain.
+
+Cargo 1.96.0 generated the lockfile using the official crates.io GitHub index as a temporary source replacement after the normal index endpoint timed out. The committed lockfile retains canonical crates.io source identities and checksums; no registry replacement configuration is committed. Native compilation, protocol tests and cargo-deny run in Linux CI; standalone Cargo metadata validation is not a substitute for those checks.
+
+Primary native advisory references:
+
+- https://rustsec.org/advisories/RUSTSEC-2026-0346.html
+- https://rustsec.org/advisories/RUSTSEC-2026-0382.html
+- https://rustsec.org/advisories/RUSTSEC-2026-0386.html
+- https://raw.githubusercontent.com/RustSec/advisory-db/main/crates/zstd/RUSTSEC-2026-0391.md
+- https://rustsec.org/advisories/RUSTSEC-2026-0398.html
+- https://rustsec.org/advisories/RUSTSEC-2026-0410.html
