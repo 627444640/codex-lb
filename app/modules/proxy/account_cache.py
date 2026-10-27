@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +26,7 @@ if TYPE_CHECKING:
 
 _AssignedAccountsKey = tuple[str, ...] | None
 _CacheKey = tuple[str | None, str | None, str | None, str, _AssignedAccountsKey]
+_MAX_SELECTION_CACHE_ENTRIES = 256
 
 
 @dataclass(slots=True)
@@ -31,22 +35,52 @@ class _CachedSelectionInputs:
     expires_at: float
 
 
+@dataclass(slots=True)
+class _SelectionLoadGate:
+    lock: asyncio.Lock
+    users: int = 0
+
+
 class AccountSelectionCache:
-    def __init__(self, ttl_seconds: int | None = None) -> None:
+    def __init__(self, ttl_seconds: int | None = None, *, max_entries: int = _MAX_SELECTION_CACHE_ENTRIES) -> None:
         if ttl_seconds is None:
             import sys
 
             ttl_seconds = 0 if "pytest" in sys.modules else 5
         if ttl_seconds < 0:
             raise ValueError("ttl_seconds must be non-negative")
+        if max_entries <= 0:
+            raise ValueError("max_entries must be positive")
         self._ttl_seconds = ttl_seconds
-        self._cache: dict[_CacheKey, _CachedSelectionInputs] = {}
+        self._max_entries = max_entries
+        self._cache: OrderedDict[_CacheKey, _CachedSelectionInputs] = OrderedDict()
+        self._load_gates: dict[_CacheKey, _SelectionLoadGate] = {}
         self._lock = anyio.Lock()
         self._generation: int = 0
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    @asynccontextmanager
+    async def load_scope(self, key: _CacheKey) -> AsyncIterator[None]:
+        if self._ttl_seconds == 0:
+            yield
+            return
+        gate = self._load_gates.get(key)
+        if gate is None:
+            gate = _SelectionLoadGate(asyncio.Lock())
+            self._load_gates[key] = gate
+        gate.users += 1
+        try:
+            async with gate.lock:
+                yield
+        finally:
+            # No await between bookkeeping steps: cancellation cannot leave
+            # an abandoned gate, and invalidation does not replace live gates.
+            gate.users -= 1
+            if gate.users == 0:
+                del self._load_gates[key]
 
     async def get(self, key: _CacheKey = (None, None, None, "", None)) -> SelectionInputs | None:
         if self._ttl_seconds == 0:
@@ -55,6 +89,7 @@ class AccountSelectionCache:
         if entry is None:
             return None
         if time.monotonic() >= entry.expires_at:
+            del self._cache[key]
             return None
         return entry.data
 
@@ -65,12 +100,25 @@ class AccountSelectionCache:
         *,
         generation: int | None = None,
     ) -> None:
+        if self._ttl_seconds == 0:
+            return
         async with self._lock:
             if generation is not None and generation != self._generation:
                 return
+            now = time.monotonic()
+            # Fixed TTL and insertion order also order expiry. Replacements
+            # move to the end; reads never extend a snapshot's lifetime.
+            while self._cache:
+                oldest = next(iter(self._cache.values()))
+                if oldest.expires_at > now:
+                    break
+                self._cache.popitem(last=False)
+            self._cache.pop(key, None)
+            while len(self._cache) >= self._max_entries:
+                self._cache.popitem(last=False)
             self._cache[key] = _CachedSelectionInputs(
                 data=data,
-                expires_at=time.monotonic() + self._ttl_seconds,
+                expires_at=now + self._ttl_seconds,
             )
 
     def invalidate(self, *, propagate: bool = True) -> None:
