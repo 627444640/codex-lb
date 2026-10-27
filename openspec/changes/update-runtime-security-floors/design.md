@@ -29,6 +29,8 @@ The first fresh CI run passes the Python Docker scan but exposes ten native advi
 
 Cargo 1.96.0 generated the lockfile using the official crates.io GitHub index as a temporary source replacement after the normal index endpoint timed out. The committed lockfile retains canonical crates.io source identities and checksums; no registry replacement configuration is committed. Native compilation, protocol tests and cargo-deny run in Linux CI; standalone Cargo metadata validation is not a substitute for those checks.
 
+The first native-updated run passes the Rust build, 28 Rust test cases, 361 native wire-probe tests and cargo-deny. Its only unit failure is the existing packaging assertion still requiring the vulnerable rustls/aws-lc-rs versions. Update that assertion to the reviewed patched pins and retain its exact-version checks; the WebSocket fork and HTTP-family pins remain unchanged.
+
 Primary native advisory references:
 
 - https://rustsec.org/advisories/RUSTSEC-2026-0346.html
