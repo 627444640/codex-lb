@@ -8,4 +8,4 @@
 ## 2. Acceptance
 
 - [x] 2.1 Validate the maintenance change and frozen dependency environment.
-- [ ] 2.2 Require current-head CI including the fresh Docker vulnerability scan before merge.
+- [x] 2.2 Require current-head CI including the fresh Docker vulnerability scan before merge.

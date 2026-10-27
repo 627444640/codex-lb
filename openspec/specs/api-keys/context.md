@@ -37,3 +37,17 @@ serialized output and not inside a string literal that the length shortcuts
 (`instructions` >= 8192 chars, or a single chunk that alone covers the
 remaining budget) prove the cap without encoding. Surrogates skipped that way
 yield the 8192 cap like any other large payload.
+
+## Concurrent reservation cleanup ownership
+
+Request-local settlement ownership serializes the reservation write and its
+reference update across bridge detach, terminal and abort paths. Database CAS
+remains the authority for persisted idempotency; the local lock avoids redundant
+healthy-path round trips. For example, a detach racing a terminal handler waits
+for the active writer and then observes the cleared reservation.
+
+An unconfirmed failure or cancellation retains the reservation for the existing
+recovery path, while cancelling a waiter does not cancel the active writer.
+Deferred health writes remain ordered after confirmed settlement. The lock is
+per request and does not serialize unrelated requests. See [spec.md](spec.md)
+and the [verified lifecycle change](../../changes/archive/2026-10-28-serialize-request-reservation-settlement/verification.md).
