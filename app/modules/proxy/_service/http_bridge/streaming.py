@@ -22,7 +22,7 @@ from app.core.clients.proxy import (  # noqa: F401
     _client_metadata_uses_responses_lite,
     _inline_content_images,
     _inline_input_image_urls,
-    _ws_transport_payload_budget_bytes,
+    _ws_auto_http_fallback_payload_budget_bytes,
     filter_inbound_headers,
     is_confirmed_pre_dispatch_transport_error,
     pop_compact_timeout_overrides,
@@ -1009,7 +1009,7 @@ class _HTTPBridgeStreamingMixin:
             forwarded_file_owner_account_id=forwarded_file_owner_account_id,
             require_forwarded_file_owner=forwarded_request,
         )
-        ws_payload_budget_bytes = _ws_transport_payload_budget_bytes()
+        ws_payload_budget_bytes = _ws_auto_http_fallback_payload_budget_bytes()
         if runtime_config.enabled and payload_size_estimate_bytes > ws_payload_budget_bytes:
             record_http_bridge_routing(stage="bypass", reason="payload_size")
             logger.info(

@@ -232,6 +232,11 @@ _IMAGE_INLINE_TIMEOUT_SECONDS = 8.0
 # the frame ceiling after transport metadata is added.
 MAX_SSE_EVENT_BYTES: Final[int] = 65 * 1024 * 1024
 _WEBSOCKET_TRANSPORT_HEADROOM_BYTES: Final[int] = 2 * 1024 * 1024
+# The upstream service has rejected a roughly 39 MB response.create with
+# WebSocket close code 1009. Keep automatic routing below that observed failure
+# while leaving the larger fixed response.create validation budget available to
+# explicit HTTP transport and explicit WebSocket pins.
+UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES: Final[int] = 30 * 1024 * 1024
 # Serialized ``response.create`` budget for the upstream websocket: one MiB
 # under the 65 MiB frame ceiling, giving clients an effective 64 MiB limit.
 UPSTREAM_RESPONSE_CREATE_MAX_BYTES: Final[int] = MAX_SSE_EVENT_BYTES - 1 * 1024 * 1024
@@ -2438,6 +2443,15 @@ def _ws_transport_payload_budget_bytes(max_sse_event_bytes: int | None = None) -
     return max(1 * 1024 * 1024, frame_bytes - _WEBSOCKET_TRANSPORT_HEADROOM_BYTES)
 
 
+def _ws_auto_http_fallback_payload_budget_bytes(max_sse_event_bytes: int | None = None) -> int:
+    """Return the automatic-routing payload budget below the observed upstream 1009 boundary."""
+
+    return min(
+        _ws_transport_payload_budget_bytes(max_sse_event_bytes),
+        UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES,
+    )
+
+
 def _resolve_stream_transport(
     *,
     transport: str,
@@ -2452,7 +2466,10 @@ def _resolve_stream_transport(
         return "websocket"
     if configured == "http":
         return "http"
-    if payload_size_estimate_bytes is not None and payload_size_estimate_bytes > _ws_transport_payload_budget_bytes():
+    if (
+        payload_size_estimate_bytes is not None
+        and payload_size_estimate_bytes > _ws_auto_http_fallback_payload_budget_bytes()
+    ):
         return "http"
     if has_image_generation_tool:
         return "http"

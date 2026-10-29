@@ -4640,6 +4640,59 @@ def test_resolve_stream_transport_uses_http_for_large_auto_payload(monkeypatch) 
     assert transport == "http"
 
 
+def test_resolve_stream_transport_uses_http_before_upstream_safe_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        proxy_module,
+        "get_model_registry",
+        lambda: SimpleNamespace(prefers_websockets=lambda _model: True),
+    )
+    payload_size = proxy_module.UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES + 1
+    assert payload_size < proxy_module._ws_transport_payload_budget_bytes()
+
+    transport = proxy_module._resolve_stream_transport(
+        transport="auto",
+        transport_override=None,
+        model="gpt-5.4",
+        headers={},
+        payload_size_estimate_bytes=payload_size,
+    )
+
+    assert transport == "http"
+
+
+def test_resolve_stream_transport_keeps_explicit_websocket_above_upstream_safe_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        proxy_module,
+        "get_model_registry",
+        lambda: SimpleNamespace(prefers_websockets=lambda _model: True),
+    )
+    transport = proxy_module._resolve_stream_transport(
+        transport="websocket",
+        transport_override=None,
+        model="gpt-5.4",
+        headers={},
+        payload_size_estimate_bytes=proxy_module.UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES + 1,
+    )
+
+    assert transport == "websocket"
+
+
+def test_image_request_uses_http_above_upstream_safe_budget(monkeypatch) -> None:
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "instructions": "describe this image",
+            "input": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}],
+        }
+    )
+    monkeypatch.setattr(proxy_module, "UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES", 1024)
+
+    assert proxy_service._input_image_request_requires_http_upstream(
+        payload,
+        payload_size_estimate_bytes=1025,
+    )
+
+
 def test_resolve_stream_transport_keeps_websocket_for_small_or_unknown_auto_payload(monkeypatch) -> None:
     monkeypatch.setattr(
         proxy_module,
@@ -4663,7 +4716,7 @@ def test_resolve_stream_transport_keeps_websocket_for_small_or_unknown_auto_payl
             transport_override=None,
             model="gpt-5.4",
             headers={},
-            payload_size_estimate_bytes=proxy_module._ws_transport_payload_budget_bytes(),
+            payload_size_estimate_bytes=proxy_module.UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES,
         )
         == "websocket"
     )
@@ -4708,6 +4761,11 @@ def test_resolve_stream_transport_keeps_explicit_http_for_large_payload(monkeypa
 def test_ws_transport_payload_budget_uses_settings_limit() -> None:
     assert proxy_module._ws_transport_payload_budget_bytes(16 * 1024 * 1024) == 14 * 1024 * 1024
     assert proxy_module._ws_transport_payload_budget_bytes(2 * 1024 * 1024) == (1 * 1024 * 1024)
+
+
+def test_auto_http_fallback_budget_is_below_frame_budget() -> None:
+    assert proxy_module.UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES == 30 * 1024 * 1024
+    assert proxy_module.UPSTREAM_WEBSOCKET_HTTP_FALLBACK_BYTES < proxy_module._ws_transport_payload_budget_bytes()
 
 
 def test_default_response_create_budget_is_64_mib_with_frame_headroom() -> None:

@@ -1792,6 +1792,34 @@ For streaming Codex/Responses proxy requests, the system MUST let operators choo
 - **WHEN** transport selection runs against a legacy settings object that does not expose the newer upstream transport fields
 - **THEN** the proxy MUST preserve the pre-feature HTTP transport default for model-preference auto-selection unless an explicit legacy websocket mode or native Codex websocket signal opts in
 
+### Requirement: Automatic transport avoids oversized upstream WebSockets
+
+In automatic mode, a serialized Responses payload larger than the fixed 30 MiB
+WebSocket safety budget MUST use upstream HTTP/SSE, including when the payload
+contains inline or historical images. The automatic fallback MUST occur before
+opening an upstream WebSocket. An explicit `websocket` transport selection MAY
+override this automatic safety fallback.
+
+#### Scenario: Large automatic payload uses HTTP upstream
+
+- **WHEN** the resolved upstream transport strategy is `auto`
+- **AND** the serialized Responses payload is larger than 30 MiB
+- **THEN** the proxy uses upstream HTTP/SSE
+- **AND** it does not open an upstream WebSocket for that request
+
+#### Scenario: Large image payload uses HTTP upstream
+
+- **WHEN** the resolved upstream transport strategy is `auto`
+- **AND** the Responses input contains an `input_image` part
+- **AND** the serialized payload is larger than 30 MiB
+- **THEN** the proxy uses upstream HTTP/SSE
+
+#### Scenario: Explicit WebSocket pin remains explicit
+
+- **WHEN** the resolved upstream transport strategy is `websocket`
+- **AND** the serialized payload is larger than 30 MiB
+- **THEN** the proxy keeps the explicit upstream WebSocket transport selection
+
 ### Requirement: Responses-compatible tool payload handling
 The service SHALL accept built-in Responses tool definitions on `/backend-api/codex/responses` and `/v1/responses` without locally rejecting them. The service MAY normalize documented aliases, but upstream model/tool compatibility validation MUST remain the upstream contract.
 

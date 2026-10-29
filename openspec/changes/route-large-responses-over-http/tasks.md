@@ -1,0 +1,4 @@
+- [x] Add the fixed automatic WebSocket-to-HTTP fallback budget.
+- [x] Route oversized automatic and image-bearing payloads over HTTP.
+- [x] Add regression tests for automatic fallback and explicit WebSocket pins.
+- [x] Run focused tests, lint, and strict OpenSpec validation.

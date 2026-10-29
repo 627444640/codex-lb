@@ -33,7 +33,7 @@ from app.core.clients.proxy import (
     _response_create_too_large_error_envelope,
     _should_slim_historical_tool_output,
     _slim_historical_response_content,
-    _ws_transport_payload_budget_bytes,
+    _ws_auto_http_fallback_payload_budget_bytes,
     apply_codex_installation_metadata,
 )
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
@@ -235,7 +235,7 @@ def _input_image_request_requires_http_upstream(
         return False
     if not any(_json_value_contains_input_image_part(item) for item in input_value):
         return False
-    if payload_size_estimate_bytes > _ws_transport_payload_budget_bytes():
+    if payload_size_estimate_bytes > _ws_auto_http_fallback_payload_budget_bytes():
         return True
     return any(_json_value_contains_external_input_image(item) for item in input_value)
 
