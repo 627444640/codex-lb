@@ -2575,7 +2575,7 @@ async def backend_files_create(
     Accepts ``{file_name, file_size, use_case}`` and returns the upstream
     JSON verbatim (typically ``{file_id, upload_url}``) so callers can
     PUT the bytes directly to the SAS upload URL without going through
-    the proxy. The 16 MiB websocket ceiling on ``/responses`` does not
+    the proxy. The 64 MiB response.create websocket budget on ``/responses`` does not
     apply here -- upstream caps file size at 512 MiB which we enforce in
     ``FileCreateRequest``.
     """

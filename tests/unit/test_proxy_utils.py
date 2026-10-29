@@ -4710,6 +4710,13 @@ def test_ws_transport_payload_budget_uses_settings_limit() -> None:
     assert proxy_module._ws_transport_payload_budget_bytes(2 * 1024 * 1024) == (1 * 1024 * 1024)
 
 
+def test_default_response_create_budget_is_64_mib_with_frame_headroom() -> None:
+    assert proxy_module.MAX_SSE_EVENT_BYTES == 65 * 1024 * 1024
+    assert proxy_module.UPSTREAM_RESPONSE_CREATE_MAX_BYTES == 64 * 1024 * 1024
+    assert proxy_module.UPSTREAM_RESPONSE_CREATE_MAX_BYTES < proxy_module.MAX_SSE_EVENT_BYTES
+    assert proxy_module._ws_transport_payload_budget_bytes() == 63 * 1024 * 1024
+
+
 def test_responses_request_contains_input_image_detects_supported_shapes() -> None:
     top_level = ResponsesRequest.model_validate(
         {

@@ -81,8 +81,8 @@ async def test_v1_responses_forwards_input_file_id(async_client, monkeypatch):
     """`input_file.file_id` was previously rejected because uploads via
     `POST /backend-api/files` were not supported. With the file upload
     protocol in place, the proxy now forwards these references verbatim
-    so callers can attach pre-uploaded files (bypassing the 16 MiB
-    websocket ceiling on `/responses`)."""
+    so callers can attach pre-uploaded files (bypassing the 64 MiB
+    response.create websocket budget on `/responses`)."""
     await _import_account(async_client, "acc_input_file_id", "input-file-id@example.com")
 
     seen: dict[str, object] = {}

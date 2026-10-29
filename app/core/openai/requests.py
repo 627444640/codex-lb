@@ -673,8 +673,8 @@ class ResponsesRequest(BaseModel):
         # ``input_file`` content items with a ``file_id`` are now allowed
         # and forwarded verbatim. They reference uploads registered via
         # ``POST /backend-api/files`` (see the file upload protocol),
-        # which lets large attachments bypass the 16 MiB websocket
-        # ceiling on `/responses`.
+        # which lets large attachments bypass the 64 MiB response.create
+        # websocket budget on `/responses`.
         if isinstance(value, str):
             normalized = _normalize_input_text(value)
             return _sanitize_input_items(normalized)

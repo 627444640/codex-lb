@@ -227,13 +227,13 @@ _IMAGE_INLINE_MAX_BYTES = 8 * 1024 * 1024
 _IMAGE_INLINE_CHUNK_SIZE = 64 * 1024
 _IMAGE_INLINE_TIMEOUT_SECONDS = 8.0
 # Applies to both upstream SSE event buffering and upstream websocket message
-# frames (fixed; issue #1340 / PRINCIPLES.md P2). Aligned with the common 16 MiB
-# websocket ceiling so large built-in tool payloads (for example image_generation
-# outputs) do not fail locally with a 1009 before upstream completion.
-MAX_SSE_EVENT_BYTES: Final[int] = 16 * 1024 * 1024
+# frames (fixed; issue #1340 / PRINCIPLES.md P2). Keep one MiB of headroom above
+# the effective response.create budget so the serialized envelope does not trip
+# the frame ceiling after transport metadata is added.
+MAX_SSE_EVENT_BYTES: Final[int] = 65 * 1024 * 1024
 _WEBSOCKET_TRANSPORT_HEADROOM_BYTES: Final[int] = 2 * 1024 * 1024
 # Serialized ``response.create`` budget for the upstream websocket: one MiB
-# under the 16 MiB frame ceiling so the envelope never trips the frame limit.
+# under the 65 MiB frame ceiling, giving clients an effective 64 MiB limit.
 UPSTREAM_RESPONSE_CREATE_MAX_BYTES: Final[int] = MAX_SSE_EVENT_BYTES - 1 * 1024 * 1024
 _BLOCKED_LITERAL_HOSTS = {"localhost", "localhost.localdomain"}
 _UPSTREAM_RESPONSE_CREATE_MAX_BYTES = UPSTREAM_RESPONSE_CREATE_MAX_BYTES

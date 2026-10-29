@@ -1,8 +1,8 @@
 """Upstream client for the ChatGPT backend file upload protocol.
 
 Codex CLI / Codex Desktop upload large prompt attachments through a
-three-step protocol that is **not** subject to the 16 MiB websocket
-ceiling on `/responses`:
+three-step protocol that is **not** subject to the 64 MiB response.create
+websocket budget on `/responses`:
 
 1. ``POST {base}/files`` -- register a file with ``{file_name, file_size,
    use_case}``. Upstream returns ``{file_id, upload_url}``. The
@@ -17,7 +17,7 @@ ceiling on `/responses`:
 
 Once a file is finalized, callers reference it from a ``/responses``
 prompt as ``{"type": "input_file", "file_id": "..."}`` instead of
-inlining base64 -- bypassing the per-message 16 MiB limit (file storage
+inlining base64 -- bypassing the per-message 64 MiB response.create limit (file storage
 itself is 512 MiB per item upstream).
 
 This module mirrors the contracts implemented in the upstream Codex

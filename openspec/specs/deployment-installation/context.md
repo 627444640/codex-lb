@@ -371,8 +371,8 @@ triage evidence is per field: definition line unchanged since introduction,
 no Helm/.env.example/docs/issue/incident mention, never set in production).
 Behaviour is unchanged; each env name gets the one-release WARN.
 
-- Upstream transport: `CODEX_LB_MAX_SSE_EVENT_BYTES` (16 MiB),
-  `CODEX_LB_UPSTREAM_RESPONSE_CREATE_MAX_BYTES` (15 MiB, derived from the
+- Upstream transport: `CODEX_LB_MAX_SSE_EVENT_BYTES` (65 MiB),
+  `CODEX_LB_UPSTREAM_RESPONSE_CREATE_MAX_BYTES` (64 MiB, derived from the
   frame budget), `CODEX_LB_UPSTREAM_COMPACT_TIMEOUT_SECONDS` (no constant —
   the dashboard `compact_request_budget_seconds` was already the only total
   cap that ever applied).

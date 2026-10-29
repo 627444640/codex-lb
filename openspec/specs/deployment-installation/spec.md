@@ -708,8 +708,8 @@ The following values MUST be fixed at their previously documented defaults:
   window 60 seconds, probe success streak 3), fixed in
   `app/core/balancer/logic.py`.
 - The never-tuned core tunables constantized by `constantize-core-tunables`:
-  the upstream SSE event / websocket frame budget (16 MiB) and the derived
-  serialized `response.create` budget (15 MiB); the OAuth exchange timeout
+  the upstream SSE event / websocket frame budget (65 MiB) and the derived
+  serialized `response.create` budget (64 MiB); the OAuth exchange timeout
   (30 s), token-refresh exchange timeout (8 s), refresh-failure negative
   cache (5 s) and the token-refresh claim TTL (`max(30 s, admission wait +
   2 x refresh timeout)`, all in code); the admission wait (10 s) and the
